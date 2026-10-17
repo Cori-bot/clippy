@@ -1,4 +1,4 @@
-# Trix Core Engine — Architecture Plan & Roadmap (CLI MVP)
+# Clippy Core Engine — Architecture Plan & Roadmap (CLI MVP)
 
 > Ultra-lightweight, hardware-accelerated screen/clip recorder for Windows.
 > Target: zero gameplay impact, < 30 MB working set, 100% Rust, no UI.
@@ -11,7 +11,7 @@ Three decisions define the entire engine. Everything else follows from them.
 
 ### Decision 1 — Frames never touch the CPU
 The #1 cause of recorder-induced stutter is copying raw frames from VRAM to system RAM
-(a 1080p60 BGRA stream is ~475 MB/s of PCIe + memcpy traffic). Trix will keep the
+(a 1080p60 BGRA stream is ~475 MB/s of PCIe + memcpy traffic). Clippy will keep the
 pipeline **GPU-resident end to end**:
 
 ```
@@ -115,24 +115,24 @@ A single background CLI process (daemon-style). Two operating modes:
 
 ```
 Cargo.toml                    virtual workspace: members, shared deps, release profile
-crates/trix-core/             the engine — no CLI, no argument parsing, no subscriber
+crates/clippy-core/             the engine — no CLI, no argument parsing, no subscriber
   src/lib.rs                    public surface: the eight modules below
   src/capture/{mod,audio,video}.rs
   src/encode/{mod,convert,h264,mf}.rs
   src/{config,control,probe,record,replay,stats}.rs
   tests/public_api.rs           guards the surface the daemon consumes
-crates/trix-cli/              produces trix.exe
-  src/main.rs                   clap surface + subscriber; depends on trix-core directly
-crates/trix-proto/            wire types only: Request/Response/Event, ClipMeta, the Command parser — serde only, no windows-rs, no unsafe
-crates/trix-daemon/           produces trix-daemon.exe: the control socket, arm/disarm/clip, the clip library, config, hardware enumeration, and stats — depends on trix-core + trix-proto
+crates/clippy-cli/              produces clippy.exe
+  src/main.rs                   clap surface + subscriber; depends on clippy-core directly
+crates/clippy-proto/            wire types only: Request/Response/Event, ClipMeta, the Command parser — serde only, no windows-rs, no unsafe
+crates/clippy-daemon/           produces clippy-daemon.exe: the control socket, arm/disarm/clip, the clip library, config, hardware enumeration, and stats — depends on clippy-core + clippy-proto
 ```
 
-The CLI depends on `trix-core` directly rather than routing through the daemon: it is the
+The CLI depends on `clippy-core` directly rather than routing through the daemon: it is the
 ground-truth verification harness for every phase, and putting it behind the daemon would put the
 thing under test behind the thing under test.
 
-Planned additions (see `docs/superpowers/specs/2026-07-26-trix-desktop-ui-design.md`):
-`trix-ui` (Tauri app).
+Planned additions (see `docs/superpowers/specs/2026-07-26-clippy-desktop-ui-design.md`):
+`clippy-ui` (Tauri app).
 
 ---
 
@@ -142,14 +142,14 @@ Planned additions (see `docs/superpowers/specs/2026-07-26-trix-desktop-ui-design
 
 | Concern | Crate | Why this one |
 |---|---|---|
-| All Windows APIs (WGC, D3D11, WASAPI, MF, hotkeys) | **`windows`** (windows-rs, official Microsoft) | One dependency covers *every* OS surface Trix needs. Zero-cost COM bindings, maintained by Microsoft. |
+| All Windows APIs (WGC, D3D11, WASAPI, MF, hotkeys) | **`windows`** (windows-rs, official Microsoft) | One dependency covers *every* OS surface Clippy needs. Zero-cost COM bindings, maintained by Microsoft. |
 | Screen capture | **`windows-capture`** | Production-quality wrapper over Windows.Graphics.Capture: event-driven, GPU textures, per-monitor/per-window, handles device-lost. Use it to move fast; its source doubles as a reference if you later inline raw WGC calls. |
 | Audio loopback | **`wasapi`** | Purpose-built WASAPI crate with first-class *loopback* support (event-driven shared mode). Preferred over `cpal` here — cpal's loopback support is newer and its abstraction hides the timestamping you need for A/V sync. |
 | HW encode + MP4 mux | **`windows`** (Media Foundation: `IMFSinkWriter`) | See Decision 2. Encoder *and* muxer in one OS API, hardware-selected automatically. |
 | SPSC audio ring | **`rtrb`** | Wait-free, allocation-free, built for real-time audio. |
 | Texture-handle channel | **`crossbeam-channel`** | Bounded, fast, `select!` support for shutdown signaling. |
 | CLI | **`clap`** (derive) | Standard; `record`, `replay`, `list-encoders` subcommands. |
-| Config file | **`serde` + `toml`** | `%APPDATA%\trix\config.toml`. |
+| Config file | **`serde` + `toml`** | `%APPDATA%\clippy\config.toml`. |
 | Errors | **`thiserror`** (library-ish modules) + **`anyhow`** (main) | Idiomatic split. |
 | Logging | **`tracing` + `tracing-subscriber`** (compact fmt) | Structured; cheap when disabled. |
 | Hotkeys | `windows` (`RegisterHotKey`) or **`global-hotkey`** | RegisterHotKey is ~20 lines via `windows`; crate optional. |
@@ -160,7 +160,7 @@ Planned additions (see `docs/superpowers/specs/2026-07-26-trix-desktop-ui-design
   budget; MF covers the MVP. Revisit only for exotic formats.
 - **`tokio`** — no async I/O problem exists here (Decision 3).
 - **`scrap` / GDI / BitBlt approaches** — CPU-copy capture; exactly the stutter
-  source Trix exists to avoid.
+  source Clippy exists to avoid.
 - **Raw DXGI Desktop Duplication** as the primary path — WGC supersedes it on
   Win10 1903+: better multi-monitor behavior, capture-exclusion support, and
   equivalent performance. Keep DXGI DD in mind only as a legacy-OS fallback.
@@ -172,26 +172,26 @@ Planned additions (see `docs/superpowers/specs/2026-07-26-trix-desktop-ui-design
 Each phase ends with a runnable binary and a verifiable exit criterion.
 
 ### Phase 0 — Skeleton & environment (½ day)
-- `cargo new trix`, set up `clap` subcommands (`record`, `replay`, `probe`), `tracing`, config loading.
+- `cargo new clippy`, set up `clap` subcommands (`record`, `replay`, `probe`), `tracing`, config loading.
 - Add release profile hardening now (see §4).
-- **Exit:** `trix probe` prints OS version, monitors, and enumerated MF hardware encoders (proves the `windows` crate + MF activation works on your machine).
+- **Exit:** `clippy probe` prints OS version, monitors, and enumerated MF hardware encoders (proves the `windows` crate + MF activation works on your machine).
 
 ### Phase 1 — Video capture proof (1–2 days)
 - Stand up `windows-capture`: pick monitor, receive frames on the capture callback.
 - Build the D3D11 texture pool + QPC timestamping.
 - Verification hack: copy *one* frame to CPU and dump a `.png` (temporary code).
-- **Exit:** `trix probe --snapshot` writes a correct screenshot; logs show steady 60 fps frame arrival with 0% CPU while idle-waiting.
+- **Exit:** `clippy probe --snapshot` writes a correct screenshot; logs show steady 60 fps frame arrival with 0% CPU while idle-waiting.
 
 ### Phase 2 — Hardware encode → MP4 (video only) (2–4 days) ★ hardest phase
 - Create `IMFSinkWriter` on the output file with an H.264 stream (NV12 input, D3D11 device manager attached so the encoder reads VRAM directly).
 - Convert capture BGRA → NV12 on the GPU (MF's Video Processor MFT does this; no shader needed).
 - Wire capture thread → encoder thread via the bounded channel; implement the frame-drop policy.
-- **Exit:** `trix record -d 10` produces a 10-second `output.mp4` that plays in MPC/VLC, encoded by the *hardware* MFT (verify encoder name in logs), with game-load CPU usage of the trix process < 2%.
+- **Exit:** `clippy record -d 10` produces a 10-second `output.mp4` that plays in MPC/VLC, encoded by the *hardware* MFT (verify encoder name in logs), with game-load CPU usage of the clippy process < 2%.
 
 ### Phase 3 — Audio loopback capture (1–2 days)
 - WASAPI shared-mode loopback on the default render device, event-driven, into the `rtrb` ring with QPC stamps.
 - Verification hack: write a raw `.wav` to confirm clean audio (no gaps/crackle).
-- **Exit:** `trix probe --audio 5` records 5 s of system audio to a valid `.wav`.
+- **Exit:** `clippy probe --audio 5` records 5 s of system audio to a valid `.wav`.
 
 ### Phase 4 — A/V mux & sync (1–2 days)
 - Add an AAC audio stream to the SinkWriter (MF's AAC encoder MFT).
@@ -209,7 +209,7 @@ Each phase ends with a runnable binary and a verifiable exit criterion.
   Real-world collision found in the field: NVIDIA App's overlay owns Alt+F10
   ("Save Instant Replay") and its low-level hook consumes the key *before*
   `RegisterHotKey` matching in games it has hooked (seen in ETS2 — the game
-  still takes its own F10 screenshot via raw input, Trix never fires), while
+  still takes its own F10 screenshot via raw input, Clippy never fires), while
   Roblox's anticheat blocks the overlay so the key falls through and works.
   Users need a rebind path; no fixed key is safe from every overlay.
 - Detached background operation, single-instance guard, graceful Ctrl+C / hotkey shutdown that finalizes the MP4 (an unfinalized MP4 is corrupt — always flush the moov atom).
@@ -268,13 +268,13 @@ Each phase ends with a runnable binary and a verifiable exit criterion.
 
 ## 5. Progress Log
 
-- **Phase 0 ✅** — `trix probe` enumerates OS/GPUs/monitors and MF hardware encoders.
+- **Phase 0 ✅** — `clippy probe` enumerates OS/GPUs/monitors and MF hardware encoders.
   Findings: hybrid-graphics laptop — monitor on Intel iGPU (QSV), NVENC on discrete
   RTX 5060; encoder selection must prefer the capture adapter.
 - **Phase 1 ✅** — `probe --snapshot` (verified PNG) and `probe --capture N`:
   55 fps steady, 0.03 ms jitter, QPC timestamps working. WGC reports physical
   pixels (1920×1200); take encoder dimensions from frames, not monitor descs.
-- **Phase 2 ✅ (with caveat)** — `trix record -d N -o file.mp4` produces valid
+- **Phase 2 ✅ (with caveat)** — `clippy record -d N -o file.mp4` produces valid
   hardware-encoded H.264 MP4 (GPU video engine ~29% during encode, CPU ~1.3% of
   machine, release binary 1.41 MB). **Caveat:** built on `windows_capture::encoder::
   VideoEncoder` (MediaStreamSource → MediaTranscoder), whose working set is
@@ -288,7 +288,7 @@ Each phase ends with a runnable binary and a verifiable exit criterion.
   span matches PCM length. Finding: loopback delivers packets **only while
   something renders** — Phase 4 must synthesize silence for idle gaps, using each
   packet's QPC timestamp to place audio correctly on the timeline.
-- **Phase 4 ✅** — `trix record` now muxes AAC system audio (192 kbps CBR, 48 kHz
+- **Phase 4 ✅** — `clippy record` now muxes AAC system audio (192 kbps CBR, 48 kHz
   stereo). Sync design forced by the encoder's audio API (it ignores timestamps,
   clocking audio by samples-sent): we feed one continuous PCM timeline starting at
   the first video frame's QPC — real packets placed by QPC, head/overlap trimmed,
@@ -302,7 +302,7 @@ Each phase ends with a runnable binary and a verifiable exit criterion.
   verbatim on the sample-count clock; QPC re-anchoring only for real gaps/overlaps.
   Post-fix: 0 jitter splices; user confirmed clean audio by ear.
 
-- **Phase 5a ✅** — `encode/mf.rs` + `encode/convert.rs`: `trix record` now runs on
+- **Phase 5a ✅** — `encode/mf.rs` + `encode/convert.rs`: `clippy record` now runs on
   our own `IMFSinkWriter` (DXGI device manager, NV12 fed straight to the hardware
   H.264 MFT, PCM→AAC with explicit timestamps) plus our own D3D11 VideoProcessor
   BGRA→NV12 blit (3-texture NV12 pool, `MF_LOW_LATENCY`). The MediaTranscoder
@@ -317,7 +317,7 @@ Each phase ends with a runnable binary and a verifiable exit criterion.
   recorder pays. Budget reporting (Phase 7) must therefore split CPU-side vs
   GPU-side memory.
 
-- **Phase 5b ✅** — `trix replay`: the Medal-style replay buffer. Manual async
+- **Phase 5b ✅** — `clippy replay`: the Medal-style replay buffer. Manual async
   hardware H.264 MFT (`encode/h264.rs`: MFTEnum2 pinned to the capture adapter's
   LUID, event-driven NeedInput/HaveOutput, D3D-manager-fed NV12 → compressed
   packets in RAM), GOP-aligned `VecDeque` ring (evicts whole GOPs, front always a
@@ -360,7 +360,7 @@ Each phase ends with a runnable binary and a verifiable exit criterion.
   breaks into its normal diagnostics+close path. Console-close holds the
   handler thread until finalize completes (Windows kills ~5 s after return).
 - **Phase 6c ✅** — single-instance guard: named mutex
-  (`Local\trix-capture-single-instance`) acquired before record/replay; a
+  (`Local\clippy-capture-single-instance`) acquired before record/replay; a
   second session exits with a friendly error (verified live), `probe` stays
   allowed alongside.
 - **Phase 6d ✅** — display-change / device-lost robustness, two layers.
@@ -402,7 +402,7 @@ Each phase ends with a runnable binary and a verifiable exit criterion.
   the capture hot path, and a `StatsReporter` pairing OS process counters
   (`K32GetProcessMemoryInfo`) with DXGI per-process video memory
   (`IDXGIAdapter3::QueryVideoMemoryInfo`). Both `record` and `replay` measure
-  the *per-frame capture-callback time* — the wall time Trix occupies the WGC
+  the *per-frame capture-callback time* — the wall time Clippy occupies the WGC
   thread, i.e. the gameplay-impact number — and emit a `perf` line every
   `stats_seconds` (config, default 60; 0 silences) plus a final summary at
   close. 6 unit tests; self-report validated against an external
@@ -432,7 +432,7 @@ Each phase ends with a runnable binary and a verifiable exit criterion.
 
 **MVP core complete (Phases 0–7).** User-verifiable leftovers: rebind
 `clip_hotkey` (already set to bare `f10`) and confirm ETS2 clips fire;
-unplug/replug an external monitor during `trix replay` to exercise the
+unplug/replug an external monitor during `clippy replay` to exercise the
 rebuild loop with real hardware events. Post-MVP candidates: software-encoder
 fallback when no HW encoder is present, AMD/AMF validation on other hardware.
 
@@ -450,9 +450,9 @@ fallback when no HW encoder is present, AMD/AMF validation on other hardware.
   friend re-test. CQP/quality mode deferred as a `record`-only future option
   (unbounded bitrate is unsafe for the RAM ring).
 
-**Game-fps optimization (2026-07-24, "Trix slightly reduces fps in games"):**
+**Game-fps optimization (2026-07-24, "Clippy slightly reduces fps in games"):**
 - *Root cause 1 — no fps pacing*: WGC delivers a frame per DWM composition, so a
-  144/165 Hz monitor made Trix convert + encode up to 165 fps while configured
+  144/165 Hz monitor made Clippy convert + encode up to 165 fps while configured
   for 60 (~3× the intended GPU load, all competing with the game). Fixed by a
   QPC pacer in both capture callbacks: frames arriving more than half a frame
   early are skipped before any GPU work; skips are logged as `paced` (distinct
@@ -472,17 +472,17 @@ fallback when no HW encoder is present, AMD/AMF validation on other hardware.
 
 ### Workspace split (2026-07-26) — Stage 1 of the desktop UI spec ✅
 
-Single binary crate → Cargo workspace: `crates/trix-core` (the engine, as a
-library) + `crates/trix-cli` (`trix.exe`, unchanged surface). Groundwork for
-`trix-proto` / `trix-daemon` / `trix-ui` per
-`docs/superpowers/specs/2026-07-26-trix-desktop-ui-design.md`.
+Single binary crate → Cargo workspace: `crates/clippy-core` (the engine, as a
+library) + `crates/clippy-cli` (`clippy.exe`, unchanged surface). Groundwork for
+`clippy-proto` / `clippy-daemon` / `clippy-ui` per
+`docs/superpowers/specs/2026-07-26-clippy-desktop-ui-design.md`.
 
 Zero behavioural change was the binding constraint, and it holds. All 13 engine
 files moved as **pure renames** — `git diff --numstat -M` reports 0 added / 0
 removed on every one. Release profile carried verbatim; feature resolution,
 dependency graph, edition/resolver and lint levels confirmed unchanged; nothing
 in the engine keys off the crate name (the single-instance mutex string and the
-`%APPDATA%\trix` config path are literals).
+`%APPDATA%\clippy` config path are literals).
 
 Equivalence gate, pre-split (`presplit-baseline` tag) vs post-split, back to
 back on the same machine:
@@ -499,33 +499,33 @@ back on the same machine:
 
 Delivered-frame counts differ (338 vs 247) purely because WGC composes only on
 screen change and the two 12 s windows saw different activity; per-frame
-behaviour is identical. Tests went 11 → 20 — `trix-core/tests/public_api.rs` is
+behaviour is identical. Tests went 11 → 20 — `clippy-core/tests/public_api.rs` is
 an integration test that sees only genuinely public items, so it guards the
 surface the daemon will consume (proven: flipping `pub mod stats;` to
 `mod stats;` breaks the build).
 
-**Gotcha for future work:** engine tracing targets moved from `trix::record` to
-`trix_core::record`. The default `"trix=info"` filter still matches only because
-`tracing-subscriber` does raw string-prefix matching — so `RUST_LOG=trix::record=debug`
-now matches nothing, and any future crate must be named `trix*` for default
+**Gotcha for future work:** engine tracing targets moved from `clippy::record` to
+`clippy_core::record`. The default `"clippy=info"` filter still matches only because
+`tracing-subscriber` does raw string-prefix matching — so `RUST_LOG=clippy::record=debug`
+now matches nothing, and any future crate must be named `clippy*` for default
 logging to reach it.
 
 ### Control protocol (2026-07-27) — Stage 2 of the desktop UI spec ✅
 
-Two new crates: `trix-proto` (wire types — `Request`/`Response`/`Event`, `ClipMeta`, the
-`Command` parser; serde only, no `windows-rs`, no `unsafe`) and `trix-daemon`
-(`trix-daemon.exe` — a DACL-restricted named pipe at `\\.\pipe\trix-control`, newline-
+Two new crates: `clippy-proto` (wire types — `Request`/`Response`/`Event`, `ClipMeta`, the
+`Command` parser; serde only, no `windows-rs`, no `unsafe`) and `clippy-daemon`
+(`clippy-daemon.exe` — a DACL-restricted named pipe at `\\.\pipe\clippy-control`, newline-
 delimited JSON, one thread per client connection, commands funnelled onto the existing
 single-threaded engine session). The full command set from spec §4.3 is served: `status`,
 `arm`/`disarm`, `clip`, `config.get`/`config.set`, `library.list`/`delete`/`rename`/
 `favorite`/`reveal`, `monitors.list`/`encoders.list`, and `stats.subscribe`. Events (`armed`,
 `disarmed`, `clip_saved`, `stats`) broadcast on the same connection a client's own requests
 are answered on, interleaved with responses — a client must correlate by `id` and cannot
-assume the next line in is its own reply. Workspace suite **99/99**, zero `trix-daemon`
+assume the next line in is its own reply. Workspace suite **99/99**, zero `clippy-daemon`
 clippy warnings.
 
-**`clip_dir` behaviour change for the CLI:** `trix replay`'s hotkey clip now lands in the
-resolved `clip_dir` (default `%USERPROFILE%\Videos\Trix`, overridable in `config.toml`)
+**`clip_dir` behaviour change for the CLI:** `clippy replay`'s hotkey clip now lands in the
+resolved `clip_dir` (default `%USERPROFILE%\Videos\Clippy`, overridable in `config.toml`)
 instead of whatever the working directory happened to be when the hotkey fired — the daemon
 and the CLI now agree on where a clip goes, matching spec §5.1.
 
@@ -546,7 +546,7 @@ hardware, session unlocked (the gate's own mandatory first check):
 - `arm`: `ok:true`, encoder `Intel® Quick Sync Video H.264 Encoder MFT` (the wire and the
   sidecar both carry it as `IntelÂ® Quick Sync…` — a pre-existing double-UTF-8 artifact in
   the *driver's own* MFT friendly-name string, already carried in this plan's findings since
-  Task 2, not a Trix bug), `clip_dir` `C:\Users\Tunahan\Videos\Trix`, `ring_seconds_total`
+  Task 2, not a Clippy bug), `clip_dir` `C:\Users\Tunahan\Videos\Clippy`, `ring_seconds_total`
   20 (this machine's configured `replay_seconds`).
 - `status` at the 10 s mark: `ring_seconds_used` 10.17, correctly between 5 and 20; the gate
   then waits out the rest of the configured ring length before clipping, so the clip reflects
@@ -555,7 +555,7 @@ hardware, session unlocked (the gate's own mandatory first check):
   `20260730_173945.json` carries all eleven `ClipMeta` keys, `duration_ms` 21,500 (within 20%
   of `ring_seconds_total × 1000` = 20,000), `encoder` matching `arm`'s exactly.
 - `library.list`: the new clip present and first (newest-first).
-- `disarm`: `ok:true`; `trix.exe replay --exit-after 3` then exits 0 (`frames=172 dropped=0`),
+- `disarm`: `ok:true`; `clippy.exe replay --exit-after 3` then exits 0 (`frames=172 dropped=0`),
   proving the single-instance slot came back.
 
 All checks passed. **Outstanding:** playing the clip back and confirming video and audio are
@@ -564,7 +564,7 @@ belongs to the user before plan 3 (the desktop UI) begins.
 
 ## 6. First Concrete Step
 
-Phase 0: `cargo new trix`, add `windows`, `clap`, `tracing`; write `trix probe`
+Phase 0: `cargo new clippy`, add `windows`, `clap`, `tracing`; write `clippy probe`
 to enumerate monitors and MF hardware encoders. That one command validates the
 entire riskiest assumption (MF hardware encoder availability via windows-rs)
 before any pipeline code exists.

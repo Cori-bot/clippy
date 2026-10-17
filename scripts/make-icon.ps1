@@ -1,4 +1,4 @@
-# Regenerates crates/trix-ui/icon-source.png: the Trix mark, cut out of the
+# Regenerates crates/clippy-ui/icon-source.png: the Clippy mark, cut out of the
 # brand artwork and centred in a square, ready to feed to `cargo tauri icon`.
 #
 # Why a script rather than a hand-cropped PNG: assets/logo-transparent.png is
@@ -10,19 +10,19 @@
 # cannot silently skew the icon.
 #
 # NOTE: this is the APP icon only. The tray icon is drawn in code, in
-# trix-daemon's tray.rs, and is deliberately unrelated to this file: a white
+# clippy-daemon's tray.rs, and is deliberately unrelated to this file: a white
 # alpha ramp with two states (armed and idle) so it stays legible on light and
 # dark taskbars and so the state is readable at 16px. The two are allowed to
 # differ. Do not "fix" that by wiring them together -- a colour mark cannot
 # show armed vs idle, which is the tray icon's whole job.
 #
-# After running this:  cd crates/trix-ui; cargo tauri icon icon-source.png
+# After running this:  cd crates/clippy-ui; cargo tauri icon icon-source.png
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 
 $src  = Join-Path $PSScriptRoot '..\assets\logo-transparent.png'
-$dest = Join-Path $PSScriptRoot '..\crates\trix-ui\icon-source.png'
+$dest = Join-Path $PSScriptRoot '..\crates\clippy-ui\icon-source.png'
 
 $side = 1024
 

@@ -1,4 +1,4 @@
-# Spec 3.2: trix-ui must not depend on trix-core, directly or transitively.
+# Spec 3.2: clippy-ui must not depend on clippy-core, directly or transitively.
 #
 # This is the only automated thing standing between the published control
 # protocol and a first-party UI that quietly grows privileged access. Once the
@@ -14,7 +14,7 @@ Push-Location (Join-Path $PSScriptRoot '..')
 try {
     # -e no-dev: a dev-dependency on the engine in a test would be a different
     # (and much smaller) problem than the shipped binary linking it.
-    $tree = & cargo tree -p trix-ui -e no-dev 2>&1
+    $tree = & cargo tree -p clippy-ui -e no-dev 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAIL: cargo tree failed"
         $tree | ForEach-Object { Write-Host "  $_" }
@@ -23,7 +23,7 @@ try {
 
     $offenders = @($tree | Where-Object { $_ -match '\btrix-core\b' })
     if ($offenders.Count -gt 0) {
-        Write-Host "FAIL: trix-ui depends on trix-core (spec 3.2)"
+        Write-Host "FAIL: clippy-ui depends on clippy-core (spec 3.2)"
         # ForEach-Object rather than .Trim() over the array: under
         # Set-StrictMode member enumeration on an empty array is an error, and
         # this branch is one edit away from being reachable with none.
@@ -31,7 +31,7 @@ try {
         exit 1
     }
 
-    Write-Host "OK: trix-ui does not depend on trix-core"
+    Write-Host "OK: clippy-ui does not depend on clippy-core"
     exit 0
 }
 finally {

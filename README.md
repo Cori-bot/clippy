@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="assets/logo-transparent.png" width="112" alt="Trix logo">
+<img src="assets/logo-transparent.png" width="112" alt="Clippy logo">
 
-# Trix
+# Clippy
 
 **A GPU-resident modern game clip recorder for Windows, for people whose PC cannot spare the frames.**
 
-[![Version](https://img.shields.io/badge/version-1.5.0-2b7fff)](https://github.com/tnhnblgl/trix/releases)
+[![Version](https://img.shields.io/badge/version-1.5.0-2b7fff)](https://github.com/OWNER/clippy/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)](#requirements)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-CE422B)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-670%20passing-3fb950)](#verification)
@@ -16,7 +16,7 @@
 
 ---
 
-Trix keeps the last few seconds of your screen in a compressed ring buffer and writes them to a
+Clippy keeps the last few seconds of your screen in a compressed ring buffer and writes them to a
 file when you press a key. Capture, colour conversion and H.264 encoding all happen on the GPU —
 a raw frame never crosses the bus into system RAM.
 
@@ -24,14 +24,14 @@ The measured cost to your game is **p99 ≤ 4 ms per frame against a 16.7 ms bud
 **8.46 MB** install that holds **13.2 MB** of memory while recording, needs no runtime, and has no
 account to create.
 
-## Why Trix exists
+## Why Clippy exists
 
 Screen recorders are built for machines that can afford them. The usual design copies each frame
 out of VRAM into system memory so the CPU can encode it — roughly 475 MB/s of bus and memcpy
 traffic for a 1080p60 BGRA stream — and wraps the whole thing in a desktop app that spends the
 frames the recorder just saved.
 
-On a low-end PC that is the difference between playable and not. Trix is the recorder for that
+On a low-end PC that is the difference between playable and not. Clippy is the recorder for that
 machine: the pipeline never leaves the GPU, the app is a thin native shell over the OS webview,
 and the background recorder blocks in the kernel at 0% CPU until Windows hands it a frame.
 
@@ -49,7 +49,7 @@ UMA adapter.
 | --- | --- | --- |
 | Per-frame capture cost — replay | **p50 ≤ 2 ms · p99 ≤ 4 ms · max 5.8 ms** | 1,472 frames, 0 dropped |
 | Per-frame capture cost — record | **p50 ≤ 1 ms · p99 ≤ 2 ms · max 2.8 ms** | 988 frames, 0 dropped |
-| Frame budget at 60 fps | 16.7 ms | the numbers above are the share Trix occupies |
+| Frame budget at 60 fps | 16.7 ms | the numbers above are the share Clippy occupies |
 | CPU-side memory | **13.2 MB** | exactly measured replay ring, video + audio |
 | Process working set | ~174 MB replay / ~170 MB record | mostly UMA GPU surfaces — see note |
 | Frame pacing on a 165 Hz panel | **59.9 fps at `fps=60`**, 0 dropped | uncapped capture would encode at 165 |
@@ -69,15 +69,15 @@ UMA adapter.
 
 Two performance regressions were found and fixed by measurement rather than guesswork, and both
 are documented in [`PLAN.md`](PLAN.md): an idle replay session leaking ~190 KB/s (working set
-134 → 244 MB), and "Trix slightly reduces fps in games", which turned out to be three independent
+134 → 244 MB), and "Clippy slightly reduces fps in games", which turned out to be three independent
 root causes — no fps pacing on high-refresh panels, GPU scheduling priority parity with the game,
 and DWM frame-pool copies at full refresh rate.
 
-## Trix vs Medal.tv
+## Clippy vs Medal.tv
 
 Same job — the last few seconds of your game, saved on a keypress — at a fraction of the cost.
 
-| | Trix | Medal.tv |
+| | Clippy | Medal.tv |
 | --- | --- | --- |
 | Memory while recording | **13.2 MB** | 400–500 MB |
 | Install size | **8.46 MB** | 300–600 MB |
@@ -88,24 +88,24 @@ Same job — the last few seconds of your game, saved on a keypress — at a fra
 | Source | **MIT, all of it** | Closed |
 
 That 8.46 MB does the same hardware-accelerated H.264 encode a 300 MB install does. The difference
-is that Trix refuses to copy a frame into system RAM to get there — capture, colour conversion and
+is that Clippy refuses to copy a frame into system RAM to get there — capture, colour conversion and
 encode all stay on the GPU, and only compressed packets ever reach memory. That is the whole reason
 the numbers above are what they are.
 
-**Five times smaller clips at the same 60 fps.** Trix ships at 8 Mbps VBR with rate control forced
+**Five times smaller clips at the same 60 fps.** Clippy ships at 8 Mbps VBR with rate control forced
 through `ICodecAPI` rather than requested politely, so a 15-second clip lands around 20 MB instead
 of filling your drive at a bitrate you never asked for. Your library holds five times the clips per
 gigabyte, and every one of them is a plain `.mp4` you can drag anywhere.
 
 **Your game gets the GPU first.** Capture runs at below-normal GPU scheduling priority, so when the
-GPU is contended the cost lands on Trix as a dropped capture frame — never on your frame rate. On a
+GPU is contended the cost lands on Clippy as a dropped capture frame — never on your frame rate. On a
 165 Hz panel the pacer holds encoding to exactly the 60 fps you configured instead of chasing the
 compositor to 165. Measured: p99 ≤ 4 ms of a 16.7 ms budget, 0 dropped frames across 1,472.
 
 **Nothing to sign up for, nothing phoning home.** No account, no telemetry, no analytics, no feed.
 Unzip 8.46 MB, press Start, press `Alt+F10`. The clip is already on your disk.
 
-> *Medal figures are typical values for a current Windows desktop install; Trix figures are measured
+> *Medal figures are typical values for a current Windows desktop install; Clippy figures are measured
 > by the methodology above.*
 
 ## Architecture
@@ -166,10 +166,10 @@ invisible but a stalled capture thread back-pressures the compositor and stutter
 - **Trimming** — stream-copy export, so a trim finishes in under a second and loses no quality.
 - **Hardware encode** on any Intel, AMD or NVIDIA GPU from roughly the last decade.
 - **Audio** — system sound and microphone on independent levels; 0 is a real off switch, not a
-  mute, and Trix never opens the device at 0.
+  mute, and Clippy never opens the device at 0.
 - **GPU priority** defaults to below-normal, so contention costs a capture frame, not your fps.
 - **Two ways to hear a hotkey** — the system hotkey table, or a low-level keyboard hook for the
-  keys a game or an overlay takes first. Trix says which combinations actually bound.
+  keys a game or an overlay takes first. Clippy says which combinations actually bound.
 - **Tray daemon** with a Tauri desktop app over a documented control socket.
 - **Discord presence**, over Discord's local named pipe — no network, no clip data.
 - **In-app updates**, verified against a published `SHA256SUMS.txt`.
@@ -185,8 +185,8 @@ AMD RX 6650 XT and RX 550 under Windows 10 19045.
 
 ## Install
 
-Download the latest zip from [Releases](https://github.com/tnhnblgl/trix/releases), unzip it into
-one folder, and run `trix-ui.exe`. It starts the background recorder for you.
+Download the latest zip from [Releases](https://github.com/OWNER/clippy/releases), unzip it into
+one folder, and run `clippy-ui.exe`. It starts the background recorder for you.
 
 Windows SmartScreen will warn you the first time, because these binaries are not code-signed:
 **More info → Run anyway**.
@@ -198,17 +198,17 @@ Windows SmartScreen will warn you the first time, because these binaries are not
 | Bitrate | 8000 kbps, variable |
 | Clip hotkey | `Alt+F10` |
 | Screenshot hotkey | `Alt+F8` |
-| Clips folder | `%USERPROFILE%\Videos\Trix` |
-| Library cap | off — Trix never deletes a clip to save space |
+| Clips folder | `%USERPROFILE%\Videos\Clippy` |
+| Library cap | off — Clippy never deletes a clip to save space |
 | GPU priority | low — your game gets the GPU first |
 
 ## Build from source
 
 ```bash
-npm --prefix crates/trix-ui/web install
-npm --prefix crates/trix-ui/web run build
+npm --prefix crates/clippy-ui/web install
+npm --prefix crates/clippy-ui/web run build
 cargo build --release --workspace
-cargo build --release -p trix-ui --features tauri/custom-protocol
+cargo build --release -p clippy-ui --features tauri/custom-protocol
 ```
 
 > **The fourth line is not redundant.** Tauri decides dev-versus-production from a cargo *feature*,
@@ -216,7 +216,7 @@ cargo build --release -p trix-ui --features tauri/custom-protocol
 > `--features tauri/custom-protocol`, a plain `--release` build still produces a **dev-mode**
 > binary that loads `devUrl` and shows `ERR_CONNECTION_REFUSED` with no Vite server running. The
 > `cargo tauri` CLI reaches the same feature by injecting a `[features]` block into
-> `crates/trix-ui/Cargo.toml`; passing it to cargo directly touches no file.
+> `crates/clippy-ui/Cargo.toml`; passing it to cargo directly touches no file.
 
 Release binaries land in `target/release/`. The release profile is hardened: `lto = "fat"`,
 `codegen-units = 1`, `panic = "abort"`, `strip = "symbols"`.
@@ -225,15 +225,15 @@ Release binaries land in `target/release/`. The release profile is hardened: `lt
 
 | Crate | Produces | Responsibility |
 | --- | --- | --- |
-| [`trix-core`](crates/trix-core) | — | The engine: capture, encode, replay ring, mux. No CLI, no argument parsing. |
-| [`trix-proto`](crates/trix-proto) | — | Wire types only — `Request`/`Response`/`Event`, `ClipMeta`. serde only, no `windows-rs`, no `unsafe`. |
-| [`trix-daemon`](crates/trix-daemon) | `trix-daemon.exe` | Control socket, arm/disarm/clip, clip library, config, hotkeys, tray. |
-| [`trix-ui`](crates/trix-ui) | `trix-ui.exe` | Tauri v2 + Svelte 5 desktop app. |
-| [`trix-cli`](crates/trix-cli) | `trix.exe` | Command-line interface and the engine's verification harness. |
+| [`clippy-core`](crates/clippy-core) | — | The engine: capture, encode, replay ring, mux. No CLI, no argument parsing. |
+| [`clippy-proto`](crates/clippy-proto) | — | Wire types only — `Request`/`Response`/`Event`, `ClipMeta`. serde only, no `windows-rs`, no `unsafe`. |
+| [`clippy-daemon`](crates/clippy-daemon) | `clippy-daemon.exe` | Control socket, arm/disarm/clip, clip library, config, hotkeys, tray. |
+| [`clippy-ui`](crates/clippy-ui) | `clippy-ui.exe` | Tauri v2 + Svelte 5 desktop app. |
+| [`clippy-cli`](crates/clippy-cli) | `clippy.exe` | Command-line interface and the engine's verification harness. |
 
-`trix-ui` **deliberately does not depend on `trix-core`.** Every capability it has arrives over the
+`clippy-ui` **deliberately does not depend on `clippy-core`.** Every capability it has arrives over the
 control socket, which is the only thing that keeps that socket good enough for a third-party UI to
-use. `scripts/ui-isolation.ps1` enforces it. For the same reason `trix-cli` depends on the engine
+use. `scripts/ui-isolation.ps1` enforces it. For the same reason `clippy-cli` depends on the engine
 *directly* rather than through the daemon — it is the ground-truth harness, and putting it behind
 the daemon would put the thing under test behind the thing under test.
 
@@ -246,7 +246,7 @@ runtime npm dependency (`@tauri-apps/api`). The frontend bundle is 120 KB of JS 
 
 ```bash
 cargo test --workspace
-npm --prefix crates/trix-ui/web test
+npm --prefix crates/clippy-ui/web test
 ```
 
 Beyond unit tests, `scripts/` holds the hardware-in-the-loop gates that unit tests cannot cover:
@@ -255,7 +255,7 @@ Beyond unit tests, `scripts/` holds the hardware-in-the-loop gates that unit tes
 | --- | --- |
 | `arm-cycle-leak.ps1` | Repeated arm/disarm cycles do not leak memory or handles |
 | `protocol-smoke.ps1` | The control socket honours its documented contract |
-| `ui-isolation.ps1` | `trix-ui` has not grown a dependency on the engine |
+| `ui-isolation.ps1` | `clippy-ui` has not grown a dependency on the engine |
 | `update-smoke.ps1` | The updater downloads, verifies and replaces correctly |
 | `daemon-smoke.ps1` | The daemon starts, arms, clips and shuts down cleanly |
 | `ship-zip.ps1` | A release zip is refusable — see below |
@@ -273,53 +273,53 @@ smuggling — each with a test that asserts the malicious URL is refused.
 
 ## Privacy
 
-Trix has no account, no telemetry and no analytics. The only outbound network requests in the
+Clippy has no account, no telemetry and no analytics. The only outbound network requests in the
 entire codebase go to `github.com` and `api.github.com`, to ask whether a newer version exists and
 to fetch it — and the check can be turned off in Settings. Discord presence talks to a named pipe
 owned by the Discord client on the same PC and sends nothing about you or your clips.
 
 Exactly one crate in the workspace has an HTTP client at all, and it is reachable from a single
-file — the updater. Everything else Trix does happens on your machine.
+file — the updater. Everything else Clippy does happens on your machine.
 
 ## Troubleshooting
 
-Two things that look like Trix being broken, and are not. Both have a setting.
+Two things that look like Clippy being broken, and are not. Both have a setting.
 
 ### Windows draws a yellow border around my screen
 
-That border is Windows' capture indicator, and Trix cannot switch it off. It is a property of the
+That border is Windows' capture indicator, and Clippy cannot switch it off. It is a property of the
 *display*, not of the recorder: any running application can ask for it, and a `true` from anything
-else beats Trix's `false`. So the border can appear because of a program that is not Trix and stay
-there for as long as Trix is capturing.
+else beats Clippy's `false`. So the border can appear because of a program that is not Clippy and stay
+there for as long as Clippy is capturing.
 
 **Settings → Capture → Capture method → Desktop Duplication.** A different capture API that is not
 subject to the border at all. It costs the mouse cursor — clips and screenshots taken this way have
 no pointer in them — and that is the whole of the trade. It records at full speed; if you tried it
-before 1.1.1 and found it choppy, that was a bug in Trix and it is fixed.
+before 1.1.1 and found it choppy, that was a bug in Clippy and it is fixed.
 
 ### I press my clip key in a game and nothing happens
 
 There are two different faults behind this and they need opposite diagnoses.
 
 The combination may already belong to another program — NVIDIA's overlay owns Alt+F10 on a great
-many machines. `RegisterHotKey` is refused outright in that case and Trix never sees the key again.
+many machines. `RegisterHotKey` is refused outright in that case and Clippy never sees the key again.
 Since 1.2.0 the Clip hotkey row says so in red instead of leaving you with a key that quietly does
 nothing, so look there first.
 
 Or the reservation succeeded and something takes the keystroke before Windows' hotkey table is
 reached. This one is harder to spot, because nothing is wrong: no warning appears, and the row's
 Test button still lights up when you press the combination in Settings, where no game is in front.
-Only the game ignores you. Confirmed in Euro Truck Simulator 2, where Trix held the key throughout
+Only the game ignores you. Confirmed in Euro Truck Simulator 2, where Clippy held the key throughout
 and never saw a single press.
 
-**Settings → Trix → Hotkey detection → Low level.** It watches the keyboard directly rather than
+**Settings → Clippy → Hotkey detection → Low level.** It watches the keyboard directly rather than
 reserving anything, so it catches the key in both cases, and it passes every key onward, so whatever
 else is bound to that combination keeps working — turning it on can only add behaviour.
 
 It is off by default deliberately. Software that watches every keystroke is a shape some anti-cheat
 programs distrust; OBS, Discord, Steam and Medal all ship one, which is precedent rather than a
 guarantee, and the risk lands on the user rather than on us. A bug we can fix in a patch; a ban we
-cannot undo. Neither setting helps if the game runs as administrator and Trix does not — a low-level
+cannot undo. Neither setting helps if the game runs as administrator and Clippy does not — a low-level
 hook does not bypass UIPI any more than a hotkey does.
 
 ## Known limits

@@ -30,7 +30,7 @@ $fn = $ast.FindAll({ param($n)
 if (-not $fn) { throw 'Get-StaleDaemonMismatches not found in protocol-smoke.ps1' }
 . ([scriptblock]::Create($fn.Extent.Text))
 
-$expected  = 'C:\repo\target\release\trix-daemon.exe'
+$expected  = 'C:\repo\target\release\clippy-daemon.exe'
 $buildTime = [datetime]'2026-07-30 18:00:00'
 
 function New-FakeProc($id, $path, $start) {
@@ -44,10 +44,10 @@ function New-FakeProc($id, $path, $start) {
 # negative controls in both directions.
 $cases = @(
     @{ Name = 'fresh daemon, correct path, started after build'; Procs = @(New-FakeProc 1 $expected ([datetime]'2026-07-30 18:05:00')); ExpectReuse = $true }
-    @{ Name = 'wrong path (stale binary elsewhere)';             Procs = @(New-FakeProc 2 'C:\old\trix-daemon.exe' ([datetime]'2026-07-30 18:05:00')); ExpectReuse = $false }
+    @{ Name = 'wrong path (stale binary elsewhere)';             Procs = @(New-FakeProc 2 'C:\old\clippy-daemon.exe' ([datetime]'2026-07-30 18:05:00')); ExpectReuse = $false }
     @{ Name = 'right path but started BEFORE the build';         Procs = @(New-FakeProc 3 $expected ([datetime]'2026-07-30 17:00:00')); ExpectReuse = $false }
     @{ Name = 'started exactly at build time (boundary)';        Procs = @(New-FakeProc 4 $expected $buildTime); ExpectReuse = $false }
-    @{ Name = 'two procs, one fresh one stale';                  Procs = @((New-FakeProc 5 $expected ([datetime]'2026-07-30 18:05:00')), (New-FakeProc 6 'C:\old\trix-daemon.exe' ([datetime]'2026-07-30 18:05:00'))); ExpectReuse = $false }
+    @{ Name = 'two procs, one fresh one stale';                  Procs = @((New-FakeProc 5 $expected ([datetime]'2026-07-30 18:05:00')), (New-FakeProc 6 'C:\old\clippy-daemon.exe' ([datetime]'2026-07-30 18:05:00'))); ExpectReuse = $false }
 )
 
 $fail = 0

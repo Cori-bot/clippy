@@ -11,9 +11,9 @@
     This is the tool that attributed the arm/disarm handle leak on 2026-08-01.
     A process-wide count could not distinguish the capture session (which leaks
     only ALPC Ports) from the encoder (Event + WaitCompletionPacket + Key); the
-    per-type split is what pointed at the driver stack instead of at Trix. See
+    per-type split is what pointed at the driver stack instead of at Clippy. See
     the header of arm-cycle-leak.ps1 for the finding, and
-    crates/trix-core/tests/handle_leak.rs for the per-subsystem cycling.
+    crates/clippy-core/tests/handle_leak.rs for the per-subsystem cycling.
 
     Deliberately does NOT call NtQueryObject on individual handles. Querying a
     synchronous named-pipe handle whose peer is not reading blocks forever, and
@@ -31,7 +31,7 @@
     the same user.
 
 .EXAMPLE
-    .\handle-histogram.ps1 -ProcessId (Get-Process trix-daemon).Id -Label armed
+    .\handle-histogram.ps1 -ProcessId (Get-Process clippy-daemon).Id -Label armed
 #>
 [CmdletBinding()]
 param(
@@ -42,13 +42,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if (-not ('Trix.HandleProbe' -as [type])) {
+if (-not ('Clippy.HandleProbe' -as [type])) {
 Add-Type -Language CSharp @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
-namespace Trix {
+namespace Clippy {
   public static class HandleProbe {
     [DllImport("ntdll.dll")]
     static extern int NtQuerySystemInformation(int cls, IntPtr buf, int len, out int ret);
@@ -178,7 +178,7 @@ namespace Trix {
 '@
 }
 
-$lines = [Trix.HandleProbe]::Histogram($ProcessId)
+$lines = [Clippy.HandleProbe]::Histogram($ProcessId)
 $total = 0
 $rows = foreach ($l in $lines) {
     $k, $v = $l -split '=', 2

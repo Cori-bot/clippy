@@ -1,0 +1,17 @@
+[package]
+name = "clippy-cli"
+version.workspace = true
+edition.workspace = true
+description = "Clippy command-line interface"
+
+[[bin]]
+name = "clippy"
+path = "src/main.rs"
+
+[dependencies]
+clippy-core = { path = "../clippy-core" }
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+windows.workspace = true

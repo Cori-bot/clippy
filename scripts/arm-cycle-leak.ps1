@@ -3,7 +3,7 @@
     Fails if an arm/disarm cycle does not give back what it took.
 
 .DESCRIPTION
-    Trix is meant to sit armed through a whole gaming session on a low-end PC,
+    Clippy is meant to sit armed through a whole gaming session on a low-end PC,
     so memory that an arm/disarm round trip never returns is a product defect,
     not a tidiness issue. This gate arms and disarms repeatedly and measures the
     daemon between cycles.
@@ -14,7 +14,7 @@
     "Settled" is load-bearing and was measured, not guessed. After a disarm the
     Intel graphics/Media Foundation stack holds its allocations on a plateau for
     5-10 seconds and then releases them in one step. Sampling inside that
-    plateau charges ~76 MB of driver memory to Trix: at a 2 s settle this daemon
+    plateau charges ~76 MB of driver memory to Clippy: at a 2 s settle this daemon
     reads 105 MB private, and at 12 s the same daemon reads 19 MB. The default
     below therefore sits past the cliff. Anyone shortening it is measuring the
     driver, not a leak -- which is exactly what the numbers recorded on
@@ -49,7 +49,7 @@
       ~1.0/cycle  the remainder of the arm path (device manager, ring setup).
       ~0.1/cycle  audio -- flat within noise across 8 cycles.
 
-    Attribution came from `crates/trix-core/tests/handle_leak.rs`, which cycles
+    Attribution came from `crates/clippy-core/tests/handle_leak.rs`, which cycles
     one subsystem at a time in-process. Do not re-derive it by staring at
     HandleCount: a process-wide number cannot say which half of an arm leaks,
     and the object-type histogram (ALPC Port / Event / WaitCompletionPacket /
@@ -57,13 +57,13 @@
 
     The one change that would reclaim these is keeping the encoder and capture
     session alive across a disarm -- which is exactly the thing whose removal
-    gave back ~50 MB of GPU memory and ~73 MB of private bytes per cycle. Trix
+    gave back ~50 MB of GPU memory and ~73 MB of private bytes per cycle. Clippy
     is a tool that sits idle at ~10 MB waiting for a game; paying 130 MB of
     permanent idle footprint to avoid 6 handles is the wrong trade, so the
     floor stays and this gate guards the ceiling above it instead.
 
     The limit therefore sits well above the platform floor: it exists to catch
-    a *new* leak of Trix's own making (the ShutdownObject bug was ~37/cycle),
+    a *new* leak of Clippy's own making (the ShutdownObject bug was ~37/cycle),
     not to fail on the ~6 the driver stack keeps. A different GPU vendor will
     have a different floor -- if this fails on an AMD or NVIDIA machine, verify
     with the tests above before believing it.
@@ -109,7 +109,7 @@ $ErrorActionPreference = 'Stop'
 $script:NextId = 1
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-if (-not $DaemonPath) { $DaemonPath = Join-Path $RepoRoot 'target\release\trix-daemon.exe' }
+if (-not $DaemonPath) { $DaemonPath = Join-Path $RepoRoot 'target\release\clippy-daemon.exe' }
 
 # --- Freshness ----------------------------------------------------------------
 # Get-NewestSourceFile is extracted from protocol-smoke.ps1 by AST rather than
@@ -131,25 +131,25 @@ if (-not (Test-Path -LiteralPath $DaemonPath)) {
 $newestSource = Get-NewestSourceFile -RepoRoot $RepoRoot
 $daemonWrite = (Get-Item -LiteralPath $DaemonPath).LastWriteTime
 if ($daemonWrite -lt $newestSource.LastWriteTime) {
-    throw ("trix-daemon.exe ($daemonWrite) is older than $($newestSource.Name) " +
+    throw ("clippy-daemon.exe ($daemonWrite) is older than $($newestSource.Name) " +
            "($($newestSource.LastWriteTime)).`nRun: cargo build --release --workspace")
 }
 Write-Host "daemon is fresh (built $daemonWrite, newest source $($newestSource.Name) $($newestSource.LastWriteTime))"
 
 # A daemon already running would make the baseline meaningless, and it may be
 # armed and recording for someone. Refuse rather than kill it.
-$running = @(Get-Process -Name 'trix-daemon' -ErrorAction SilentlyContinue)
+$running = @(Get-Process -Name 'clippy-daemon' -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
-    throw ("trix-daemon is already running (PID $($running.Id -join ', ')). " +
+    throw ("clippy-daemon is already running (PID $($running.Id -join ', ')). " +
            "This gate needs a process it started itself. Stop it and re-run.")
 }
 
 # --- Pipe client --------------------------------------------------------------
 
-function Connect-TrixControl {
+function Connect-ClippyControl {
     param([int]$TimeoutMs = 5000)
     $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
-        '.', 'trix-control',
+        '.', 'clippy-control',
         [System.IO.Pipes.PipeDirection]::InOut,
         [System.IO.Pipes.PipeOptions]::Asynchronous)
     $pipe.Connect($TimeoutMs)
@@ -162,7 +162,7 @@ function Connect-TrixControl {
 
 # Correlated by id: responses share the stream with events, so a line without
 # our id is skipped rather than mistaken for the answer.
-function Send-TrixCommand {
+function Send-ClippyCommand {
     param([Parameter(Mandatory)]$Conn, [Parameter(Mandatory)][string]$Cmd, [int]$TimeoutMs = 30000)
     $id = $script:NextId
     $script:NextId++
@@ -202,8 +202,8 @@ function Get-Sample {
 
 # --- Run ----------------------------------------------------------------------
 
-$outLog = Join-Path $env:TEMP 'trix-arm-cycle-leak.out.log'
-$errLog = Join-Path $env:TEMP 'trix-arm-cycle-leak.err.log'
+$outLog = Join-Path $env:TEMP 'clippy-arm-cycle-leak.out.log'
+$errLog = Join-Path $env:TEMP 'clippy-arm-cycle-leak.err.log'
 foreach ($f in @($outLog, $errLog)) { if (Test-Path $f) { Remove-Item $f -Force } }
 
 Write-Host "starting $DaemonPath"
@@ -215,7 +215,7 @@ $deadline = (Get-Date).AddSeconds(10)
 while ((Get-Date) -lt $deadline) {
     try {
         $probe = New-Object System.IO.Pipes.NamedPipeClientStream(
-            '.', 'trix-control', [System.IO.Pipes.PipeDirection]::InOut)
+            '.', 'clippy-control', [System.IO.Pipes.PipeDirection]::InOut)
         $probe.Connect(250)
         $probe.Dispose()
         $ready = $true
@@ -227,16 +227,16 @@ if (-not $ready) { throw "daemon never opened the control pipe; see $errLog" }
 $conn = $null
 $samples = New-Object System.Collections.Generic.List[object]
 try {
-    $conn = Connect-TrixControl
+    $conn = Connect-ClippyControl
     Start-Sleep -Seconds 2
     $samples.Add((Get-Sample -DaemonPid $daemon.Id -Phase 'before any arm'))
 
     for ($i = 1; $i -le $Cycles; $i++) {
-        $armed = Send-TrixCommand -Conn $conn -Cmd 'arm'
+        $armed = Send-ClippyCommand -Conn $conn -Cmd 'arm'
         if (-not $armed.ok) { throw "arm failed on cycle ${i}: $($armed.error)" }
         Start-Sleep -Seconds $ArmSeconds
 
-        $off = Send-TrixCommand -Conn $conn -Cmd 'disarm'
+        $off = Send-ClippyCommand -Conn $conn -Cmd 'disarm'
         if (-not $off.ok) { throw "disarm failed on cycle ${i}: $($off.error)" }
         Start-Sleep -Seconds $SettleSeconds
 
@@ -286,7 +286,7 @@ if ($threadsPerCycle -gt $MaxThreadsPerCycle) {
 if ($handlesPerCycle -gt $MaxHandlesPerCycle) {
     $failures.Add(("handle count grew $handlesPerCycle /cycle (limit $MaxHandlesPerCycle). " +
                    'The ~6/cycle floor is the driver stack; this is above it, so suspect ' +
-                   'Trix. crates/trix-core/tests/handle_leak.rs attributes it by subsystem.'))
+                   'Clippy. crates/clippy-core/tests/handle_leak.rs attributes it by subsystem.'))
 }
 
 if ($failures.Count -gt 0) {

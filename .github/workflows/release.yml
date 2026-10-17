@@ -31,7 +31,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    # The trix-ui link is fat LTO at codegen-units = 1, and a runner is slower
+    # The clippy-ui link is fat LTO at codegen-units = 1, and a runner is slower
     # than the machine this normally runs on.
     timeout-minutes: 120
 
@@ -42,7 +42,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: crates/trix-ui/web/package-lock.json
+          cache-dependency-path: crates/clippy-ui/web/package-lock.json
 
       # ~/.cargo/bin carries cargo-tauri, so it is only compiled on a run whose
       # key misses. The build directory is deliberately not cached: a release
@@ -66,7 +66,7 @@ jobs:
           }
 
       - name: Install frontend packages
-        working-directory: crates/trix-ui/web
+        working-directory: crates/clippy-ui/web
         run: npm ci
 
       # Gates, both test suites, the release build, and the staging folder the
@@ -74,7 +74,7 @@ jobs:
       - name: Test, build and stage
         run: powershell -ExecutionPolicy Bypass -File scripts\ship-zip.ps1 -StageOnly -StageDir "${{ runner.temp }}\stage"
 
-      # SIGNING GOES HERE: submit ${{ runner.temp }}\stage\trix-v*-win-x64\*.exe
+      # SIGNING GOES HERE: submit ${{ runner.temp }}\stage\clippy-v*-win-x64\*.exe
       # to SignPath and write the signed files back over the staged ones.
 
       - name: Package
@@ -85,7 +85,7 @@ jobs:
       - name: Upload the zip and its hash
         uses: actions/upload-artifact@v7
         with:
-          name: trix-win-x64
+          name: clippy-win-x64
           path: ${{ runner.temp }}/out/*
           if-no-files-found: error
 

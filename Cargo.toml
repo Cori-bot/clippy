@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/trix-core", "crates/trix-cli", "crates/trix-daemon", "crates/trix-proto", "crates/trix-ui"]
-# No `default-members`. It once named `crates/trix-cli` alone, to make bare
+members = ["crates/clippy-core", "crates/clippy-cli", "crates/clippy-daemon", "crates/clippy-proto", "crates/clippy-ui"]
+# No `default-members`. It once named `crates/clippy-cli` alone, to make bare
 # `cargo run` pick the CLI instead of erroring on ambiguity — and it silently
 # cost far more than it bought: bare `cargo test` ran 5 of 99 tests and bare
-# `cargo build --release` produced no `trix-daemon.exe`, so the stage 2 gate
+# `cargo build --release` produced no `clippy-daemon.exe`, so the stage 2 gate
 # could run fully green against whatever daemon binary happened to be lying in
-# `target/release`. `cargo run -p trix-cli` costs eight characters and cannot
+# `target/release`. `cargo run -p clippy-cli` costs eight characters and cannot
 # silently skip a test suite or a binary.
 
 [workspace.package]

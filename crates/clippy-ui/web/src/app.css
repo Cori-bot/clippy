@@ -1,0 +1,140 @@
+:root {
+  /* Surfaces */
+  --bg: #0b0d10;
+  --surface: #101319;
+  --raised: #161a21;
+  --overlay: #151920;
+
+  /* Lines. Two weights, quiet and quieter. `--line` edges a panel against the
+     page. `--line-soft` is for an edge that must not compete with what it
+     encloses: the row separators inside a panel (`.row + .row` below), and the
+     clip thumbnail's resting ring, which lies under a picture and brightens to
+     --line-strong the moment the card is hovered. */
+  --line: rgba(255, 255, 255, 0.07);
+  --line-soft: rgba(255, 255, 255, 0.05);
+  --line-strong: rgba(255, 255, 255, 0.11);
+  /* --line-strong, brightened under the pointer. The two-step is what makes
+     an outlined control feel like a control: a border that does not move on
+     hover reads as decoration. */
+  --line-hi: rgba(255, 255, 255, 0.18);
+
+  /* Interaction. One wash for every transparent control's hover, and the
+     lifted form of the two surfaces that have one. Tokens rather than
+     literals because these appear across a dozen components: the first
+     draft of this design used 0.05, 0.07 and 0.08 in different files for
+     the same gesture, which is exactly the incoherence the overhaul is
+     meant to remove. */
+  --hover: rgba(255, 255, 255, 0.07);
+  --raised-hi: #1d222b;
+  --accent-hi: #6ea8ff;
+
+  /* The wash behind a modal. Dark rather than tinted, because it sits over
+     video as often as over a page. */
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  /* Two more weights of the same wash, each with one job. --scrim-soft dims
+     the trimmed-away film on the timeline and must stay readable through it;
+     --scrim-strong backs 10px text on a clip card over an unpredictable video
+     frame, where 0.55 does not reliably carry it. Consumed by Tasks 9 and 10. */
+  --scrim-soft: rgba(0, 0, 0, 0.45);
+  --scrim-strong: rgba(0, 0, 0, 0.75);
+
+  /* Platform constants, deliberately outside the theme. --win-close is the
+     Windows close-button hover red, which users expect on a title bar; it is
+     NOT --danger, because closing a window is not destructive and --danger
+     means exactly one thing. --video-bg is true black, used only behind video,
+     where the UI's slightly blue --bg would read as a seam. */
+  --win-close: #e81123;
+  --video-bg: #000;
+
+  /* Text */
+  --text: #e4e8ee;
+  --dim: #8b94a3;
+  --faint: #5d6675;
+
+  /* Semantics. Each of these means exactly one thing -- see the plan's
+     colour contract. --accent is "you selected this", --live is "Clippy is
+     live", --danger is destructive or broken, --fav is kept. */
+  --accent: #5b9dff;
+  --accent-ink: #04122e;
+  --live: #3ddc97;
+  --danger: #ff5c5c;
+  --fav: #f5c451;
+
+  /* Radii */
+  --r-sm: 6px;
+  --r: 7px;
+  --r-md: 9px;
+  --r-lg: 10px;
+  --r-full: 999px;
+
+  /* Motion. Nothing in this app animates longer than --t-slow. */
+  --t-fast: 120ms;
+  --t: 160ms;
+  --t-slow: 220ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+
+  /* Floating surfaces only: menus, dropdowns, modals, toasts. Elevation is
+     otherwise carried by surface lightness, never by shadow. */
+  --shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* Every readout with digits in it. Durations, byte counts, percentages,
+   buffer seconds, trim points, clip counts -- digits must not jitter as
+   they count. */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* The settings row: label and help on the left, control on the right.
+   Global rather than scoped to a component because two components render
+   this same row -- `Field.svelte` for every config-backed setting, and
+   `Settings.svelte` inline for the Version row, which has no config key
+   behind it to render through `Field`. Svelte scopes a component's styles to
+   its own markup, so a copy in each would be these six rules maintained in
+   two places. Layout, not control styling -- the controls themselves are
+   still components. */
+.row { display: flex; align-items: center; gap: 20px; padding: 13px 0; }
+.row + .row { border-top: 1px solid var(--line-soft); }
+.row .lt { flex: 1; min-width: 0; }
+.row .lt b { display: block; font-weight: 500; font-size: 13px; }
+.row .lt span { display: block; color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+.row .rt { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+
+/* The app had no focus styling at all before this. `:focus-visible` rather
+   than `:focus`, so clicking a control does not leave a ring behind it. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+
+/* WebView2 draws a scrollbar that belongs to no part of this design. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: var(--r-full);
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--line-hi); }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --t-fast: 0.01ms; --t: 0.01ms; --t-slow: 0.01ms; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

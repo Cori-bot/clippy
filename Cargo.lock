@@ -568,6 +568,73 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "clippy-cli"
+version = "1.5.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clippy-core",
+ "tracing",
+ "tracing-subscriber",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "clippy-core"
+version = "1.5.0"
+dependencies = [
+ "anyhow",
+ "clippy-proto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 0.8.2",
+ "tracing",
+ "wasapi",
+ "windows 0.62.2",
+ "windows-capture",
+]
+
+[[package]]
+name = "clippy-daemon"
+version = "1.5.0"
+dependencies = [
+ "anyhow",
+ "clippy-core",
+ "clippy-proto",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "clippy-proto"
+version = "1.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "clippy-ui"
+version = "1.5.0"
+dependencies = [
+ "anyhow",
+ "clippy-proto",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-single-instance",
+ "ureq",
+ "windows 0.62.2",
+ "zip",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4215,73 +4282,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "trix-cli"
-version = "1.5.0"
-dependencies = [
- "anyhow",
- "clap",
- "tracing",
- "tracing-subscriber",
- "trix-core",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "trix-core"
-version = "1.5.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "toml 0.8.2",
- "tracing",
- "trix-proto",
- "wasapi",
- "windows 0.62.2",
- "windows-capture",
-]
-
-[[package]]
-name = "trix-daemon"
-version = "1.5.0"
-dependencies = [
- "anyhow",
- "serde_json",
- "tracing",
- "tracing-subscriber",
- "trix-core",
- "trix-proto",
- "windows 0.62.2",
-]
-
-[[package]]
-name = "trix-proto"
-version = "1.5.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "trix-ui"
-version = "1.5.0"
-dependencies = [
- "anyhow",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-single-instance",
- "trix-proto",
- "ureq",
- "windows 0.62.2",
- "zip",
 ]
 
 [[package]]

@@ -1,13 +1,13 @@
 THIRD-PARTY NOTICES
 -------------------
 
-Trix itself is MIT licensed. It includes the following third-party
+Clippy itself is MIT licensed. It includes the following third-party
 material.
 
 ------------------------------------------------------------------------
 Lucide icons (https://lucide.dev), lucide-static 1.45.0
 
-The icon shapes in the Trix window are copied from Lucide.
+The icon shapes in the Clippy window are copied from Lucide.
 ------------------------------------------------------------------------
 
 ISC License

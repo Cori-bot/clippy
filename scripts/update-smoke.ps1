@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Proves, against a real running trix-daemon.exe, the one Windows
+    Proves, against a real running clippy-daemon.exe, the one Windows
     filesystem behaviour the whole update swap depends on.
 
 .DESCRIPTION
-    swap_in (crates\trix-ui\src\update\swap.rs) renames each binary aside
+    swap_in (crates\clippy-ui\src\update\swap.rs) renames each binary aside
     rather than deleting or overwriting it, because Windows will not let a
     running executable be deleted, but will let one be renamed. That is not
     an implementation detail -- it is the entire reason the swap is shaped
@@ -13,19 +13,19 @@
     refusal and a false assumption that merely compiles look identical to
     them.
 
-    This script cannot call swap_in itself and does not pretend to. trix-ui
+    This script cannot call swap_in itself and does not pretend to. clippy-ui
     is a binary-only crate with no lib.rs, so there is no code path here for
     a PowerShell script to reach. An earlier version of this test worked
     around that by re-implementing the moves with Move-Item and asserting
     that PowerShell had done what PowerShell had just done -- which would
     stay green forever regardless of what swap_in, or Windows, actually
-    does. This one does not touch trix-ui.exe at all.
+    does. This one does not touch clippy-ui.exe at all.
 
-    Instead it copies the real trix-daemon.exe into a scratch install
+    Instead it copies the real clippy-daemon.exe into a scratch install
     directory, starts it there against a scratch config, and against that
     live, running process:
 
-      * renames trix-daemon.exe to trix-daemon.exe.old, and asserts that
+      * renames clippy-daemon.exe to clippy-daemon.exe.old, and asserts that
         succeeds;
       * asserts the daemon is still running afterwards and still answers on
         its control pipe -- proof that Windows kept the image mapped under
@@ -41,11 +41,11 @@
 
     Everything runs under a scratch %APPDATA% AND a scratch clip_dir, never
     the developer's real ones -- an empty clip_dir resolves to
-    %USERPROFILE%\Videos\Trix, so a scratch %APPDATA% alone is not
+    %USERPROFILE%\Videos\Clippy, so a scratch %APPDATA% alone is not
     isolation. This follows daemon-smoke.ps1's isolation setup.
 
     Requires a built release daemon:
-        cargo build --release -p trix-daemon
+        cargo build --release -p clippy-daemon
 #>
 [CmdletBinding()]
 param()
@@ -55,23 +55,23 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $relDir = Join-Path $RepoRoot 'target\release'
-$realDaemonExe = Join-Path $relDir 'trix-daemon.exe'
+$realDaemonExe = Join-Path $relDir 'clippy-daemon.exe'
 
-# Only trix-daemon.exe is checked, unlike ship-zip.ps1's full three-binary
-# build: this script never touches trix.exe or trix-ui.exe, so requiring a
+# Only clippy-daemon.exe is checked, unlike ship-zip.ps1's full three-binary
+# build: this script never touches clippy.exe or clippy-ui.exe, so requiring a
 # full `cargo tauri build` before it can run would be a needless gate on
 # something it does not use.
 if (-not (Test-Path -LiteralPath $realDaemonExe)) {
-    throw "trix-daemon.exe is not built. Run: cargo build --release -p trix-daemon"
+    throw "clippy-daemon.exe is not built. Run: cargo build --release -p clippy-daemon"
 }
 
 # Refused rather than silently talking to the wrong process: this script
-# drives commands over the well-known 'trix-control' pipe name, and a
+# drives commands over the well-known 'clippy-control' pipe name, and a
 # daemon already running under that name -- the developer's own -- would
 # answer instead of the scratch one this script starts.
-$alreadyRunning = @(Get-Process -Name 'trix-daemon' -ErrorAction SilentlyContinue)
+$alreadyRunning = @(Get-Process -Name 'clippy-daemon' -ErrorAction SilentlyContinue)
 if ($alreadyRunning.Count -gt 0) {
-    throw ("trix-daemon is already running (PID $($alreadyRunning.Id -join ', ')). " +
+    throw ("clippy-daemon is already running (PID $($alreadyRunning.Id -join ', ')). " +
            "This script needs to control a daemon it started itself, against a scratch " +
            "config. Stop the running one and re-run.")
 }
@@ -104,15 +104,15 @@ function Invoke-Guarded {
 # --- Isolation, following daemon-smoke.ps1 exactly -----------------------------
 # Both a scratch %APPDATA% and a scratch clip_dir are required. A scratch
 # %APPDATA% alone still leaves clip_dir empty, which resolves to the real
-# %USERPROFILE%\Videos\Trix -- so clip_dir is set explicitly even though this
+# %USERPROFILE%\Videos\Clippy -- so clip_dir is set explicitly even though this
 # script never arms and never writes a clip.
 
-$root = Join-Path $env:TEMP ("trix-update-smoke-" + [guid]::NewGuid().ToString('N'))
+$root = Join-Path $env:TEMP ("clippy-update-smoke-" + [guid]::NewGuid().ToString('N'))
 $install = Join-Path $root 'install'
 $appData = Join-Path $root 'appdata'
 $clipDir = Join-Path $root 'clips'
 New-Item -ItemType Directory -Force $install | Out-Null
-New-Item -ItemType Directory -Force (Join-Path $appData 'trix') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $appData 'clippy') | Out-Null
 New-Item -ItemType Directory -Force $clipDir | Out-Null
 
 @"
@@ -120,9 +120,9 @@ clip_dir = '$clipDir'
 max_library_gb = 0
 stats_seconds = 1
 clip_hotkey = "ctrl+alt+shift+f9"
-"@ | Out-File -FilePath (Join-Path $appData 'trix\config.toml') -Encoding utf8
+"@ | Out-File -FilePath (Join-Path $appData 'clippy\config.toml') -Encoding utf8
 
-$liveExe = Join-Path $install 'trix-daemon.exe'
+$liveExe = Join-Path $install 'clippy-daemon.exe'
 $oldExe = "$liveExe.old"
 $outLog = Join-Path $root 'daemon.out.log'
 $errLog = Join-Path $root 'daemon.err.log'
@@ -146,17 +146,17 @@ try {
     $deadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $deadline) {
         try {
-            $probe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'trix-control', [System.IO.Pipes.PipeDirection]::InOut)
+            $probe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'clippy-control', [System.IO.Pipes.PipeDirection]::InOut)
             $probe.Connect(250); $probe.Dispose(); $ready = $true; break
         } catch { Start-Sleep -Milliseconds 200 }
     }
     if (-not $ready) { throw "daemon never opened the control pipe; see $errLog" }
     Write-Host "daemon is up (PID $($daemon.Id))" -ForegroundColor Cyan
 
-    function Connect-TrixControl {
+    function Connect-ClippyControl {
         param([int]$TimeoutMs = 5000)
         $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
-            '.', 'trix-control',
+            '.', 'clippy-control',
             [System.IO.Pipes.PipeDirection]::InOut,
             [System.IO.Pipes.PipeOptions]::Asynchronous)
         $pipe.Connect($TimeoutMs)
@@ -168,7 +168,7 @@ try {
     }
 
     $script:NextId = 1
-    function Send-TrixCommand {
+    function Send-ClippyCommand {
         param([Parameter(Mandatory)]$Conn, [Parameter(Mandatory)][string]$Cmd, [int]$TimeoutMs = 5000)
         $id = $script:NextId
         $script:NextId++
@@ -198,9 +198,9 @@ try {
     # daemon is alive and responsive, which is all this check needs.
     function Test-DaemonAnswers {
         try {
-            $conn = Connect-TrixControl
+            $conn = Connect-ClippyControl
             try {
-                $r = Send-TrixCommand -Conn $conn -Cmd 'status'
+                $r = Send-ClippyCommand -Conn $conn -Cmd 'status'
                 [PSCustomObject]@{ Ok = [bool]$r.ok; Error = $null }
             } finally {
                 try { $conn.Reader.Dispose() } catch { }
@@ -216,7 +216,7 @@ try {
     Write-Host 'Renaming while running' -ForegroundColor Cyan
 
     $rename1 = Invoke-Guarded { Move-Item -LiteralPath $liveExe -Destination $oldExe -ErrorAction Stop }
-    Check 'renaming trix-daemon.exe to trix-daemon.exe.old succeeds while it is running' `
+    Check 'renaming clippy-daemon.exe to clippy-daemon.exe.old succeeds while it is running' `
         $rename1.Ok $rename1.Error
 
     $proc = Get-Process -Id $daemon.Id -ErrorAction SilentlyContinue
@@ -228,7 +228,7 @@ try {
     Check 'the daemon still answers on its control pipe after the rename' $answer.Ok $answer.Error
 
     $place = Invoke-Guarded {
-        Set-Content -LiteralPath $liveExe -Value 'NEW trix-daemon.exe payload placeholder' -Encoding utf8 -ErrorAction Stop
+        Set-Content -LiteralPath $liveExe -Value 'NEW clippy-daemon.exe payload placeholder' -Encoding utf8 -ErrorAction Stop
     }
     $placed = $place.Ok -and (Test-Path -LiteralPath $liveExe)
     Check 'a new file can be placed at the name the rename vacated' $placed $place.Error
@@ -246,7 +246,7 @@ try {
 
     $delete = Invoke-Guarded { Remove-Item -LiteralPath $liveExe -Force -ErrorAction Stop }
     $deleteRefused = -not $delete.Ok
-    $deleteDetail = 'Remove-Item deleted a file that is the running image of trix-daemon.exe -- Windows let a running executable be deleted, which means swap_in''s rename-then-move design is solving a problem that no longer exists on this machine, and the whole assumption needs re-checking'
+    $deleteDetail = 'Remove-Item deleted a file that is the running image of clippy-daemon.exe -- Windows let a running executable be deleted, which means swap_in''s rename-then-move design is solving a problem that no longer exists on this machine, and the whole assumption needs re-checking'
     Check 'deleting the running image is refused' $deleteRefused $deleteDetail
 } finally {
     if ($daemon -and -not $daemon.HasExited) {

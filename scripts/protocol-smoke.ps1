@@ -1,16 +1,16 @@
 <#
 .SYNOPSIS
-    Stage 2 gate for the Trix control protocol (spec §10, item 2 and 3):
+    Stage 2 gate for the Clippy control protocol (spec §10, item 2 and 3):
     drives a scripted client through arm -> status -> clip -> library.list ->
-    disarm over the \\.\pipe\trix-control named pipe, then confirms the CLI's
+    disarm over the \\.\pipe\clippy-control named pipe, then confirms the CLI's
     single-instance slot comes back. Exits nonzero on any failure.
 
 .DESCRIPTION
     This script does not build anything and does not hand-verify playback —
     it only proves the wire protocol and the on-disk artifacts it produces.
     Run `cargo build --release --workspace` first. The `--workspace` is not
-    decoration: without it cargo once skipped trix-daemon entirely, and this
-    gate would then run fully green against whatever trix-daemon.exe happened
+    decoration: without it cargo once skipped clippy-daemon entirely, and this
+    gate would then run fully green against whatever clippy-daemon.exe happened
     to be lying in target\release. Step 2 no longer takes that on trust -- it
     compares the binary's write time against the newest file under crates\
     and fails if the binary is the older of the two.
@@ -19,16 +19,16 @@
     manual step this script cannot perform.
 
 .PARAMETER DaemonPath
-    Path to trix-daemon.exe. Defaults to target\release\trix-daemon.exe next
+    Path to clippy-daemon.exe. Defaults to target\release\clippy-daemon.exe next
     to this script's repo root.
 
-.PARAMETER TrixPath
-    Path to trix.exe. Defaults to target\release\trix.exe next to this
+.PARAMETER ClippyPath
+    Path to clippy.exe. Defaults to target\release\clippy.exe next to this
     script's repo root.
 #>
 param(
     [string]$DaemonPath,
-    [string]$TrixPath
+    [string]$ClippyPath
 )
 
 Set-StrictMode -Version Latest
@@ -38,10 +38,10 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrEmpty($DaemonPath)) {
-    $DaemonPath = Join-Path $RepoRoot 'target\release\trix-daemon.exe'
+    $DaemonPath = Join-Path $RepoRoot 'target\release\clippy-daemon.exe'
 }
-if ([string]::IsNullOrEmpty($TrixPath)) {
-    $TrixPath = Join-Path $RepoRoot 'target\release\trix.exe'
+if ([string]::IsNullOrEmpty($ClippyPath)) {
+    $ClippyPath = Join-Path $RepoRoot 'target\release\clippy.exe'
 }
 
 # --- Bookkeeping --------------------------------------------------------------
@@ -86,7 +86,7 @@ function Confirm-Check {
 # There is deliberately no version check here any more.
 #
 # What used to live at this spot compared the live `status` response's
-# `version` field against `cargo metadata`'s trix-daemon version, and was
+# `version` field against `cargo metadata`'s clippy-daemon version, and was
 # described as one of two independent stale-daemon defenses. It was not a
 # defense at all: both sides read the inherited workspace version, so it was
 # `0.1.0 -eq 0.1.0` forever and could not fail under any circumstance --
@@ -104,13 +104,13 @@ function Confirm-Check {
 
 function Get-NewestSourceFile {
     # The most recently written .rs / Cargo.toml under crates\. Compared
-    # against trix-daemon.exe's own LastWriteTime in Step 2, which is what
+    # against clippy-daemon.exe's own LastWriteTime in Step 2, which is what
     # proves the gate is exercising the code that is checked out rather than
     # asking the operator to promise it.
     #
     # Deliberately a timestamp comparison and not a version string: the failure
     # this catches is "you edited source and forgot to rebuild", or "you ran
-    # plain `cargo build --release`, which used to skip trix-daemon entirely".
+    # plain `cargo build --release`, which used to skip clippy-daemon entirely".
     # Neither of those changes any version anywhere.
     #
     # Pulled out as its own function so the self-test can drive it, and so the
@@ -163,10 +163,10 @@ function Get-StaleDaemonMismatches {
 
 # --- Pipe client --------------------------------------------------------------
 
-function Connect-TrixControl {
+function Connect-ClippyControl {
     param([int]$TimeoutMs = 5000)
     $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
-        '.', 'trix-control',
+        '.', 'clippy-control',
         [System.IO.Pipes.PipeDirection]::InOut,
         [System.IO.Pipes.PipeOptions]::Asynchronous)
     $pipe.Connect($TimeoutMs)
@@ -177,7 +177,7 @@ function Connect-TrixControl {
     [PSCustomObject]@{ Pipe = $pipe; Reader = $reader; Writer = $writer }
 }
 
-function Disconnect-TrixControl {
+function Disconnect-ClippyControl {
     param($Conn)
     if ($null -eq $Conn) { return }
     try { $Conn.Reader.Dispose() } catch { }
@@ -189,7 +189,7 @@ function Disconnect-TrixControl {
 # with no id/ok (events: armed, disarmed, clip_saved, stats, ...) and lines
 # answering some other in-flight id are skipped, not assumed to be the
 # answer -- responses are broadcast on the same stream events arrive on.
-function Send-TrixCommand {
+function Send-ClippyCommand {
     param(
         [Parameter(Mandatory)]$Conn,
         [Parameter(Mandatory)][string]$Cmd,
@@ -249,7 +249,7 @@ $mp4Path = $null
 $exitCode = 1
 
 try {
-    Write-Host "=== Trix stage 2 protocol gate ==="
+    Write-Host "=== Clippy stage 2 protocol gate ==="
 
     # Step 1 -- refuse to run against a locked session. A locked desktop makes
     # Windows Graphics Capture silently stop delivering frames while the run
@@ -269,19 +269,19 @@ try {
     #   (b) is the PROCESS older than the binary, i.e. left running from an
     #       earlier build? -- Get-StaleDaemonMismatches further down.
     # Only (b) used to be asked. (a) is the one that catches plain
-    # `cargo build --release` having skipped trix-daemon: a week-old binary,
+    # `cargo build --release` having skipped clippy-daemon: a week-old binary,
     # freshly launched, passes (b) with room to spare.
-    Write-Host "[2/10] Ensuring trix-daemon is running..."
+    Write-Host "[2/10] Ensuring clippy-daemon is running..."
     if (-not (Test-Path $DaemonPath)) { throw "daemon binary not found: $DaemonPath" }
-    if (-not (Test-Path $TrixPath)) { throw "trix binary not found: $TrixPath" }
+    if (-not (Test-Path $ClippyPath)) { throw "clippy binary not found: $ClippyPath" }
 
     $newestSource = Get-NewestSourceFile -RepoRoot $RepoRoot
     $daemonWrite = (Get-Item $DaemonPath).LastWriteTime
-    Confirm-Check "trix-daemon.exe ($daemonWrite) is newer than the newest source file ($($newestSource.Name), $($newestSource.LastWriteTime))" `
+    Confirm-Check "clippy-daemon.exe ($daemonWrite) is newer than the newest source file ($($newestSource.Name), $($newestSource.LastWriteTime))" `
         ($daemonWrite -gt $newestSource.LastWriteTime) `
         "rebuild with 'cargo build --release --workspace' -- this gate would otherwise report on a binary that is not the checked-out code"
 
-    $existing = Get-Process -Name 'trix-daemon' -ErrorAction SilentlyContinue
+    $existing = Get-Process -Name 'clippy-daemon' -ErrorAction SilentlyContinue
     if ($existing) {
         $procs = @($existing)
         $pids = ($procs | ForEach-Object { $_.Id }) -join ','
@@ -296,16 +296,16 @@ try {
         # combined: the comma is the one that survives.
         $mismatches = Get-StaleDaemonMismatches -Procs $procs -DaemonPath $DaemonPath -BinaryWriteTime $binaryWriteTime
         $staleDetail = if ($mismatches.Count -gt 0) {
-            "$($mismatches -join '; ') -- stop the stale daemon (Stop-Process -Name trix-daemon -Force) and re-run so the gate tests the binary that was just built"
+            "$($mismatches -join '; ') -- stop the stale daemon (Stop-Process -Name clippy-daemon -Force) and re-run so the gate tests the binary that was just built"
         } else { '' }
-        Confirm-Check "running trix-daemon (PID $pids) is the freshly built binary (path and start time match $DaemonPath)" `
+        Confirm-Check "running clippy-daemon (PID $pids) is the freshly built binary (path and start time match $DaemonPath)" `
             ($mismatches.Count -eq 0) $staleDetail
 
         Write-Host "  daemon already running (PID $pids) -- path and start time match, using it, will not stop it on exit"
     } else {
         Write-Host "  starting $DaemonPath"
-        $outLog = Join-Path $env:TEMP 'trix-daemon-smoke.out.log'
-        $errLog = Join-Path $env:TEMP 'trix-daemon-smoke.err.log'
+        $outLog = Join-Path $env:TEMP 'clippy-daemon-smoke.out.log'
+        $errLog = Join-Path $env:TEMP 'clippy-daemon-smoke.err.log'
         if (Test-Path $outLog) { Remove-Item $outLog -Force }
         if (Test-Path $errLog) { Remove-Item $errLog -Force }
         $daemonProcess = Start-Process -FilePath $DaemonPath -PassThru -WindowStyle Hidden `
@@ -317,7 +317,7 @@ try {
         while ((Get-Date) -lt $deadline) {
             try {
                 $probe = New-Object System.IO.Pipes.NamedPipeClientStream(
-                    '.', 'trix-control', [System.IO.Pipes.PipeDirection]::InOut)
+                    '.', 'clippy-control', [System.IO.Pipes.PipeDirection]::InOut)
                 $probe.Connect(250)
                 $probe.Dispose()
                 $ready = $true
@@ -327,16 +327,16 @@ try {
             }
         }
         if (-not $ready) {
-            throw "trix-daemon did not start listening on the control pipe within 10s (see $outLog / $errLog)"
+            throw "clippy-daemon did not start listening on the control pipe within 10s (see $outLog / $errLog)"
         }
         Write-Host "  daemon started (PID $($daemonProcess.Id)), pipe is up"
     }
 
     # Step 3 -- connect, arm, assert ok:true and a non-empty encoder name.
     Write-Host "[3/10] Connecting and arming..."
-    $conn = Connect-TrixControl
+    $conn = Connect-ClippyControl
     $armTime = Get-Date
-    $armResp = Send-TrixCommand -Conn $conn -Cmd 'arm' -TimeoutMs 15000
+    $armResp = Send-ClippyCommand -Conn $conn -Cmd 'arm' -TimeoutMs 15000
     Confirm-Check "arm returns ok:true" ([bool]$armResp.ok) (Get-JsonProp $armResp 'error')
 
     $clipDir = $armResp.data.clip_dir
@@ -344,14 +344,14 @@ try {
     $encoder = $armResp.data.encoder
 
     if ([string]::IsNullOrEmpty($encoder)) {
-        # Documented race in trix-daemon/src/state.rs: for up to one 250ms
+        # Documented race in clippy-daemon/src/state.rs: for up to one 250ms
         # engine tick after arm() returns, the encoder name may not have been
         # published yet. Poll status briefly rather than fail on that window.
         Write-Host "  encoder not yet published on arm's own response, polling status..."
         $graceDeadline = (Get-Date).AddSeconds(3)
         while ([string]::IsNullOrEmpty($encoder) -and (Get-Date) -lt $graceDeadline) {
             Start-Sleep -Milliseconds 150
-            $pollResp = Send-TrixCommand -Conn $conn -Cmd 'status'
+            $pollResp = Send-ClippyCommand -Conn $conn -Cmd 'status'
             $encoder = $pollResp.data.encoder
         }
     }
@@ -362,7 +362,7 @@ try {
     # Step 4 -- wait for the ring to fill, then check status.
     Write-Host "[4/10] Waiting 10s for the replay ring to fill..."
     Start-Sleep -Seconds 10
-    $statusResp = Send-TrixCommand -Conn $conn -Cmd 'status'
+    $statusResp = Send-ClippyCommand -Conn $conn -Cmd 'status'
     Confirm-Check "status returns ok:true" ([bool]$statusResp.ok) (Get-JsonProp $statusResp 'error')
 
     # clip_dir and ring_seconds_total come back from status directly -- take
@@ -384,7 +384,7 @@ try {
         $extraWaitSecs = [Math]::Ceiling($stillNeeded) + 1
         Write-Host "  ring at $([Math]::Round($elapsedSinceArm, 1))s of $ringSecondsTotal s -- waiting $extraWaitSecs more second(s) so the clip reflects a full ring"
         Start-Sleep -Seconds $extraWaitSecs
-        $statusResp = Send-TrixCommand -Conn $conn -Cmd 'status'
+        $statusResp = Send-ClippyCommand -Conn $conn -Cmd 'status'
         Confirm-Check "status returns ok:true (after full-ring wait)" ([bool]$statusResp.ok) (Get-JsonProp $statusResp 'error')
         $clipDir = $statusResp.data.clip_dir
         $ringSecondsTotal = [int]$statusResp.data.ring_seconds_total
@@ -408,7 +408,7 @@ try {
 
     # Step 5 -- clip.
     Write-Host "[5/10] Requesting a clip..."
-    $clipResp = Send-TrixCommand -Conn $conn -Cmd 'clip' -TimeoutMs 15000
+    $clipResp = Send-ClippyCommand -Conn $conn -Cmd 'clip' -TimeoutMs 15000
     Confirm-Check "clip returns ok:true" ([bool]$clipResp.ok) (Get-JsonProp $clipResp 'error')
     $clipId = $clipResp.data.id
     Confirm-Check "clip response carries a non-empty id" (-not [string]::IsNullOrEmpty($clipId)) "id=$clipId"
@@ -450,7 +450,7 @@ try {
 
     # Step 7 -- library.list: the new clip present and first (newest-first).
     Write-Host "[7/10] Checking library.list..."
-    $listResp = Send-TrixCommand -Conn $conn -Cmd 'library.list' -Arguments @{ offset = 0; limit = 50 }
+    $listResp = Send-ClippyCommand -Conn $conn -Cmd 'library.list' -Arguments @{ offset = 0; limit = 50 }
     Confirm-Check "library.list returns ok:true" ([bool]$listResp.ok) (Get-JsonProp $listResp 'error')
     $clips = @($listResp.data.clips)
     Confirm-Check "library.list returned at least one clip" ($clips.Count -gt 0)
@@ -463,7 +463,7 @@ try {
     # Step 10 below ("replay exits 0 once the daemon has disarmed") was for a
     # long time the ONLY check anywhere for the coupling that `Armed { engine,
     # _slot }` and the drop ordering in state.rs::disarm exist to provide -- and
-    # on its own it could not fail. `trix.exe replay --exit-after 3` exits 0
+    # on its own it could not fail. `clippy.exe replay --exit-after 3` exits 0
     # whether or not the daemon ever held the single-instance mutex, so ripping
     # `_slot` out of `Armed` entirely left the gate fully green. That is a
     # paraphrase of the coupling, not the coupling.
@@ -487,33 +487,33 @@ try {
         # assumed: the unscoped form throws. Same trap the deleted
         # `cargo metadata ... 2>$null` version check used to spring.
         $ErrorActionPreference = 'Continue'
-        $blocked = & $TrixPath replay --exit-after 1 2>&1
+        $blocked = & $ClippyPath replay --exit-after 1 2>&1
         $blockedExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = 'Stop'
     }
     $blocked | ForEach-Object { Write-Host "  | $_" }
-    Confirm-Check "trix.exe replay is refused while the daemon is armed" `
+    Confirm-Check "clippy.exe replay is refused while the daemon is armed" `
         (($blockedExit -ne 0) -and ("$blocked" -match 'already running')) `
         "exit=$blockedExit output=$blocked"
 
     # Step 9 -- disarm.
     Write-Host "[9/10] Disarming..."
-    $disarmResp = Send-TrixCommand -Conn $conn -Cmd 'disarm'
+    $disarmResp = Send-ClippyCommand -Conn $conn -Cmd 'disarm'
     Confirm-Check "disarm returns ok:true" ([bool]$disarmResp.ok) (Get-JsonProp $disarmResp 'error')
     $didDisarm = $true
 
-    Disconnect-TrixControl -Conn $conn
+    Disconnect-ClippyControl -Conn $conn
     $conn = $null
 
     # Step 10 -- the single-instance slot must be free again. Meaningful only
     # because Step 8 proved it was held a moment ago: on its own this is an
     # exit-0 that would also hold for a daemon that never took the slot at all.
-    Write-Host "[10/10] Confirming the single-instance slot is free again (trix.exe replay --exit-after 3)..."
-    $replayOutput = & $TrixPath replay --exit-after 3
+    Write-Host "[10/10] Confirming the single-instance slot is free again (clippy.exe replay --exit-after 3)..."
+    $replayOutput = & $ClippyPath replay --exit-after 3
     $replayExit = $LASTEXITCODE
     $replayOutput | ForEach-Object { Write-Host "  | $_" }
-    Confirm-Check "trix.exe replay --exit-after 3 exits 0 now that the daemon has disarmed" `
+    Confirm-Check "clippy.exe replay --exit-after 3 exits 0 now that the daemon has disarmed" `
         ($replayExit -eq 0) "exit code=$replayExit"
 
     $exitCode = 0
@@ -530,12 +530,12 @@ finally {
     if ($conn -and -not $didDisarm) {
         try {
             Write-Host "cleanup: disarming before exit..."
-            Send-TrixCommand -Conn $conn -Cmd 'disarm' -TimeoutMs 5000 | Out-Null
+            Send-ClippyCommand -Conn $conn -Cmd 'disarm' -TimeoutMs 5000 | Out-Null
         } catch {
             Write-Host "cleanup: disarm attempt failed: $($_.Exception.Message)"
         }
     }
-    Disconnect-TrixControl -Conn $conn
+    Disconnect-ClippyControl -Conn $conn
 
     if ($startedDaemon -and $daemonProcess) {
         try {

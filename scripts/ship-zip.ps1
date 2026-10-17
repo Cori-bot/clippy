@@ -4,7 +4,7 @@
     to build one that cannot be trusted.
 
 .DESCRIPTION
-    Produces trix-v<version>-win-x64.zip containing the three binaries and
+    Produces clippy-v<version>-win-x64.zip containing the three binaries and
     the user-facing docs\ship\README.txt -- nothing else, by decision. The
     one licence that has to travel with every copy, the icon set's, is
     appended to the end of that README rather than shipped as a file of its
@@ -27,7 +27,7 @@
 
       * The version in Cargo.toml and the version in tauri.conf.json agree.
         They are two hand-edited files and nothing else compares them. When
-        they drift, trix-ui.exe's Properties dialog in Explorer reports one
+        they drift, clippy-ui.exe's Properties dialog in Explorer reports one
         number while the daemon reports another over the control socket.
 
       * docs\ship\README.txt names the version being built. That file carries
@@ -37,8 +37,8 @@
 
       * Both test suites pass -- Rust and frontend.
 
-      * trix.exe reports the expected version when run from the STAGED folder,
-        and trix-ui.exe's embedded version resource matches. Staged, not
+      * clippy.exe reports the expected version when run from the STAGED folder,
+        and clippy-ui.exe's embedded version resource matches. Staged, not
         target\release, so what gets checked is the file that goes in the zip.
 
         This is where the freshness question is answered, and it is worth
@@ -50,7 +50,7 @@
         the long comment in Step 4; an mtime check there gave two different
         false failures before it was removed.
 
-        trix-daemon.exe rests on cargo's fingerprint alone: it carries no
+        clippy-daemon.exe rests on cargo's fingerprint alone: it carries no
         version resource, and running it to ask is precisely the mistake this
         script refuses to make (see below).
 
@@ -63,7 +63,7 @@
 
     WHAT THIS SCRIPT DELIBERATELY DOES NOT DO:
 
-      * It never runs trix-daemon.exe. The daemon has no --help; passing it
+      * It never runs clippy-daemon.exe. The daemon has no --help; passing it
         one starts a real daemon against the developer's real config.toml and
         real clip library, which is exactly the isolation rule the rest of the
         repo's scripts go to such lengths to respect. If a daemon smoke test
@@ -84,7 +84,7 @@
     moment.
 
       scripts\ship-zip.ps1 -StageOnly -StageDir C:\work
-      (sign C:\work\trix-v<version>-win-x64\*.exe)
+      (sign C:\work\clippy-v<version>-win-x64\*.exe)
       scripts\ship-zip.ps1 -FromStage -StageDir C:\work -OutDir C:\out
 
     The staging half writes release.json beside the staged folder, so the
@@ -127,7 +127,7 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\ship-zip.ps1
 
-    The normal case. Takes a few minutes; the trix-ui link is the slow part,
+    The normal case. Takes a few minutes; the clippy-ui link is the slow part,
     because the release profile is fat LTO at codegen-units = 1.
 #>
 [CmdletBinding()]
@@ -185,15 +185,15 @@ function Test-StagedBinaries {
 
     # Run the CLI from the staged copy rather than from target\release, so what
     # is checked is the file that actually goes in the zip.
-    $stagedCli = Join-Path $Stage 'trix.exe'
+    $stagedCli = Join-Path $Stage 'clippy.exe'
     $reported = (& $stagedCli --version) -join ''
-    Require -Name "trix.exe reports $Version" -Condition ($reported.Trim() -eq "trix $Version") `
+    Require -Name "clippy.exe reports $Version" -Condition ($reported.Trim() -eq "clippy $Version") `
         -Detail "reported '$reported'"
 
-    # trix-ui.exe is the only one with a version resource -- tauri-build writes
+    # clippy-ui.exe is the only one with a version resource -- tauri-build writes
     # it from tauri.conf.json. It is what Explorer's Properties tab shows.
-    $vi = (Get-Item -LiteralPath (Join-Path $Stage 'trix-ui.exe')).VersionInfo
-    Require -Name "trix-ui.exe version resource says $Version" -Condition ($vi.FileVersion -eq $Version) `
+    $vi = (Get-Item -LiteralPath (Join-Path $Stage 'clippy-ui.exe')).VersionInfo
+    Require -Name "clippy-ui.exe version resource says $Version" -Condition ($vi.FileVersion -eq $Version) `
         -Detail "FileVersion is '$($vi.FileVersion)'"
 }
 
@@ -233,7 +233,7 @@ function Complete-Package {
     $sha = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
 
     # The updater refuses a zip it cannot check, so this file is not optional --
-    # a release with the zip alone reads to every installed Trix as "no update
+    # a release with the zip alone reads to every installed Clippy as "no update
     # available", silently. Written beside the zip, in the `<hash>  <name>`
     # format sha256sum uses, because the updater parses it and people paste it.
     $sumsPath = Join-Path $OutDir 'SHA256SUMS.txt'
@@ -299,7 +299,7 @@ Require -Name 'Cargo.toml declares a workspace version' -Condition $m.Success `
 $Version = $m.Groups[1].Value
 Write-Host "         version: $Version"
 
-$tauriConfPath = Join-Path $RepoRoot 'crates\trix-ui\tauri.conf.json'
+$tauriConfPath = Join-Path $RepoRoot 'crates\clippy-ui\tauri.conf.json'
 $tauriConf = Get-Content -LiteralPath $tauriConfPath -Raw | ConvertFrom-Json
 Require -Name 'tauri.conf.json version matches Cargo.toml' -Condition ($tauriConf.version -eq $Version) `
     -Detail "tauri.conf.json says $($tauriConf.version), Cargo.toml says $Version"
@@ -311,7 +311,7 @@ Require -Name 'the shipping README names this version' -Condition ($readmeText -
     -Detail "docs\ship\README.txt never mentions $Version -- it probably still describes the previous release"
 
 # Appended to the README in the zip. Lucide's ISC licence requires its notice
-# in every copy of the icons, and trix-ui.exe is one, so a zip without it is
+# in every copy of the icons, and clippy-ui.exe is one, so a zip without it is
 # not one this script will build.
 $noticesSrc = Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.txt'
 Require -Name 'THIRD-PARTY-NOTICES.txt exists' -Condition (Test-Path -LiteralPath $noticesSrc) -Detail $noticesSrc
@@ -340,7 +340,7 @@ if ($SkipTests) {
     try { cargo test --workspace } finally { Pop-Location }
     Require -Name 'cargo test --workspace' -Condition ($LASTEXITCODE -eq 0) -Detail "exit code $LASTEXITCODE"
 
-    Push-Location (Join-Path $RepoRoot 'crates\trix-ui\web')
+    Push-Location (Join-Path $RepoRoot 'crates\clippy-ui\web')
     try { npm test -- --run } finally { Pop-Location }
     Require -Name 'npm test (frontend)' -Condition ($LASTEXITCODE -eq 0) -Detail "exit code $LASTEXITCODE"
 }
@@ -349,14 +349,14 @@ Write-Host ''
 Write-Host 'Step 3: release build' -ForegroundColor Cyan
 
 Push-Location $RepoRoot
-try { cargo build --release -p trix-cli -p trix-daemon } finally { Pop-Location }
+try { cargo build --release -p clippy-cli -p clippy-daemon } finally { Pop-Location }
 Require -Name 'cargo build --release (cli, daemon)' -Condition ($LASTEXITCODE -eq 0) -Detail "exit code $LASTEXITCODE"
 
-# From crates\trix-ui, never from the repo root with --config: tauri-cli
+# From crates\clippy-ui, never from the repo root with --config: tauri-cli
 # resolves the frontend directory by walking down from its working directory,
 # and from the root it settles on crates\ and dies there running "npm run
 # build". This also runs the frontend build, so web\dist is fresh.
-Push-Location (Join-Path $RepoRoot 'crates\trix-ui')
+Push-Location (Join-Path $RepoRoot 'crates\clippy-ui')
 try { cargo tauri build --no-bundle } finally { Pop-Location }
 Require -Name 'cargo tauri build --no-bundle' -Condition ($LASTEXITCODE -eq 0) -Detail "exit code $LASTEXITCODE"
 
@@ -364,7 +364,7 @@ Write-Host ''
 Write-Host 'Step 4: verify the binaries' -ForegroundColor Cyan
 
 $relDir = Join-Path $RepoRoot 'target\release'
-$binaries = @('trix.exe', 'trix-daemon.exe', 'trix-ui.exe')
+$binaries = @('clippy.exe', 'clippy-daemon.exe', 'clippy-ui.exe')
 foreach ($b in $binaries) {
     Require -Name "$b exists" -Condition (Test-Path -LiteralPath (Join-Path $relDir $b)) -Detail (Join-Path $relDir $b)
 }
@@ -381,16 +381,16 @@ foreach ($b in $binaries) {
 # comparison here is not merely redundant, it is WRONG, and both wrong answers
 # showed up on the first two runs of this script:
 #
-#   * `cargo tauri build` rewrites crates\trix-ui\Cargo.toml on every single
+#   * `cargo tauri build` rewrites crates\clippy-ui\Cargo.toml on every single
 #     invocation (line endings only -- `git diff` on it comes back empty), so
 #     a source file is always newer than the binaries the same run produced.
 #   * Even sampled before the build, the check still fails honestly-built
-#     binaries: cargo correctly does not relink trix.exe when nothing that
-#     feeds trix-cli changed, so a touched file anywhere under crates\ leaves
-#     an up-to-date trix.exe looking stale. Nothing is wrong; the question is.
+#     binaries: cargo correctly does not relink clippy.exe when nothing that
+#     feeds clippy-cli changed, so a touched file anywhere under crates\ leaves
+#     an up-to-date clippy.exe looking stale. Nothing is wrong; the question is.
 #
-# What replaces it is a claim that can actually be checked: the staged trix.exe
-# reports the version this script read out of Cargo.toml, and trix-ui.exe's
+# What replaces it is a claim that can actually be checked: the staged clippy.exe
+# reports the version this script read out of Cargo.toml, and clippy-ui.exe's
 # version resource agrees. Both are below, and both run against the staged
 # copies rather than target\release.
 
@@ -400,10 +400,10 @@ Write-Host 'Step 5: stage' -ForegroundColor Cyan
 $suffix = ''
 if ($SkipTests) { $suffix += '-untested' }
 if ($AllowDirty -and -not $isClean) { $suffix += '-dirty' }
-$name = "trix-v$Version-win-x64$suffix"
+$name = "clippy-v$Version-win-x64$suffix"
 
 $work = $StageDir
-if (-not $work) { $work = Join-Path $env:TEMP ("trix-ship-" + [guid]::NewGuid().ToString('N')) }
+if (-not $work) { $work = Join-Path $env:TEMP ("clippy-ship-" + [guid]::NewGuid().ToString('N')) }
 
 # Only a work folder this script invented, on a run that packages what it
 # staged, is this script's to delete. A caller who named one keeps it, and so
@@ -436,7 +436,7 @@ try {
 
     # The tree was clean at Step 1 and the build dirtied it. Said out loud
     # rather than quietly repaired: this script does not run `git checkout` on
-    # the user's files. The one file it happens to is crates\trix-ui\Cargo.toml,
+    # the user's files. The one file it happens to is crates\clippy-ui\Cargo.toml,
     # rewritten by cargo tauri build with different line endings and identical
     # content.
     Push-Location $RepoRoot
@@ -444,8 +444,8 @@ try {
     if ($dirtyAfter.Count -gt 0 -and $isClean) {
         Write-Host ''
         Write-Host 'Note: the build left the working tree dirty. Expected -- cargo tauri build' -ForegroundColor Yellow
-        Write-Host '      rewrites crates\trix-ui\Cargo.toml with different line endings and the' -ForegroundColor Yellow
-        Write-Host '      same content. Restore it with: git checkout -- crates/trix-ui/Cargo.toml' -ForegroundColor Yellow
+        Write-Host '      rewrites crates\clippy-ui\Cargo.toml with different line endings and the' -ForegroundColor Yellow
+        Write-Host '      same content. Restore it with: git checkout -- crates/clippy-ui/Cargo.toml' -ForegroundColor Yellow
     }
 
     if ($StageOnly) {

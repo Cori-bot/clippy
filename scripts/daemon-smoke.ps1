@@ -14,10 +14,10 @@
     That is not tidiness. This gate deliberately drives the disk ceiling until
     it deletes clips, and pointing that at a real library would delete a real
     person's recordings. It also rewrites config.toml, which strips the
-    comments out of the reference file shipped in %APPDATA%\trix.
+    comments out of the reference file shipped in %APPDATA%\clippy.
 
     The autostart check is the one thing that CANNOT be redirected: HKCU\...\Run
-    with the value name "Trix" is the production path and is the thing under
+    with the value name "Clippy" is the production path and is the thing under
     test. It is removed again at the end and the removal is asserted.
 
     Captures the real screen while armed, for a few seconds. The clips it makes
@@ -49,8 +49,8 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-if (-not $DaemonPath) { $DaemonPath = Join-Path $RepoRoot 'target\release\trix-daemon.exe' }
-if (-not $CliPath) { $CliPath = Join-Path $RepoRoot 'target\release\trix.exe' }
+if (-not $DaemonPath) { $DaemonPath = Join-Path $RepoRoot 'target\release\clippy-daemon.exe' }
+if (-not $CliPath) { $CliPath = Join-Path $RepoRoot 'target\release\clippy.exe' }
 
 $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 
@@ -73,28 +73,28 @@ foreach ($exe in @($DaemonPath, $CliPath)) {
         throw "not built: $exe`nRun: cargo build --release --workspace"
     }
 }
-# Only the daemon's timestamp is checked, deliberately. trix.exe does not
-# depend on trix-daemon, so a daemon-only change leaves cargo with nothing to
-# relink and trix.exe legitimately older than the newest source in the repo --
+# Only the daemon's timestamp is checked, deliberately. clippy.exe does not
+# depend on clippy-daemon, so a daemon-only change leaves cargo with nothing to
+# relink and clippy.exe legitimately older than the newest source in the repo --
 # which failed this gate on its first run for no real reason. A fresh daemon
 # proves `cargo build --release --workspace` actually ran, and cargo's own
-# dependency tracking covers whether trix.exe needed rebuilding.
+# dependency tracking covers whether clippy.exe needed rebuilding.
 $newestSource = Get-NewestSourceFile -RepoRoot $RepoRoot
 $daemonWrite = (Get-Item -LiteralPath $DaemonPath).LastWriteTime
 if ($daemonWrite -lt $newestSource.LastWriteTime) {
-    throw ("trix-daemon.exe ($daemonWrite) is older than $($newestSource.Name) " +
+    throw ("clippy-daemon.exe ($daemonWrite) is older than $($newestSource.Name) " +
            "($($newestSource.LastWriteTime)).`nRun: cargo build --release --workspace")
 }
 Write-Host "daemon is fresh (built $daemonWrite, newest source $($newestSource.Name) $($newestSource.LastWriteTime))"
 
 # Refused rather than killed: it may be armed and recording for someone.
-$running = @(Get-Process -Name 'trix-daemon' -ErrorAction SilentlyContinue)
+$running = @(Get-Process -Name 'clippy-daemon' -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
-    throw ("trix-daemon is already running (PID $($running.Id -join ', ')). " +
+    throw ("clippy-daemon is already running (PID $($running.Id -join ', ')). " +
            "This gate needs a process it started itself. Stop it and re-run.")
 }
-if (Get-ItemProperty -Path $RunKey -Name 'Trix' -ErrorAction SilentlyContinue) {
-    throw ("HKCU\...\Run already has a Trix value. This gate asserts that it creates " +
+if (Get-ItemProperty -Path $RunKey -Name 'Clippy' -ErrorAction SilentlyContinue) {
+    throw ("HKCU\...\Run already has a Clippy value. This gate asserts that it creates " +
            "and removes that value, and will not overwrite one you set yourself.")
 }
 
@@ -137,10 +137,10 @@ function Strip-AnsiCodes {
 
 # --- Pipe client --------------------------------------------------------------
 
-function Connect-TrixControl {
+function Connect-ClippyControl {
     param([int]$TimeoutMs = 5000)
     $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
-        '.', 'trix-control',
+        '.', 'clippy-control',
         [System.IO.Pipes.PipeDirection]::InOut,
         [System.IO.Pipes.PipeOptions]::Asynchronous)
     $pipe.Connect($TimeoutMs)
@@ -153,7 +153,7 @@ function Connect-TrixControl {
 
 # Correlated by id: responses share the stream with events, so a line without
 # our id is skipped rather than mistaken for the answer.
-function Send-TrixCommand {
+function Send-ClippyCommand {
     param(
         [Parameter(Mandatory)]$Conn,
         [Parameter(Mandatory)][string]$Cmd,
@@ -187,16 +187,16 @@ function Send-TrixCommand {
 
 function Invoke-Ok {
     param($Conn, [string]$Cmd, [hashtable]$Arguments = @{}, [int]$TimeoutMs = 60000)
-    $r = Send-TrixCommand -Conn $Conn -Cmd $Cmd -Arguments $Arguments -TimeoutMs $TimeoutMs
+    $r = Send-ClippyCommand -Conn $Conn -Cmd $Cmd -Arguments $Arguments -TimeoutMs $TimeoutMs
     if (-not $r.ok) { throw "$Cmd failed: $($r.error)" }
     $r.data
 }
 
 # --- Scratch library ----------------------------------------------------------
 
-$scratch = Join-Path $env:TEMP "trix-daemon-smoke-$PID"
+$scratch = Join-Path $env:TEMP "clippy-daemon-smoke-$PID"
 $clipDir = Join-Path $scratch 'clips'
-New-Item -ItemType Directory -Force (Join-Path $scratch 'trix') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $scratch 'clippy') | Out-Null
 New-Item -ItemType Directory -Force $clipDir | Out-Null
 
 # Three fake clips, old enough to sort before anything this run records, sized
@@ -227,21 +227,21 @@ clip_dir = '$clipDir'
 max_library_gb = 0
 stats_seconds = 1
 clip_hotkey = "ctrl+alt+shift+f9"
-"@ | Out-File -FilePath (Join-Path $scratch 'trix\config.toml') -Encoding utf8
+"@ | Out-File -FilePath (Join-Path $scratch 'clippy\config.toml') -Encoding utf8
 
-# `trix replay` gets a config of its own, with a DIFFERENT hotkey. Since Task 7
-# the daemon registers the clip hotkey for as long as it runs, and `trix
+# `clippy replay` gets a config of its own, with a DIFFERENT hotkey. Since Task 7
+# the daemon registers the clip hotkey for as long as it runs, and `clippy
 # replay` treats a failed registration as fatal -- so pointed at the same
 # config the two fight over the same combination and the CLI never starts.
 $cliScratch = Join-Path $scratch 'cli-appdata'
-New-Item -ItemType Directory -Force (Join-Path $cliScratch 'trix') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $cliScratch 'clippy') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $cliScratch 'clips') | Out-Null
 @"
 replay_seconds = $ReplaySeconds
 clip_dir = '$(Join-Path $cliScratch 'clips')'
 stats_seconds = 1
 clip_hotkey = "ctrl+alt+shift+f8"
-"@ | Out-File -FilePath (Join-Path $cliScratch 'trix\config.toml') -Encoding utf8
+"@ | Out-File -FilePath (Join-Path $cliScratch 'clippy\config.toml') -Encoding utf8
 
 $env:APPDATA = $scratch
 
@@ -257,7 +257,7 @@ $ready = $false
 $deadline = (Get-Date).AddSeconds(15)
 while ((Get-Date) -lt $deadline) {
     try {
-        $probe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'trix-control', [System.IO.Pipes.PipeDirection]::InOut)
+        $probe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'clippy-control', [System.IO.Pipes.PipeDirection]::InOut)
         $probe.Connect(250); $probe.Dispose(); $ready = $true; break
     } catch { Start-Sleep -Milliseconds 200 }
 }
@@ -354,7 +354,7 @@ $conn = $null
 $receiptClip = $null
 $activity = $null
 try {
-    $conn = Connect-TrixControl
+    $conn = Connect-ClippyControl
 
     # --- §10.1 idle ceiling ---------------------------------------------------
     Start-Sleep -Seconds 3
@@ -421,7 +421,7 @@ try {
         'the one-second GOP pin is what bounds this; a larger overshoot means it is not being applied'
 
     # --- paced/dropped against the CLI path -----------------------------------
-    # The daemon and `trix replay` share the whole capture path; if the daemon
+    # The daemon and `clippy replay` share the whole capture path; if the daemon
     # drops frames the CLI does not, the daemon's own wiring is at fault.
     function Get-DaemonCounters {
         $line = (Get-Content $outLog, $errLog -ErrorAction SilentlyContinue | Strip-AnsiCodes |
@@ -459,7 +459,7 @@ try {
         $cliDropRate = $cliCounters.dropped / [math]::Max($cliCounters.frames, 1)
         Check ("the daemon drops no more than the CLI path  [{0:P2} vs {1:P2}]" -f $daemonDropRate, $cliDropRate) `
             ($daemonDropRate -le ($cliDropRate + 0.02)) `
-            'the daemon and trix.exe run identical capture code; a gap is the daemon wiring'
+            'the daemon and clippy.exe run identical capture code; a gap is the daemon wiring'
     } else {
         $why = (Get-Content "$cliOut.err" -ErrorAction SilentlyContinue | Select-Object -Last 3) -join ' / '
         Check 'the CLI replay path reported frame counters' $false `
@@ -497,24 +497,24 @@ try {
 
     # --- autostart is the registry --------------------------------------------
     $null = Invoke-Ok $conn 'config.set' @{ values = @{ autostart = $true } }
-    $runValue = (Get-ItemProperty -Path $RunKey -Name 'Trix' -ErrorAction SilentlyContinue).Trix
+    $runValue = (Get-ItemProperty -Path $RunKey -Name 'Clippy' -ErrorAction SilentlyContinue).Clippy
     Check 'config.set autostart=true creates the Run value (§7.3)' ([bool]$runValue)
     if ($runValue) {
-        Check 'the Run value is quoted and points at trix-daemon.exe' `
-            (($runValue -like '"*"') -and ($runValue -like '*trix-daemon.exe*')) `
+        Check 'the Run value is quoted and points at clippy-daemon.exe' `
+            (($runValue -like '"*"') -and ($runValue -like '*clippy-daemon.exe*')) `
             "an unquoted path with spaces is parsed as a command plus arguments; got $runValue"
     }
     $cfg = Invoke-Ok $conn 'config.get'
     Check 'config.get reports autostart on' ([bool]$cfg.autostart)
 
     # The point of the design: the registry decides, not the file.
-    Remove-ItemProperty -Path $RunKey -Name 'Trix' -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $RunKey -Name 'Clippy' -ErrorAction SilentlyContinue
     $cfg = Invoke-Ok $conn 'config.get'
     Check 'deleting the Run value behind the daemon flips config.get to off' (-not $cfg.autostart) `
         'the registry is the source of truth; a settings page must not keep showing the toggle on'
     $null = Invoke-Ok $conn 'config.set' @{ values = @{ autostart = $false } }
     Check 'no Run value is left behind' `
-        (-not (Get-ItemProperty -Path $RunKey -Name 'Trix' -ErrorAction SilentlyContinue))
+        (-not (Get-ItemProperty -Path $RunKey -Name 'Clippy' -ErrorAction SilentlyContinue))
 
     # --- the clip directory is proved, not assumed ----------------------------
     # `clip_dir` is the one setting whose value can be wrong in a way that
@@ -522,7 +522,7 @@ try {
     # are both perfectly well-formed paths. Accepting one aims every future
     # clip at a folder that swallows it, and the user finds out at the moment
     # they wanted the clip. So the daemon proves the folder by writing to it.
-    $moved = Join-Path $scratch 'moved-clips\Trix'
+    $moved = Join-Path $scratch 'moved-clips\Clippy'
     Check 'the new clips folder does not exist yet' (-not (Test-Path -LiteralPath $moved))
     $set = Invoke-Ok $conn 'config.set' @{ values = @{ clip_dir = $moved } }
     Check 'config.set creates the clip directory it accepted' (Test-Path -LiteralPath $moved) $moved
@@ -540,7 +540,7 @@ try {
     # needs admin -- neither of which a gate can conjure on demand.
     $blocker = Join-Path $scratch 'blocker'
     'not a directory' | Out-File -FilePath $blocker -Encoding utf8
-    $refused = Send-TrixCommand $conn 'config.set' `
+    $refused = Send-ClippyCommand $conn 'config.set' `
         @{ values = @{ clip_dir = (Join-Path $blocker 'clips') } }
     Check 'config.set refuses a clip directory it cannot create' (-not $refused.ok) `
         ($refused | ConvertTo-Json -Compress)
@@ -562,7 +562,7 @@ finally {
     }
     if (-not $daemon.HasExited) { $daemon.Kill(); $daemon.WaitForExit(5000) }
     # Belt and braces: the registry is the one thing here that is NOT scratch.
-    Remove-ItemProperty -Path $RunKey -Name 'Trix' -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $RunKey -Name 'Clippy' -ErrorAction SilentlyContinue
 }
 
 # --- Receipt ------------------------------------------------------------------
@@ -574,7 +574,7 @@ $failed = @($script:Checks | Where-Object { -not $_.Passed }).Count
 if ($receiptClip -and -not $KeepArtifacts) {
     # The clip named in the receipt is copied out before the scratch library
     # goes: a gate that says "play this clip" and then deletes it is not a gate.
-    $keep = Join-Path ([Environment]::GetFolderPath('MyVideos')) 'Trix-gate'
+    $keep = Join-Path ([Environment]::GetFolderPath('MyVideos')) 'Clippy-gate'
     New-Item -ItemType Directory -Force $keep | Out-Null
     foreach ($ext in @('mp4', 'json', 'jpg')) {
         $src = Join-Path $clipDir "$($receiptClip.id).$ext"
