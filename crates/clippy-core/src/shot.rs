@@ -46,12 +46,17 @@ pub fn thumb_path(shots: &Path, id: &str) -> PathBuf {
 /// it. [`scan`] skips zero-byte entries, so a reservation stranded by a dying
 /// process is invisible rather than a permanently broken tile.
 pub fn allocate_shot_id(shots: &Path) -> Result<String> {
+    allocate_with_stamp(shots, &library::now_id_stamp())
+}
+
+/// [`allocate_shot_id`] with the timestamp given, so a test can hand out two ids
+/// in "the same second" without depending on the wall clock not ticking between them.
+fn allocate_with_stamp(shots: &Path, stamp: &str) -> Result<String> {
     std::fs::create_dir_all(shots).with_context(|| {
         format!("impossible de créer le dossier des captures d’écran {}", shots.display())
     })?;
-    let stamp = library::now_id_stamp();
     for suffix in 1u32..=10_000 {
-        let id = if suffix == 1 { stamp.clone() } else { format!("{stamp}_{suffix}") };
+        let id = if suffix == 1 { stamp.to_owned() } else { format!("{stamp}_{suffix}") };
         match std::fs::OpenOptions::new().write(true).create_new(true).open(image_path(shots, &id))
         {
             Ok(_) => return Ok(id),
@@ -296,8 +301,8 @@ mod tests {
     #[test]
     fn allocating_an_id_twice_in_one_second_suffixes_rather_than_colliding() {
         let dir = scratch("allocate");
-        let first = allocate_shot_id(&dir).expect("first id");
-        let second = allocate_shot_id(&dir).expect("second id");
+        let first = allocate_with_stamp(&dir, "20260827_143012").expect("first id");
+        let second = allocate_with_stamp(&dir, "20260827_143012").expect("second id");
         assert_ne!(first, second, "two shots must never be handed the same id");
         assert!(second.ends_with("_2"), "expected a _2 suffix, got {second}");
         assert!(image_path(&dir, &first).exists(), "the id must be reserved on disk");
