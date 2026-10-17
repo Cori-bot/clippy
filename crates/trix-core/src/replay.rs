@@ -144,6 +144,10 @@ struct ReplaySession {
     /// Wall time spent inside the capture callback per frame (convert +
     /// encode submit + drain) — the gameplay-impact number.
     frame_latency: LatencyHistogram,
+    /// Per-stage cost inside the callback, to tell where `frame_latency` goes.
+    stage_pump: LatencyHistogram,
+    stage_convert: LatencyHistogram,
+    stage_encode: LatencyHistogram,
     stats: StatsReporter,
 
     // Keeps GPU access for the encoder MFT alive.
@@ -235,6 +239,9 @@ impl ReplaySession {
             paced = self.frames_paced,
             ring_packets = self.video_ring.len(),
             latency = %self.frame_latency.summary(),
+            pump = %self.stage_pump.summary(),
+            convert = %self.stage_convert.summary(),
+            encode = %self.stage_encode.summary(),
             "{tag}"
         );
     }
@@ -410,6 +417,9 @@ impl FrameSink for ReplaySession {
             thumb_wanted: false,
             thumb_staged: None,
             frame_latency: LatencyHistogram::new(),
+            stage_pump: LatencyHistogram::new(),
+            stage_convert: LatencyHistogram::new(),
+            stage_encode: LatencyHistogram::new(),
             stats,
             _manager: manager,
         })
@@ -438,14 +448,20 @@ impl FrameSink for ReplaySession {
             self.input_size = (frame.width, frame.height);
         }
 
+        let stage = Instant::now();
         self.pump_encoder()?;
+        self.stage_pump.record(stage.elapsed());
 
         let in_flight = self.encoder.frames_in.saturating_sub(self.encoder.packets_out);
         if self.encoder.ready_for_input()
             && (in_flight as usize) < self.converter.pool_size().saturating_sub(1)
         {
+            let stage = Instant::now();
             let nv12 = self.converter.convert(frame.texture)?;
+            self.stage_convert.record(stage.elapsed());
+            let stage = Instant::now();
             self.encoder.encode(nv12, frame_qpc - t0, self.frame_duration_100ns)?;
+            self.stage_encode.record(stage.elapsed());
             self.frames += 1;
             // Advance one nominal period; the clamp resnaps the schedule after
             // a delivery gap (static screen) instead of accepting a burst.
@@ -537,13 +553,24 @@ fn save_clip(
 ) -> Result<Option<SavedClip>> {
     let started = Instant::now();
     let callback = capture.sink();
+    let lock_requested = Instant::now();
     let snapshot = {
         let mut session = callback.lock();
+        let lock_wait = lock_requested.elapsed();
+        let lock_acquired = Instant::now();
         // Requested before the snapshot and read after the mux, so the capture
         // thread has the whole write to produce a frame. Ordering matters: ask
         // afterwards and the answer is always "not yet".
         session.request_thumbnail();
-        session.snapshot_clip()?
+        let snapshot = session.snapshot_clip();
+        // How long `on_frame` was shut out: the cost of cloning the ring under
+        // the capture lock.
+        tracing::info!(
+            lock_wait_us = lock_wait.as_micros() as u64,
+            lock_held_us = lock_acquired.elapsed().as_micros() as u64,
+            "clip snapshot lock"
+        );
+        snapshot?
     };
     let Some(snapshot) = snapshot else { return Ok(None) };
 

@@ -39,3 +39,17 @@ Comparaison avec le run 2 : p99 et max un peu plus hauts (1,0→2,0 ms ; 3,9→5
 n'est pas identique (4K60 décodé vs vidéo précédente, +127 frames). Un seul run par cas : non concluant,
 aucune régression démontrée. Les correctifs ne touchent le chemin chaud que par un test `ring_bytes > cap`
 dans `evict`. À répéter 3x par configuration pour une vraie comparaison. Log : after-safe-fixes.log
+
+## Run 4 — instrumentation par étape (histogrammes pump/convert/encode + verrou du snapshot)
+
+Buckets affinés (100 µs…66 ms). Ligne de log `clip snapshot lock lock_wait_us / lock_held_us`.
+
+| Config | frames | dropped | pump p99 | convert p99 | encode p99 | verrou tenu pendant le snapshot |
+|---|---|---|---|---|---|---|
+| 8 Mbps, ring 15 s (défaut) | 2369 | 0 | ≤100 µs | ≤100 µs | ≤1,0 ms | **8,7 ms** (clip 14,8 Mo) |
+| 50 Mbps, ring 60 s | 5060 | 0 | ≤250 µs | ≤100 µs | ≤0,5 ms | **150,8 ms** (clip 360 Mo, ring CPU 383 Mo, WS 481 Mo) |
+
+Conclusion P1 : CONFIRMÉ. `on_frame` est bloqué ~0,4 ms par Mo de ring pendant le snapshot : une demi-frame par
+clip au défaut, ~9 frames à 50 Mbps/60 s. `dropped` reste à 0 (WGC met en file), mais la latence de livraison
+de ces frames n'est pas mesurée. Convert et encode sont négligeables (≤1 ms) : le chemin chaud nominal est sain.
+Logs : instr-default.log, instr-50mbps-60s.log

@@ -22,7 +22,8 @@ use windows::core::Interface;
 
 /// Histogram bucket upper bounds in microseconds. The last bucket is
 /// open-ended; 33 ms ≈ two frame intervals at 60 fps.
-const BOUNDS_US: [u64; 9] = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 33_000, 66_000, u64::MAX];
+const BOUNDS_US: [u64; 11] =
+    [100, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 33_000, 66_000, u64::MAX];
 
 /// Fixed-size latency histogram: no allocation, O(1) record, quantiles read
 /// as "≤ bucket bound". Good enough to certify budgets, cheap enough to sit

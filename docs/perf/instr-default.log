@@ -1,0 +1,16 @@
+[2m2026-10-17T13:47:10.922908Z[0m [34mDEBUG[0m loaded configuration [3mconfig[0m[2m=[0mConfig { fps: 60, bitrate_kbps: 8000, max_bitrate_kbps: 0, rate_control: "vbr", replay_seconds: 15, monitor_index: 0, clip_hotkey: "alt+f10", gpu_priority: "low", capture_method: "auto", stats_seconds: 0, clip_dir: "", max_library_gb: 0, system_volume: 100, mic_volume: 100, autostart: false, auto_arm: false, check_for_updates: true, clip_sound: true, clip_sound_path: "", discord_presence: true, screenshot_hotkey: "alt+f8", screenshot_sound: true, hotkey_mode: "standard" }
+[2m2026-10-17T13:47:10.923033Z[0m [32m INFO[0m GPU scheduling priority lowered (game work preempts capture)
+replay buffer running: 1920x1080 at 60 fps, 8000 kbps, last 15 s kept — Alt+F10 to clip, Ctrl+C to quit
+[2m2026-10-17T13:47:10.997478Z[0m [32m INFO[0m borderless capture consent granted
+[2m2026-10-17T13:47:10.997507Z[0m [32m INFO[0m capture border: asking Windows to hide it
+[2m2026-10-17T13:47:11.021349Z[0m [32m INFO[0m capping WGC frame delivery near the target fps [3minterval[0m[2m=[0m12.5ms
+[2m2026-10-17T13:47:11.236481Z[0m [32m INFO[0m hardware H.264 MFT activated [3mencoder[0m[2m=[0mNVIDIA H.264 Encoder MFT
+[2m2026-10-17T13:47:11.319760Z[0m [32m INFO[0m encoder rate control configured [3mmode[0m[2m=[0mPeakVbr [3mmean_bps[0m[2m=[0m8000000 [3mmax_bps[0m[2m=[0m12000000
+[2m2026-10-17T13:47:11.319814Z[0m [32m INFO[0m replay ring ready [3mwidth[0m[2m=[0m1920 [3mheight[0m[2m=[0m1080 [3mfps[0m[2m=[0m60 [3mbitrate_bps[0m[2m=[0m8000000 [3mreplay_secs[0m[2m=[0m15
+[2m2026-10-17T13:47:41.003066Z[0m [32m INFO[0m clip snapshot lock [3mlock_wait_us[0m[2m=[0m0 [3mlock_held_us[0m[2m=[0m8653
+[2m2026-10-17T13:47:41.137497Z[0m [34mDEBUG[0m thumbnail written [3mclip[0m[2m=[0m20261017_154741 [3mbytes[0m[2m=[0m31136
+[2m2026-10-17T13:47:41.139437Z[0m [34mDEBUG[0m clip written [3mclip[0m[2m=[0m20261017_154741 [3mbytes[0m[2m=[0m15544926
+clip saved: C:\Users\Coridor\Videos\Trix\20261017_154741.mp4 (15.6 s video / 15.6 s audio, 924 packets, 14.8 MB, muxed in 145 ms)
+[2m2026-10-17T13:47:51.130191Z[0m [32m INFO[0m replay session closing [3mws_mb[0m[2m=[0m105.3 [3mgpu_dedicated_mb[0m[2m=[0m35.0 [3mgpu_shared_mb[0m[2m=[0m19.0 [3mws_minus_gpu_mb[0m[2m=[0m51.3 [3mcpu_ring_mb[0m[2m=[0m19.7 [3mframes[0m[2m=[0m2369 [3mdropped[0m[2m=[0m0 [3mpaced[0m[2m=[0m148 [3mring_packets[0m[2m=[0m1048 [3mlatency[0m[2m=[0mn=2369 p50<=500us p99<=1.0ms max=4.0ms [3mpump[0m[2m=[0mn=2369 p50<=100us p99<=100us max=136us [3mconvert[0m[2m=[0mn=2369 p50<=100us p99<=100us max=132us [3mencode[0m[2m=[0mn=2369 p50<=500us p99<=1.0ms max=3.5ms
+[2m2026-10-17T13:47:51.130253Z[0m [32m INFO[0m audio splice diagnostics [3msource[0m[2m=[0m"system audio" [3mlarge_gap_events[0m[2m=[0m0 [3mtrim_events[0m[2m=[0m42 [3mtrim_frames[0m[2m=[0m20126 [3mdiscontinuity_events[0m[2m=[0m0
+[2m2026-10-17T13:47:51.130267Z[0m [32m INFO[0m audio splice diagnostics [3msource[0m[2m=[0m"microphone" [3mlarge_gap_events[0m[2m=[0m0 [3mtrim_events[0m[2m=[0m41 [3mtrim_frames[0m[2m=[0m19680 [3mdiscontinuity_events[0m[2m=[0m0
