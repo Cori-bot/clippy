@@ -62,6 +62,22 @@ pub struct EngineHandle {
     join: Option<JoinHandle<Result<()>>>,
 }
 
+/// How long a caller waits for the engine thread to answer a clip or
+/// screenshot. A wedged MFT `Finalize` would otherwise freeze the caller (the
+/// daemon's socket handler) forever.
+const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn recv_bounded<T>(answer: &std::sync::mpsc::Receiver<Result<T>>) -> Result<T> {
+    use std::sync::mpsc::RecvTimeoutError;
+    match answer.recv_timeout(REPLY_TIMEOUT) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(anyhow!("capture is rebuilding — try again in a moment"))
+        }
+        Err(RecvTimeoutError::Timeout) => Err(anyhow!("the engine did not answer within 60 s")),
+    }
+}
+
 impl EngineHandle {
     /// Starts capture and returns once the first session is live, so a caller
     /// answering an `arm` command can report "no hardware encoder available"
@@ -125,7 +141,7 @@ impl EngineHandle {
         // The rebuild loop drains queued commands while it waits for the
         // display to settle, so an unanswered clip means "no ring right now",
         // not a dead engine.
-        answer.recv().map_err(|_| anyhow!("capture is rebuilding — try again in a moment"))?
+        recv_bounded(&answer)
     }
 
     /// Writes a screenshot from the live session, answering with its metadata.
@@ -134,7 +150,7 @@ impl EngineHandle {
         self.tx
             .send(EngineCommand::Screenshot { reply })
             .map_err(|_| anyhow!("engine thread is gone"))?;
-        answer.recv().map_err(|_| anyhow!("capture is rebuilding — try again in a moment"))?
+        recv_bounded(&answer)
     }
 
     /// Stops capture and joins the thread, surfacing whatever the rebuild loop

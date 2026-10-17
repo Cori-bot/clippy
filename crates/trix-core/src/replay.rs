@@ -91,6 +91,14 @@ struct ClipSnapshot {
     audio_offset_100ns: i64,
 }
 
+/// Byte ceiling for the video ring: twice what the encoder's peak bitrate would
+/// fill over the kept span plus the keyframe margin, never under 8 MiB.
+fn ring_bytes_cap(bitrate_bps: u32, max_bitrate_bps: u32, replay_100ns: i64) -> usize {
+    let bps = u64::from(bitrate_bps.max(max_bitrate_bps));
+    let secs = ((replay_100ns + KEYFRAME_MARGIN_100NS) / 10_000_000).max(1) as u64;
+    ((bps / 8) * secs * 2).max(8 << 20) as usize
+}
+
 struct ReplaySession {
     settings: RecorderSettings,
     converter: VideoConverter,
@@ -100,6 +108,9 @@ struct ReplaySession {
 
     video_ring: VecDeque<EncodedPacket>,
     ring_bytes: usize,
+    /// Hard ceiling on `ring_bytes`, so an encoder that ignores its rate
+    /// control (AMD AMF has been seen at ~4x) cannot grow the ring unbounded.
+    ring_bytes_cap: usize,
     audio_ring: VecDeque<AudioChunk>,
 
     mixer: AudioMixer,
@@ -242,6 +253,18 @@ impl ReplaySession {
                 }
             }
         }
+        // Byte ceiling: drop whole GOPs from the front, but never the last one,
+        // so a clip is always possible.
+        while self.ring_bytes > self.ring_bytes_cap
+            && self.video_ring.iter().skip(1).any(|p| p.keyframe)
+        {
+            while let Some(packet) = self.video_ring.pop_front() {
+                self.ring_bytes -= packet.data.len();
+                if self.video_ring.front().is_none_or(|next| next.keyframe) {
+                    break;
+                }
+            }
+        }
         let video_front_pts = self.video_ring.front().map_or(0, |p| p.pts_100ns);
         while let Some(chunk) = self.audio_ring.front() {
             let end_frame = chunk.start_frame + (chunk.data.len() / ENCODER_BLOCK_ALIGN) as u64;
@@ -361,6 +384,11 @@ impl FrameSink for ReplaySession {
             "replay ring ready"
         );
 
+        let ring_bytes_cap = ring_bytes_cap(
+            flags.settings.bitrate_bps,
+            flags.settings.max_bitrate_bps,
+            flags.replay_100ns,
+        );
         Ok(Self {
             frame_duration_100ns: 10_000_000 / i64::from(flags.settings.fps.max(1)),
             settings: flags.settings,
@@ -369,6 +397,7 @@ impl FrameSink for ReplaySession {
             replay_100ns: flags.replay_100ns,
             video_ring: VecDeque::new(),
             ring_bytes: 0,
+            ring_bytes_cap,
             audio_ring: VecDeque::new(),
             mixer: flags.mixer,
             t0_qpc: None,
@@ -862,6 +891,10 @@ fn run_driven_inner(
         // (their reply channels close, which `EngineHandle::clip` reports as
         // "capture is rebuilding"). A `Stop` still has to be honoured — the
         // caller that sent it is blocked waiting for this thread to end.
+        // The dead ring is gone; do not let `status` keep reporting it as full.
+        if let Ok(mut status) = status.lock() {
+            status.ring_seconds_used = 0.0;
+        }
         let wait_until = Instant::now() + Duration::from_secs(2);
         while Instant::now() < wait_until {
             if control::shutdown_requested() {
@@ -1120,6 +1153,13 @@ fn run_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ring_byte_cap_scales_with_peak_bitrate_and_has_a_floor() {
+        // 12 Mb/s -> 1.5 MB/s, (15 + 3) s, x2.
+        assert_eq!(ring_bytes_cap(8_000_000, 12_000_000, 150_000_000), 1_500_000 * 18 * 2);
+        assert_eq!(ring_bytes_cap(1_000, 1_000, 10_000_000), 8 << 20);
+    }
 
     /// `ring_seconds_used` must never exceed `ring_seconds_total`: plan 4's
     /// progress bar divides one by the other, and a third-party UI binding to
