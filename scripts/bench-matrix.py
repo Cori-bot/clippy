@@ -177,8 +177,10 @@ def main():
     ap.add_argument("--clip-at", type=int, default=20)
     ap.add_argument("--replay", type=int, default=15)
     ap.add_argument("--cfg", default="", help="extra config.toml lines, e.g. 'capture_method = \"dd\"'")
+    ap.add_argument("--exe", default=EXE, help="clippy.exe to run (for A/B comparisons)")
     ap.add_argument("--out", default=os.path.join(ROOT, "docs", "perf", "matrix.csv"))
     args = ap.parse_args()
+    globals()["EXE"] = args.exe
     new = not os.path.exists(args.out)
     with open(args.out, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")

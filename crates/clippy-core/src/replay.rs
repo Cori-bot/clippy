@@ -480,6 +480,16 @@ impl FrameSink for ReplaySession {
                 .max(frame_qpc + self.frame_duration_100ns / 2);
         } else {
             self.frames_dropped += 1;
+            if self.frames_dropped <= 20 {
+                tracing::debug!(
+                    n = self.frames_dropped,
+                    frame = self.frames,
+                    ready = self.encoder.ready_for_input(),
+                    in_flight,
+                    pool = self.converter.pool_size(),
+                    "frame dropped (encoder backpressure)"
+                );
+            }
         }
         self.last_frame_qpc = frame_qpc;
 

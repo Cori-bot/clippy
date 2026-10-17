@@ -510,11 +510,15 @@ try {
     # because Step 8 proved it was held a moment ago: on its own this is an
     # exit-0 that would also hold for a daemon that never took the slot at all.
     Write-Host "[10/10] Confirming the single-instance slot is free again (clippy.exe replay --exit-after 3)..."
-    $replayOutput = & $ClippyPath replay --exit-after 3
+    # `record`, not `replay`: the daemon keeps its clip hotkey registered even
+    # while disarmed, so `replay` (which registers Alt+F10) can never start next
+    # to it. `record` takes the same single-instance slot without a hotkey.
+    $gateMp4 = Join-Path $env:TEMP 'clippy-gate-record.mp4'
+    $replayOutput = cmd /c "`"$ClippyPath`" record -d 2 -o `"$gateMp4`" --no-audio 2>&1"
     $replayExit = $LASTEXITCODE
     $replayOutput | ForEach-Object { Write-Host "  | $_" }
-    Confirm-Check "clippy.exe replay --exit-after 3 exits 0 now that the daemon has disarmed" `
-        ($replayExit -eq 0) "exit code=$replayExit"
+    Confirm-Check "clippy.exe record -d 2 exits 0 now that the daemon has disarmed" `
+        ($replayExit -eq 0) ("exit code=$replayExit; output: " + (($replayOutput | Out-String) -replace '\s+', ' ').Trim())
 
     $exitCode = 0
 }
