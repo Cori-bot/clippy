@@ -555,6 +555,21 @@ fn clamped_ring_seconds(span: f64, total: u32) -> f64 {
     span.min(f64::from(total)).max(0.0)
 }
 
+/// Consecutive failed rebuilds before the engine gives up. With `rebuild_wait`
+/// this is roughly 35 minutes: a locked screen, a dropped RDP session or a
+/// long UAC prompt must not end capture for good after a minute.
+const MAX_REBUILD_FAILURES: u32 = 100;
+
+/// Pause before the next rebuild attempt: quick while a display change is
+/// settling, slower once the desktop has clearly been gone for a while.
+fn rebuild_wait(failures: u32) -> Duration {
+    match failures {
+        0..=9 => Duration::from_secs(2),
+        10..=29 => Duration::from_secs(5),
+        _ => Duration::from_secs(30),
+    }
+}
+
 fn save_clip(
     capture: &CaptureHandle<ReplaySession>,
     clip_dir: &Path,
@@ -917,7 +932,7 @@ fn run_driven_inner(
             Err(e) => {
                 failures += 1;
                 tracing::warn!("rebuild attempt failed: {e:#}");
-                if failures >= 30 {
+                if failures >= MAX_REBUILD_FAILURES {
                     return Err(e.context("capture could not be rebuilt after repeated attempts"));
                 }
             }
@@ -931,7 +946,7 @@ fn run_driven_inner(
         if let Ok(mut status) = status.lock() {
             status.ring_seconds_used = 0.0;
         }
-        let wait_until = Instant::now() + Duration::from_secs(2);
+        let wait_until = Instant::now() + rebuild_wait(failures);
         while Instant::now() < wait_until {
             if control::shutdown_requested() {
                 return Ok(());
@@ -1195,6 +1210,15 @@ mod tests {
         // 12 Mb/s -> 1.5 MB/s, (15 + 3) s, x2.
         assert_eq!(ring_bytes_cap(8_000_000, 12_000_000, 150_000_000), 1_500_000 * 18 * 2);
         assert_eq!(ring_bytes_cap(1_000, 1_000, 10_000_000), 8 << 20);
+    }
+
+    #[test]
+    fn rebuild_waits_back_off_and_the_budget_outlasts_a_locked_screen() {
+        assert_eq!(rebuild_wait(0), Duration::from_secs(2));
+        assert_eq!(rebuild_wait(10), Duration::from_secs(5));
+        assert_eq!(rebuild_wait(30), Duration::from_secs(30));
+        let total: u64 = (0..MAX_REBUILD_FAILURES).map(|f| rebuild_wait(f).as_secs()).sum();
+        assert!(total >= 20 * 60, "budget {total}s is too short for a locked screen");
     }
 
     /// `ring_seconds_used` must never exceed `ring_seconds_total`: plan 4's
