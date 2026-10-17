@@ -48,7 +48,9 @@ pub struct EncodedPacket {
     pub pts_100ns: i64,
     pub duration_100ns: i64,
     pub keyframe: bool,
-    pub data: Vec<u8>,
+    /// Shared, so a clip snapshot clones pointers instead of megabytes while
+    /// the capture lock is held.
+    pub data: std::sync::Arc<[u8]>,
 }
 
 pub struct H264Encoder {
@@ -274,7 +276,8 @@ unsafe fn packet_from_sample(sample: &IMFSample) -> Result<EncodedPacket> {
         let mut data_ptr = std::ptr::null_mut();
         let mut length = 0u32;
         buffer.Lock(&mut data_ptr, None, Some(&mut length))?;
-        let data = std::slice::from_raw_parts(data_ptr, length as usize).to_vec();
+        let data: std::sync::Arc<[u8]> =
+            std::slice::from_raw_parts(data_ptr, length as usize).into();
         buffer.Unlock()?;
         Ok(EncodedPacket { pts_100ns, duration_100ns, keyframe, data })
     }

@@ -53,3 +53,12 @@ Conclusion P1 : CONFIRMÉ. `on_frame` est bloqué ~0,4 ms par Mo de ring pendant
 clip au défaut, ~9 frames à 50 Mbps/60 s. `dropped` reste à 0 (WGC met en file), mais la latence de livraison
 de ces frames n'est pas mesurée. Convert et encode sont négligeables (≤1 ms) : le chemin chaud nominal est sain.
 Logs : instr-default.log, instr-50mbps-60s.log
+
+## Run 5 — après P1 (paquets en Arc<[u8]>, préfixe audio sauté au lieu de copié puis drainé)
+
+| Config | verrou avant | verrou après | dropped | on_frame p99 | clip |
+|---|---|---|---|---|---|
+| 8 Mbps / 15 s | 8,65 ms | **0,76 ms** | 0 | ≤1,0 ms | 14,5 Mo, mux 137 ms |
+| 50 Mbps / 60 s | 150,8 ms | **3,01 ms** | 0 | ≤1,0 ms | 352,7 Mo, mux 593 ms |
+
+Gain mesuré : ~11x au défaut, ~50x à gros débit, sans régression sur convert/encode/pump. Logs : p1-*.log

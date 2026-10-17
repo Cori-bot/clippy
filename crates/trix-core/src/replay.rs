@@ -314,7 +314,7 @@ impl ReplaySession {
         }
         let base_pts = video[0].pts_100ns;
 
-        let first_keyframe = video.iter().find(|p| p.keyframe).map(|p| p.data.as_slice());
+        let first_keyframe = video.iter().find(|p| p.keyframe).map(|p| &p.data[..]);
         let video_type = self.encoder.mux_input_type(first_keyframe)?;
 
         // Assemble continuous PCM aligned to base_pts. Chunks are gapless and
@@ -323,17 +323,26 @@ impl ReplaySession {
         let mut audio_offset_100ns = 0i64;
         if self.settings.with_audio {
             let base_frame = dur_100ns_to_frames(base_pts);
-            let mut first_chunk_frame = None;
-            for chunk in &self.audio_ring {
-                first_chunk_frame.get_or_insert(chunk.start_frame);
-                audio_pcm.extend_from_slice(&chunk.data);
-            }
-            if let Some(start_frame) = first_chunk_frame {
+            if let Some(first) = self.audio_ring.front() {
+                let start_frame = first.start_frame;
+                // Chunks are gapless, so audio older than the clip start is a
+                // byte prefix: skip it instead of copying then draining it,
+                // which is time spent under the capture lock.
+                let mut skip = 0usize;
                 if start_frame < base_frame {
-                    let skip = (base_frame - start_frame) as usize * ENCODER_BLOCK_ALIGN;
-                    audio_pcm.drain(..skip.min(audio_pcm.len()));
+                    skip = (base_frame - start_frame) as usize * ENCODER_BLOCK_ALIGN;
                 } else if start_frame > base_frame {
                     audio_offset_100ns = frames_to_100ns(start_frame - base_frame);
+                }
+                let total: usize = self.audio_ring.iter().map(|c| c.data.len()).sum();
+                audio_pcm.reserve(total.saturating_sub(skip));
+                for chunk in &self.audio_ring {
+                    if skip >= chunk.data.len() {
+                        skip -= chunk.data.len();
+                        continue;
+                    }
+                    audio_pcm.extend_from_slice(&chunk.data[skip..]);
+                    skip = 0;
                 }
             }
         }
