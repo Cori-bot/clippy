@@ -1,0 +1,85 @@
+[workspace]
+resolver = "3"
+members = ["crates/trix-core", "crates/trix-cli", "crates/trix-daemon", "crates/trix-proto", "crates/trix-ui"]
+# No `default-members`. It once named `crates/trix-cli` alone, to make bare
+# `cargo run` pick the CLI instead of erroring on ambiguity — and it silently
+# cost far more than it bought: bare `cargo test` ran 5 of 99 tests and bare
+# `cargo build --release` produced no `trix-daemon.exe`, so the stage 2 gate
+# could run fully green against whatever daemon binary happened to be lying in
+# `target/release`. `cargo run -p trix-cli` costs eight characters and cannot
+# silently skip a test suite or a binary.
+
+[workspace.package]
+version = "1.5.0"
+edition = "2024"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wasapi = "0.23.0"
+windows-capture = "2.0.0"
+
+[workspace.dependencies.windows]
+version = "0.62"
+features = [
+    "Graphics_Capture",
+    "Security_Authorization_AppCapabilityAccess",
+    "Wdk_Graphics_Direct3D",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Performance",
+    "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_System_Variant",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Keep the debug build off the disk-space cliff. A Tauri dependency tree is
+# ~600 crates, and by default every one of them is compiled with full debug
+# info, which is the bulk of an 11 GB target/debug/deps. Nobody here steps
+# into wry or webview2-com with a debugger, so that cost buys nothing.
+#
+# Our own crates keep line tables, so panics still report file and line —
+# which is the only thing the backtraces in this project are ever read for.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

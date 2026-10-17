@@ -1,0 +1,30 @@
+/target
+
+# brainstorming mockups (superpowers visual companion)
+/.superpowers
+
+# probe/recording artifacts
+*.mp4
+*.wav
+*.png
+
+# the trix-ui app icon and its generated icon set are shipped, not probed --
+# un-ignore them from the *.png rule above.
+!/crates/trix-ui/icon-source.png
+!/crates/trix-ui/icons/**/*.png
+
+# the brand artwork the app icon is cut from -- shipped, not probed.
+!/assets/*.png
+
+# the built-in clip-saved and screenshot-saved sounds are shipped, not
+# probed -- un-ignore them from the *.wav rule above.
+!/crates/trix-daemon/assets/clip.wav
+!/crates/trix-daemon/assets/shot.wav
+
+/crates/trix-ui/web/node_modules
+/crates/trix-ui/web/dist
+/crates/trix-ui/gen
+
+# the graphify knowledge graph -- generated from this repo's own sources,
+# rebuilt on demand with /graphify.
+/graphify-out
