@@ -204,7 +204,7 @@
 <header class="head">
   <h1>Clips</h1>
   <span class="cnt tnum">
-    {#if app.favoritesOnly}{visible.length} of {/if}{app.total} {app.total === 1 ? 'clip' : 'clips'}
+    {#if app.favoritesOnly}{visible.length} sur {/if}{app.total} {app.total > 1 ? 'clips' : 'clip'}
     {#if app.totalBytes !== null} &middot; {formatBytes(app.totalBytes)}{/if}
   </span>
   {#if app.clips.length > 0}
@@ -212,57 +212,57 @@
       <button type="button" class="head-action selection-toggle" class:on={selecting} disabled={!canSelect}
         aria-pressed={selecting}
         onclick={() => selecting ? clearSelection() : (selecting = true)}>
-        <Icon name="check" size={13} /> {selecting ? 'Done' : 'Select'}
+        <Icon name="check" size={13} /> {selecting ? 'Terminé' : 'Sélectionner'}
       </button>
       <button type="button" class="head-action filter" class:on={app.favoritesOnly} disabled={busy}
         aria-pressed={app.favoritesOnly}
         onclick={() => { clearSelection(); previewing = null; app.setFavoritesOnly(!app.favoritesOnly); void revealSelected(); }}>
-        <Icon name={app.favoritesOnly ? 'star-filled' : 'star'} size={13} /> Favourites
+        <Icon name={app.favoritesOnly ? 'star-filled' : 'star'} size={13} /> Favoris
       </button>
     </div>
   {/if}
 </header>
 
 {#if selecting}
-  <div class="selection-bar" role="region" aria-label="Clip selection">
-    <span class="tnum" aria-live="polite">{selectedClips.length} selected &middot; {formatBytes(selectedBytes)}</span>
-    <Button size="sm" variant="ghost" disabled={!canSelect || selectedClips.length === visible.length} onclick={selectAll}>Select all{app.favoritesOnly ? ' favourites' : ''}</Button>
-    <Button size="sm" variant="ghost" disabled={busy || checked.size === 0} onclick={() => { checked = new Set(); anchor = null; }}>Clear</Button>
+  <div class="selection-bar" role="region" aria-label="Sélection de clips">
+    <span class="tnum" aria-live="polite">{selectedClips.length} {selectedClips.length > 1 ? 'sélectionnés' : 'sélectionné'} &middot;{formatBytes(selectedBytes)}</span>
+    <Button size="sm" variant="ghost" disabled={!canSelect || selectedClips.length === visible.length} onclick={selectAll}>{app.favoritesOnly ? 'Sélectionner tous les favoris' : 'Tout sélectionner'}</Button>
+    <Button size="sm" variant="ghost" disabled={busy || checked.size === 0} onclick={() => { checked = new Set(); anchor = null; }}>Désélectionner</Button>
     <Button size="sm" variant="danger" icon="trash" disabled={busy || selectedClips.length === 0} onclick={() => askDelete(selectedClips)}>
-      Delete selected ({selectedClips.length})
+      Supprimer la sélection ({selectedClips.length})
     </Button>
   </div>
 {/if}
 
 {#if app.clipsLoading}
-  <p class="load-status" role="status">Loading clips…</p>
+  <p class="load-status" role="status">Chargement des clips…</p>
 {:else if app.clipsLoadError}
   <div class="load-status" role="status">
-    <span>Some clips could not be loaded. {app.clipsLoadError}</span>
-    <Button size="sm" variant="ghost" onclick={() => app.loadClips()}>Retry</Button>
+    <span>Certains clips n’ont pas pu être chargés. {app.clipsLoadError}</span>
+    <Button size="sm" variant="ghost" onclick={() => app.loadClips()}>Réessayer</Button>
   </div>
 {/if}
 
 {#if app.clips.length === 0}
   {#if !app.clipsLoading && !app.clipsLoadError}
     <div class="empty">
-      <p class="big">No clips yet.</p>
-      <p>Arm Clippy, then press
+      <p class="big">Aucun clip pour le moment.</p>
+      <p>Activer le replay, puis appuyer sur
         {#if hotkeyCaps.length > 0}
           <span class="combo">
             {#each hotkeyCaps as cap, i (i)}
               {#if i > 0}<span class="plus">+</span>{/if}<kbd>{cap}</kbd>
             {/each}
           </span>
-        {:else}your clip hotkey{/if}
-        while you play.
+        {:else}le raccourci du clip{/if}
+        en jouant.
       </p>
     </div>
   {/if}
 {:else if visible.length === 0}
   <div class="empty">
-    <p class="big">{app.clipsLoading ? 'Loading favourites…' : 'No favourites yet.'}</p>
-    <p>Right-click a clip and choose Favourite, and it will show up here.</p>
+    <p class="big">{app.clipsLoading ? 'Chargement des favoris…' : 'Aucun favori pour le moment.'}</p>
+    <p>Faire un clic droit sur un clip, puis choisir «&nbsp;Ajouter aux favoris&nbsp;»&nbsp;: il apparaîtra ici.</p>
   </div>
 {:else}
   <div class="grid" bind:this={gridEl} style:padding-top={windowed.top + 'px'} style:padding-bottom={windowed.bottom + 'px'}>
@@ -288,20 +288,22 @@
 {/if}
 
 {#if deleting}
-  <Modal title={deleting.length === 1 ? 'Delete this clip?' : 'Delete ' + deleting.length + ' clips?'}
+  <Modal title={deleting.length === 1 ? 'Supprimer ce clip ?' : 'Supprimer ' + deleting.length + ' clips ?'}
     onclose={() => { if (!busy) deleting = null; }}>
     {#snippet children()}
       <p>
-        {#if deleting?.length === 1}Deleting <strong>{deleting[0].title}</strong>
-        {:else}Deleting these <strong>{deleting?.length} clips</strong>{/if}
-        removes the videos, their metadata and thumbnails. This cannot be undone.
+        {#if deleting?.length === 1}La suppression de <strong>{deleting[0].title}</strong>
+        efface la vidéo, ses métadonnées et sa miniature.
+        {:else}La suppression de ces <strong>{deleting?.length} clips</strong>
+        efface les vidéos, leurs métadonnées et leurs miniatures.{/if}
+        Cette action est irréversible.
       </p>
-      {#if app.deleteProgress}<p role="status">Deleting {app.deleteProgress.done} of {app.deleteProgress.total}…</p>{/if}
+      {#if app.deleteProgress}<p role="status">Suppression en cours&nbsp;: {app.deleteProgress.done} sur {app.deleteProgress.total}…</p>{/if}
     {/snippet}
     {#snippet actions()}
-      <Button variant="ghost" size="sm" disabled={busy} onclick={() => (deleting = null)}>Keep</Button>
+      <Button variant="ghost" size="sm" disabled={busy} onclick={() => (deleting = null)}>Conserver</Button>
       <Button variant="danger" size="sm" icon="trash" disabled={busy} onclick={confirmDelete}>
-        {busy ? 'Deleting…' : deleting?.length === 1 ? 'Delete' : 'Delete all ' + deleting?.length}
+        {busy ? 'Suppression…' : deleting?.length === 1 ? 'Supprimer' : 'Tout supprimer (' + deleting?.length + ')'}
       </Button>
     {/snippet}
   </Modal>

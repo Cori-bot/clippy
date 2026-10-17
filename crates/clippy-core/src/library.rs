@@ -67,12 +67,13 @@ pub fn is_valid_id(id: &str) -> bool {
 /// reservation it takes is itself a real create that fails the same way.
 pub fn ensure_writable(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)
-        .with_context(|| format!("could not create clip directory {}", dir.display()))?;
+        .with_context(|| format!("impossible de créer le dossier des clips {}", dir.display()))?;
     // Named per process so a daemon and a `clippy replay` pointed at one folder
     // cannot race on a single name and delete each other's probe.
     let probe = dir.join(format!(".clippy-write-test-{}", std::process::id()));
-    std::fs::write(&probe, b"clippy")
-        .with_context(|| format!("clip directory {} is not writable", dir.display()))?;
+    std::fs::write(&probe, b"clippy").with_context(|| {
+        format!("le dossier des clips {} n’est pas accessible en écriture", dir.display())
+    })?;
     // Removal is cleanup, not the check. A probe left behind is untidy — it
     // would sit in Explorer beside the clips — but the write already proved
     // what the caller asked, so failing to remove it must not fail the call.
@@ -109,7 +110,7 @@ pub fn ensure_writable(dir: &Path) -> Result<()> {
 ///   zero-byte `.mp4`s, which are never playable clips anyway.
 pub fn allocate_clip_id(dir: &Path) -> Result<String> {
     std::fs::create_dir_all(dir)
-        .with_context(|| format!("could not create clip directory {}", dir.display()))?;
+        .with_context(|| format!("impossible de créer le dossier des clips {}", dir.display()))?;
     next_free_id(dir, &now_id_stamp())
 }
 
@@ -160,7 +161,9 @@ fn next_free_id(dir: &Path, stem: &str) -> Result<String> {
             return Ok(candidate);
         }
     }
-    bail!("no free clip id for {stem} — the clip directory already holds every suffix")
+    bail!(
+        "aucun identifiant de clip libre pour {stem} — le dossier des clips contient déjà tous les suffixes"
+    )
 }
 
 /// `Ok(true)` when this call created `dir/id.mp4` and now owns it, `Ok(false)`
@@ -170,7 +173,7 @@ fn reserve(dir: &Path, id: &str) -> Result<bool> {
     match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e).with_context(|| format!("could not reserve {}", path.display())),
+        Err(e) => Err(e).with_context(|| format!("impossible de réserver {}", path.display())),
     }
 }
 
@@ -179,19 +182,21 @@ fn reserve(dir: &Path, id: &str) -> Result<bool> {
 pub fn write_sidecar(dir: &Path, meta: &ClipMeta) -> Result<()> {
     let final_path = sidecar_path(dir, &meta.id);
     let temp_path = final_path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(meta).context("serializing clip metadata")?;
-    std::fs::write(&temp_path, json).with_context(|| format!("writing {}", temp_path.display()))?;
+    let json =
+        serde_json::to_string_pretty(meta).context("sérialisation des métadonnées du clip")?;
+    std::fs::write(&temp_path, json)
+        .with_context(|| format!("écriture de {}", temp_path.display()))?;
     // Windows rename fails if the destination exists; rewriting a sidecar
     // (rename, favorite) is a normal operation.
     let _ = std::fs::remove_file(&final_path);
     std::fs::rename(&temp_path, &final_path)
-        .with_context(|| format!("renaming into {}", final_path.display()))
+        .with_context(|| format!("renommage vers {}", final_path.display()))
 }
 
 pub fn read_sidecar(path: &Path) -> Result<ClipMeta> {
     let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        std::fs::read_to_string(path).with_context(|| format!("lecture de {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("analyse de {}", path.display()))
 }
 
 /// Every clip in `dir`, newest first.

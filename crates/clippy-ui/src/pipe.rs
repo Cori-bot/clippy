@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use serde_json::{Map, Value};
 use clippy_proto::{Event, Request, Response, encode_line};
+use serde_json::{Map, Value};
 
 /// How long any one command may take before the caller is told it did not
 /// answer. Matches `scripts/daemon-smoke.ps1`'s own 60 s ceiling, and it has
@@ -102,7 +102,7 @@ impl Connection {
                 }
                 on_close();
             })
-            .context("could not start the socket reader thread")?;
+            .context("impossible de démarrer le fil de lecture du socket")?;
 
         Ok(connection)
     }
@@ -119,12 +119,13 @@ impl Connection {
         timeout: Duration,
     ) -> Result<Value, String> {
         if self.closed.load(Ordering::Acquire) {
-            return Err("not connected to the Clippy daemon".to_string());
+            return Err("non connecté au démon Clippy".to_string());
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = Request { id, cmd: cmd.to_string(), args };
-        let line = encode_line(&request).map_err(|e| format!("could not encode {cmd}: {e}"))?;
+        let line =
+            encode_line(&request).map_err(|e| format!("impossible d’encoder {cmd}\u{a0}: {e}"))?;
 
         // Depth 1: exactly one response is ever sent for one id, so the
         // reader must never block here even if this caller has already
@@ -134,7 +135,7 @@ impl Connection {
             Ok(mut pending) => {
                 pending.insert(id, tx);
             }
-            Err(_) => return Err("the socket client is poisoned".to_string()),
+            Err(_) => return Err("le client de communication est hors service".to_string()),
         }
 
         // `close()` sets `closed` *before* it clears `pending`. If this
@@ -149,19 +150,19 @@ impl Connection {
         // full `timeout` before line ~157 finally notices `closed`.
         if self.closed.load(Ordering::Acquire) {
             self.forget(id);
-            return Err("not connected to the Clippy daemon".to_string());
+            return Err("non connecté au démon Clippy".to_string());
         }
 
         let written = match self.writer.lock() {
             Ok(mut writer) => writer.write_all(line.as_bytes()).and_then(|()| writer.flush()),
             Err(_) => {
                 self.forget(id);
-                return Err("the socket client is poisoned".to_string());
+                return Err("le client de communication est hors service".to_string());
             }
         };
         if let Err(e) = written {
             self.forget(id);
-            return Err(format!("could not send {cmd}: {e}"));
+            return Err(format!("impossible d’envoyer {cmd}\u{a0}: {e}"));
         }
 
         let answer = rx.recv_timeout(timeout);
@@ -172,11 +173,11 @@ impl Connection {
 
         match answer {
             Ok(response) if response.ok => Ok(response.data.unwrap_or(Value::Null)),
-            Ok(response) => Err(response.error.unwrap_or_else(|| format!("{cmd} failed"))),
+            Ok(response) => Err(response.error.unwrap_or_else(|| format!("échec de {cmd}"))),
             Err(_) if self.closed.load(Ordering::Acquire) => {
-                Err("not connected to the Clippy daemon".to_string())
+                Err("non connecté au démon Clippy".to_string())
             }
-            Err(_) => Err(format!("{cmd} timed out after {}s", timeout.as_secs())),
+            Err(_) => Err(format!("délai dépassé pour {cmd} après {} s", timeout.as_secs())),
         }
     }
 
@@ -414,7 +415,7 @@ mod tests {
         let err = conn
             .call("status", Map::new(), Duration::from_millis(50))
             .expect_err("no response was ever sent");
-        assert!(err.contains("timed out"), "the error should say what happened: {err}");
+        assert!(err.contains("délai dépassé"), "the error should say what happened: {err}");
         assert_eq!(conn.pending_len(), 0, "a timed-out call must not leak its slot");
     }
 
@@ -427,7 +428,7 @@ mod tests {
             .conn
             .call("status", Map::new(), FAST)
             .expect_err("a closed connection cannot carry a call");
-        assert!(err.contains("not connected"), "{err}");
+        assert!(err.contains("non connecté"), "{err}");
     }
 
     /// A daemon that dies mid-write leaves a final line with no trailing

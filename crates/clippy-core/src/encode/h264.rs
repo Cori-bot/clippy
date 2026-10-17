@@ -376,7 +376,7 @@ fn activate_hardware_encoder(device: &ID3D11Device) -> Result<(IMFTransform, IMF
         )
         .context("MFTEnum2")?;
         if count == 0 || activates.is_null() {
-            bail!("no hardware H.264 encoder on the capture adapter");
+            bail!("aucun encodeur H.264 matériel sur la carte graphique de capture");
         }
 
         // Take ownership of the first (best) activate; free the rest + array.

@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { call, onDaemonEvent } from '../lib/ipc';
   import { app, updates } from '../lib/state.svelte';
-  import { FIELDS, SECTIONS, hotkeyProblem, unknownKeys, validate } from '../lib/settings';
+  import { FIELDS, SECTIONS, SECTION_LABELS, hotkeyProblem, inactiveReason, unknownKeys, validate } from '../lib/settings';
   import Field from '../components/Field.svelte';
   import Button from '../components/ui/Button.svelte';
   import Icon from '../components/ui/Icon.svelte';
@@ -12,6 +12,10 @@
   let config = $state<Record<string, unknown>>({});
   let monitors = $state<Monitor[]>([]);
   let extras = $state<string[]>([]);
+  // `config` starts empty, and an empty config renders every toggle off and every
+  // stepper at 0 -- values that are not the user's. The sections stay dimmed
+  // until the daemon has actually answered.
+  let loaded = $state(false);
 
   $effect(() => {
     void load();
@@ -28,7 +32,7 @@
   const unlisten = onDaemonEvent((event) => {
     if (event.event === 'hotkey_rebound') {
       if (event.data['registered'] === false) {
-        app.toast('error', `Windows would not give Clippy ${event.data['spec']}. Another app already owns it.`);
+        app.toast('error', `Windows a refusé d’attribuer ${event.data['spec']} à Clippy. Une autre application l’utilise déjà.`);
       }
       // The toast is the alert; `status` is the record. Re-read it either way,
       // because a rebind that *succeeded* is what clears a warning left over
@@ -55,6 +59,7 @@
       // fetched one.
       await app.refreshStatus();
       config = await call<Record<string, unknown>>('config.get');
+      loaded = true;
       extras = unknownKeys(config);
       const list = await call<{ monitors: Monitor[] }>('monitors.list');
       monitors = list.monitors;
@@ -120,6 +125,11 @@
     }
   }
 
+  function jump(section: string) {
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    document.getElementById(`section-${section}`)?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  }
+
   let version = $state('');
   let checking = $state(false);
   let checked = $state<string | null>(null);
@@ -140,7 +150,7 @@
     checked = null;
     try {
       const found = await invoke<{ version: string } | null>('update_check');
-      checked = found ? `Clippy ${found.version} is available.` : 'Clippy is up to date.';
+      checked = found ? `Clippy ${found.version} est disponible.` : 'Clippy est à jour.';
     } catch (e) {
       // Rust already writes a complete, correctly-attributed sentence here
       // (`reported()`'s job) -- a network failure, a 403 from being
@@ -157,44 +167,64 @@
   }
 </script>
 
-<h1>Settings</h1>
-<p class="lede">Changes take effect on the next clip. A few need a re-arm, and Clippy says which.</p>
+<h1>Paramètres</h1>
+<p class="lede">Les modifications s’appliquent au prochain clip. Certaines demandent de réactiver le replay, et Clippy indique lesquelles.</p>
+
+<nav class="jump" aria-label="Sections des paramètres">
+  {#each SECTIONS as section (section)}
+    <button type="button" onclick={() => jump(section)}>{SECTION_LABELS[section]}</button>
+  {/each}
+</nav>
 
 {#if app.rearmNeeded.length > 0}
   <!-- `--live`, not `--accent`: this is about the running capture, which is
        what green means everywhere else in the app. -->
   <div class="notice">
     <Icon name="rearm" size={15} />
-    Re-arm to apply: {app.rearmNeeded.join(', ')}
+    Réactiver le replay pour appliquer&nbsp;: {app.rearmNeeded.map((k) => FIELDS.find((f) => f.key === k)?.label ?? k).join(', ')}
     <span class="spacer"></span>
-    <Button size="sm" onclick={() => app.rearmNow()}>Re-arm now</Button>
+    <Button size="sm" onclick={() => app.rearmNow()}>Réactiver maintenant</Button>
   </div>
 {/if}
 
+{#snippet row(field: (typeof FIELDS)[number])}
+  <Field
+    {field} {config} {monitors}
+    problem={hotkeyProblem(field, field.boundKey ? app.status?.[field.boundKey] : null, config)}
+    inactive={inactiveReason(field, config)}
+    onset={set}
+    onpickfolder={pickFolder}
+    onpicksound={pickSound}
+    ontestsound={testSound} />
+{/snippet}
+
 {#each SECTIONS as section (section)}
-  <section>
-    <h2>{section}</h2>
+  {@const fields = FIELDS.filter((f) => f.section === section)}
+  <section id="section-{section}" aria-busy={!loaded} class:loading={!loaded}>
+    <h2>{SECTION_LABELS[section]}</h2>
     <div class="panel">
-      {#each FIELDS.filter((f) => f.section === section) as field (field.key)}
-        <Field
-          {field} {config} {monitors}
-          problem={hotkeyProblem(field, field.boundKey ? app.status?.[field.boundKey] : null, config)}
-          onset={set}
-          onpickfolder={pickFolder}
-          onpicksound={pickSound}
-          ontestsound={testSound} />
+      {#each fields.filter((f) => !f.advanced) as field (field.key)}
+        {@render row(field)}
       {/each}
+      {#if fields.some((f) => f.advanced)}
+        <details class="adv">
+          <summary>Avancé</summary>
+          {#each fields.filter((f) => f.advanced) as field (field.key)}
+            {@render row(field)}
+          {/each}
+        </details>
+      {/if}
       {#if section === 'Updates'}
         <div class="row">
           <div class="lt">
             <b>Version</b>
-            <span>The build you are running.</span>
+            <span>Version de Clippy actuellement utilisée.</span>
             {#if checked}<span class="checked">{checked}</span>{/if}
           </div>
           <div class="rt">
             <span class="ver tnum">{version}</span>
             <Button size="sm" disabled={checking || updates.busy} onclick={checkNow}>
-              {checking ? 'Checking…' : 'Check now'}
+              {checking ? 'Vérification…' : 'Vérifier maintenant'}
             </Button>
           </div>
         </div>
@@ -205,22 +235,60 @@
 
 {#if extras.length > 0}
   <p class="extras">
-    This daemon has settings this app does not render yet: {extras.join(', ')}. Edit them in config.toml.
+    Le service Clippy expose des paramètres que cette application n’affiche pas encore&nbsp;: {extras.join(', ')}. Ils se modifient dans config.toml.
   </p>
 {/if}
 
 <style>
   h1 { font-size: 19px; font-weight: 650; margin: 0 0 4px; }
-  .lede { color: var(--dim); font-size: 12px; margin: 0 0 18px; }
-  section { margin-bottom: 20px; }
+  .lede { color: var(--dim); font-size: 12px; margin: 0 0 12px; }
+  /* Sticky at the top of the scrollport, with the re-arm notice parked just
+     under it: the page is three screens long and the headings are its only
+     landmarks. Opaque, for the same reason the notice is. */
+  .jump {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    height: 36px;
+    box-sizing: border-box;
+    align-items: center;
+    margin-bottom: 14px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .jump button {
+    padding: 4px 9px;
+    border: 0;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+  }
+  .jump button:hover { background: var(--hover); color: var(--text); }
+  section { margin-bottom: 20px; scroll-margin-top: 48px; transition: opacity var(--t) var(--ease); }
+  section.loading { opacity: 0.5; }
   h2 {
-    font-size: 10.5px;
+    font-size: 12px;
     text-transform: uppercase;
-    letter-spacing: 0.11em;
-    color: var(--faint);
+    letter-spacing: 0.06em;
+    color: var(--dim);
     font-weight: 600;
     margin: 0 0 8px;
   }
+  .adv { border-top: 1px solid var(--line-soft); }
+  .adv summary {
+    padding: 11px 0;
+    color: var(--dim);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .adv summary:hover { color: var(--text); }
   .panel {
     background: var(--surface);
     border: 1px solid var(--line);
@@ -245,7 +313,7 @@
        sets `transform`, `filter` or `contain`, any of which would silently
        turn this back into a static box. */
     position: sticky;
-    top: 0;
+    top: 36px;
     z-index: 3;
     /* Opaque, over `--bg` rather than `transparent`: the page scrolls
        underneath this now, and a translucent banner would show the heading

@@ -2,6 +2,7 @@
   import { onDaemonEvent } from '../lib/ipc';
   import { CUSTOM_TIER, comboFromEvent, hotkeySaveTarget, hotkeySeed, tierFor, tierOptions, type Field } from '../lib/settings';
   import type { Monitor } from '../lib/types';
+  import AppPicker from './AppPicker.svelte';
   import Button from './ui/Button.svelte';
   import KeycapInput from './ui/KeycapInput.svelte';
   import Select from './ui/Select.svelte';
@@ -25,7 +26,7 @@
    * every hotkey row independent instead.
    */
   let {
-    field, config, monitors, problem = null,
+    field, config, monitors, problem = null, inactive = null,
     onset, onpickfolder, onpicksound, ontestsound,
   }: {
     field: Field;
@@ -42,6 +43,8 @@
      * decides where they sit.
      */
     problem?: string | null;
+    /** Why this row has no effect right now, or null. The row stays usable, only dimmed. */
+    inactive?: string | null;
     onset: (key: string, value: unknown) => void;
     onpickfolder: () => void;
     onpicksound: () => void;
@@ -163,7 +166,7 @@
   const monitorOptions = $derived(
     monitors.map((m) => ({
       value: String(m.index),
-      label: `${m.name} - ${m.width}x${m.height} (${m.adapter})`,
+      label: `${m.name} – ${m.width}×${m.height} (${m.adapter})`,
     })),
   );
 
@@ -173,15 +176,19 @@
     replay_seconds: 's',
     bitrate_kbps: 'kbps',
     max_bitrate_kbps: 'kbps',
-    max_library_gb: 'GB',
+    max_library_gb: 'Go',
     stats_seconds: 's',
   };
 </script>
 
-<div class="row">
+<div class="row" class:inactive={inactive !== null}>
   <div class="lt">
     <b>{field.label}</b>
     <span>{field.help}</span>
+    {#if field.more}
+      <details class="more"><summary>Détails</summary><span>{field.more}</span></details>
+    {/if}
+    {#if inactive}<span class="why">{inactive}</span>{/if}
     {#if problem}<span class="problem">{problem}</span>{/if}
   </div>
 
@@ -227,7 +234,7 @@
           min={field.min ?? 0}
           max={field.max ?? 0}
           unit={UNITS[field.key]}
-          label="{field.label}, custom value"
+          label="{field.label}, valeur personnalisée"
           onchange={(v) => onset(field.key, v)} />
       {/if}
 
@@ -239,7 +246,7 @@
         label={field.label}
         oninput={(v) => (dragging = v)}
         onchange={(v) => onset(field.key, v)} />
-      <span class="pct tnum">{shown}%</span>
+      <span class="pct tnum">{shown}&nbsp;%</span>
 
     {:else if field.kind === 'folder'}
       <!-- `clip_dir_resolved`, not `clip_dir`: the config key is empty by
@@ -250,18 +257,25 @@
            empty string), because "back to the default" is a value the picker
            cannot express. -->
       <span class="path">{String(config['clip_dir_resolved'] ?? '')}</span>
-      <Button size="sm" onclick={onpickfolder}>Choose...</Button>
+      <Button size="sm" onclick={onpickfolder}>Choisir…</Button>
       <Button size="sm" variant="ghost" disabled={!config[field.key]}
-        onclick={() => onset(field.key, '')}>Reset</Button>
+        onclick={() => onset(field.key, '')}>Rétablir</Button>
 
     {:else if field.kind === 'sound'}
       <span class="path" class:off={!config['clip_sound']}>
-        {String(config[field.key] ?? '') || "Clippy's built-in sound"}
+        {String(config[field.key] ?? '') || 'Son intégré de Clippy'}
       </span>
-      <Button size="sm" disabled={!config['clip_sound']} onclick={onpicksound}>Choose...</Button>
-      <Button size="sm" variant="ghost" disabled={!config['clip_sound']} onclick={ontestsound}>Test</Button>
+      <Button size="sm" disabled={!config['clip_sound']} onclick={onpicksound}>Choisir…</Button>
+      <Button size="sm" variant="ghost" disabled={!config['clip_sound']} onclick={ontestsound}>Tester</Button>
       <Button size="sm" variant="ghost" disabled={!config['clip_sound'] || !config[field.key]}
-        onclick={() => onset(field.key, '')}>Reset</Button>
+        onclick={() => onset(field.key, '')}>Rétablir</Button>
+
+    {:else if field.kind === 'apps'}
+      <AppPicker
+        selected={Array.isArray(config[field.key]) ? (config[field.key] as string[]) : []}
+        emptyText={field.picker?.empty}
+        addText={field.picker?.add}
+        onchange={(next) => onset(field.key, next)} />
 
     {:else if field.kind === 'hotkey'}
       <KeycapInput
@@ -269,14 +283,15 @@
         capturing={capture !== null}
         label={field.label}
         oncapture={captureHotkey}
+        oncancel={() => (capture = null)}
         onstart={startCapture} />
       {#if capture && capture !== config[field.key]}
-        <Button size="sm" variant="primary" onclick={saveHotkey}>Save</Button>
+        <Button size="sm" variant="primary" onclick={saveHotkey}>Enregistrer</Button>
       {/if}
       {#if testable}
-        <Button size="sm" variant="ghost" onclick={toggleListen}>{listening ? 'Stop test' : 'Test'}</Button>
+        <Button size="sm" variant="ghost" onclick={toggleListen}>{listening ? 'Arrêter le test' : 'Tester'}</Button>
         {#if listening}
-          <span class="hint" class:ok={heard}>{heard ? 'Clippy received it.' : 'Press the hotkey now...'}</span>
+          <span class="hint" class:ok={heard}>{heard ? 'Reçu par Clippy.' : 'Appuyer sur le raccourci…'}</span>
         {/if}
       {/if}
     {/if}
@@ -288,6 +303,19 @@
      renders the same row shape inline for its Version entry, and a scoped
      copy here would mean maintaining both. Only what is unique to a field's
      control lives here. */
+  .inactive > * { opacity: 0.55; }
+  .more summary {
+    display: inline-block;
+    margin-top: 3px;
+    color: var(--dim);
+    font-size: 11.5px;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .more summary:hover { color: var(--text); }
+  .more[open] summary { margin-bottom: 1px; }
+  .why { font-style: italic; }
   .pct { min-width: 44px; text-align: right; font-size: 12.5px; color: var(--dim); }
   /* `!important` for the same reason `.checked` needs it in Settings.svelte:
      app.css colours every `.lt span` as help text, and this one is not help
@@ -298,7 +326,7 @@
     max-width: 280px;
     padding: 7px 10px;
     background: var(--bg);
-    border: 1px solid var(--line-strong);
+    border: 1px solid var(--field-line);
     border-radius: var(--r);
     color: var(--dim);
     font-size: 12px;

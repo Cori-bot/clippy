@@ -286,7 +286,7 @@ pub fn run(config: &Config, options: RecordOptions) -> Result<()> {
     } else {
         AudioGains::new(config.system_volume, config.mic_volume)
     };
-    let mixer = AudioMixer::start_sources(gains);
+    let mixer = AudioMixer::start_sources(gains, &config.audio_apps);
     let audio_on = mixer.active();
 
     println!(

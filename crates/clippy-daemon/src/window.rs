@@ -25,10 +25,10 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result};
-use serde_json::{Map, Value};
 use clippy_core::config::HotkeyMode;
 use clippy_core::control::Hotkey;
 use clippy_proto::Event;
+use serde_json::{Map, Value};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
@@ -50,12 +50,19 @@ use crate::tray::{self, Tray};
 /// pump on it is exactly what this module's comment forbids.
 static ARMED_MIRROR: AtomicBool = AtomicBool::new(false);
 
+/// The replay is on but idle, waiting for a game. Next to [`ARMED_MIRROR`], for
+/// the same reason, and the two together choose the tray icon, its tooltip and
+/// the menu's toggle.
+static WAITING_MIRROR: AtomicBool = AtomicBool::new(false);
+
 /// What the tray menu's ticks and labels read, next to [`ARMED_MIRROR`] and for
 /// the same reason: the pump must not take a `Daemon` lock. Held only long
 /// enough to copy a handful of fields, by the daemon on every accepted
 /// `config.set` and by the pump when the menu opens.
 static PREFS: Mutex<tray::MenuPrefs> = Mutex::new(tray::MenuPrefs {
     armed: false,
+    waiting: false,
+    capture_mode: String::new(),
     autostart: false,
     auto_arm: false,
     clip_sound: false,
@@ -69,6 +76,7 @@ static PREFS: Mutex<tray::MenuPrefs> = Mutex::new(tray::MenuPrefs {
 pub fn publish_prefs(config: &clippy_core::config::Config) {
     if let Ok(mut prefs) = PREFS.lock() {
         prefs.auto_arm = config.auto_arm;
+        prefs.capture_mode = config.capture_mode.clone();
         prefs.clip_sound = config.clip_sound;
         prefs.resolution = config.resolution.clone();
         prefs.fps = config.fps;
@@ -80,6 +88,7 @@ pub fn publish_prefs(config: &clippy_core::config::Config) {
 fn menu_prefs(armed: bool) -> tray::MenuPrefs {
     let mut prefs = PREFS.lock().map(|p| p.clone()).unwrap_or_default();
     prefs.armed = armed;
+    prefs.waiting = WAITING_MIRROR.load(Ordering::Relaxed);
     // The registry, not the config file, is the truth for autostart --
     // `config.get` reads it the same way, and a user can remove the Run entry
     // behind Clippy's back.
@@ -179,7 +188,10 @@ pub enum Action {
     /// Applied on the worker through the `config.set` path, so open clients hear
     /// `config_changed`; a setting that only takes effect on a new session
     /// re-arms an armed daemon.
-    SetConfig { key: &'static str, value: Value },
+    SetConfig {
+        key: &'static str,
+        value: Value,
+    },
     /// Tray menu's "Open Clippy" and a left click on the icon: launch the
     /// desktop app, or fall back to the clips folder if it is not installed.
     OpenApp,
@@ -432,6 +444,20 @@ thread_local! {
 /// would show "idle" through a UI-initiated recording.
 pub fn publish_armed(armed: bool) {
     ARMED_MIRROR.store(armed, Ordering::Relaxed);
+    repaint_tray();
+}
+
+/// Records that the replay is on but waiting for a game, and repaints the tray.
+pub fn publish_waiting(waiting: bool) {
+    WAITING_MIRROR.store(waiting, Ordering::Relaxed);
+    repaint_tray();
+}
+
+/// Asks the pump to redraw the tray from both mirrors: bit 0 of the message's
+/// `wparam` is "armed", bit 1 is "waiting".
+fn repaint_tray() {
+    let armed = ARMED_MIRROR.load(Ordering::Relaxed);
+    let waiting = WAITING_MIRROR.load(Ordering::Relaxed);
     let hwnd = WINDOW_HWND.load(Ordering::Relaxed);
     if hwnd == 0 {
         return; // no window: unit tests, and `clippy.exe`
@@ -440,7 +466,7 @@ pub fn publish_armed(armed: bool) {
         let _ = PostMessageW(
             Some(HWND(hwnd as *mut core::ffi::c_void)),
             WM_CLIPPY_ARMED,
-            WPARAM(usize::from(armed)),
+            WPARAM(usize::from(armed) | usize::from(waiting) << 1),
             LPARAM(0),
         );
     }
@@ -708,10 +734,10 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_CLIPPY_ARMED => {
-            let armed = wparam.0 != 0;
+            let (armed, waiting) = (wparam.0 & 1 != 0, wparam.0 & 2 != 0);
             TRAY.with(|t| {
                 if let Some(tray) = t.borrow_mut().as_mut() {
-                    tray.set_armed(armed);
+                    tray.set_state(armed, waiting);
                 }
             });
             LRESULT(0)
@@ -778,7 +804,7 @@ unsafe extern "system" fn wnd_proc(
                         // while this menu is open. Deciding later turned a
                         // click on "Arm" into a disarm.
                         Some(tray::ID_TOGGLE) => {
-                            Some(if armed { Action::Disarm } else { Action::Arm })
+                            Some(if armed || prefs.waiting { Action::Disarm } else { Action::Arm })
                         }
                         Some(tray::ID_CLIP) => Some(Action::Clip),
                         Some(tray::ID_SCREENSHOT) => Some(Action::Screenshot),
@@ -1140,67 +1166,68 @@ fn change_clips_folder(daemon: &Arc<Daemon>) {
     }
 
     let daemon = Arc::clone(daemon);
-    let spawned = std::thread::Builder::new().name("clippy-folder-dialog".into()).spawn(move || {
-        // Read inside the thread rather than before the spawn: this same value
-        // is what the refusal message quotes, and it must be the folder clips
-        // are *still* going to, not one captured before the user browsed.
-        let current = daemon.clip_dir();
+    let spawned =
+        std::thread::Builder::new().name("clippy-folder-dialog".into()).spawn(move || {
+            // Read inside the thread rather than before the spawn: this same value
+            // is what the refusal message quotes, and it must be the folder clips
+            // are *still* going to, not one captured before the user browsed.
+            let current = daemon.clip_dir();
 
-        let chosen = crate::folder::pick(&current);
-        PICKING.store(false, Ordering::SeqCst);
+            let chosen = crate::folder::pick(&current);
+            PICKING.store(false, Ordering::SeqCst);
 
-        let chosen = match chosen {
-            Ok(Some(path)) => path,
-            // Cancelled. Not a failure, and deliberately silent: answering a
-            // dialog the user dismissed on purpose with a message box is the
-            // behaviour that makes people stop opening menus.
-            Ok(None) => return,
-            Err(e) => {
-                let detail = format!("{e:#}");
-                tracing::warn!(error = %detail, "the folder picker failed");
-                crate::folder::report_error(&format!(
-                    "Could not open the folder picker.
+            let chosen = match chosen {
+                Ok(Some(path)) => path,
+                // Cancelled. Not a failure, and deliberately silent: answering a
+                // dialog the user dismissed on purpose with a message box is the
+                // behaviour that makes people stop opening menus.
+                Ok(None) => return,
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    tracing::warn!(error = %detail, "the folder picker failed");
+                    crate::folder::report_error(&format!(
+                        "Impossible d’ouvrir le sélecteur de dossier.
 
 {detail}"
-                ));
-                return;
-            }
-        };
+                    ));
+                    return;
+                }
+            };
 
-        let mut values = serde_json::Map::new();
-        values.insert(
-            "clip_dir".to_string(),
-            serde_json::Value::from(chosen.to_string_lossy().as_ref()),
-        );
-        // Through the dispatch helper, not `set_config` directly: an
-        // already-open settings page only learns a folder changed elsewhere
-        // via the `config_changed` broadcast that helper sends -- see its doc
-        // comment.
-        match crate::dispatch::apply_config_and_broadcast(&daemon, &values) {
-            // No re-arm: `clip_dir` is read per clip, so a running capture
-            // keeps its ring and the very next clip lands in the new folder.
-            Ok(_) => tracing::info!(dir = %chosen.display(), "clips folder changed"),
-            Err(detail) => {
-                tracing::warn!(
-                    error = %detail,
-                    dir = %chosen.display(),
-                    "the chosen clips folder was refused"
-                );
-                // Says where clips are still going, not just what failed. A
-                // user told only "that didn't work" does not know whether they
-                // are now recording to nowhere.
-                crate::folder::report_error(&format!(
-                    "That folder can't be used:
+            let mut values = serde_json::Map::new();
+            values.insert(
+                "clip_dir".to_string(),
+                serde_json::Value::from(chosen.to_string_lossy().as_ref()),
+            );
+            // Through the dispatch helper, not `set_config` directly: an
+            // already-open settings page only learns a folder changed elsewhere
+            // via the `config_changed` broadcast that helper sends -- see its doc
+            // comment.
+            match crate::dispatch::apply_config_and_broadcast(&daemon, &values) {
+                // No re-arm: `clip_dir` is read per clip, so a running capture
+                // keeps its ring and the very next clip lands in the new folder.
+                Ok(_) => tracing::info!(dir = %chosen.display(), "clips folder changed"),
+                Err(detail) => {
+                    tracing::warn!(
+                        error = %detail,
+                        dir = %chosen.display(),
+                        "the chosen clips folder was refused"
+                    );
+                    // Says where clips are still going, not just what failed. A
+                    // user told only "that didn't work" does not know whether they
+                    // are now recording to nowhere.
+                    crate::folder::report_error(&format!(
+                        "Ce dossier ne peut pas être utilisé\u{a0}:
 
 {detail}
 
-Clips are still being saved to:
+Les clips continuent d’être enregistrés dans\u{a0}:
 {}",
-                    current.display()
-                ));
+                        current.display()
+                    ));
+                }
             }
-        }
-    });
+        });
 
     if spawned.is_err() {
         PICKING.store(false, Ordering::SeqCst);
@@ -1239,7 +1266,7 @@ fn choose_clip_sound(daemon: &Arc<Daemon>) {
                 let detail = format!("{e:#}");
                 tracing::warn!(error = %detail, "the sound picker failed");
                 crate::folder::report_error(&format!(
-                    "Could not open the sound picker.\n\n{detail}"
+                    "Impossible d’ouvrir le sélecteur de son.\n\n{detail}"
                 ));
                 return;
             }
@@ -1258,7 +1285,9 @@ fn choose_clip_sound(daemon: &Arc<Daemon>) {
             // needs it, and `Ok(())` would not typecheck.
             Ok(_) => tracing::info!(sound = %chosen.display(), "clip sound changed"),
             Err(e) => {
-                crate::folder::report_error(&format!("That sound can't be used:\n\n{e}"));
+                crate::folder::report_error(&format!(
+                    "Ce son ne peut pas être utilisé\u{a0}:\n\n{e}"
+                ));
             }
         }
     });
@@ -1288,7 +1317,7 @@ fn apply_tray_setting(daemon: &Arc<Daemon>, key: &'static str, value: Value) {
         }
         Err(detail) => {
             tracing::warn!(key, error = %detail, "a tray setting was refused");
-            let message = format!("That setting can't be changed:\n\n{detail}");
+            let message = format!("Ce paramètre ne peut pas être modifié\u{a0}:\n\n{detail}");
             // A message box blocks until it is dismissed; on a thread of its own
             // so the hotkey actions queued behind this one keep working.
             let _ = std::thread::Builder::new()
@@ -1569,7 +1598,8 @@ mod tests {
     fn hotkey_rebound_broadcasts_the_settings_page_wire_shape() {
         use clippy_core::config::Config;
 
-        let dir = std::env::temp_dir().join(format!("clippy-hotkey-rebound-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("clippy-hotkey-rebound-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp clip dir");
         let config = Config { clip_dir: dir.to_string_lossy().into_owned(), ..Config::default() };
@@ -1638,7 +1668,7 @@ mod tests {
         assert_eq!(event.data.get("cmd").and_then(Value::as_str), Some("screenshot"));
         assert_eq!(
             event.data.get("error").and_then(Value::as_str),
-            Some("not armed — arm Clippy to take a screenshot")
+            Some("le replay n’est pas activé — activez-le pour prendre une capture d’écran")
         );
 
         std::fs::remove_dir_all(&dir).unwrap();

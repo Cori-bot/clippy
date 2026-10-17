@@ -1,9 +1,11 @@
 //! System-audio and microphone capture.
 
+mod apps;
 mod mixer;
 mod source;
 mod timeline;
 
+pub use apps::{AudioApp, list_audio_apps};
 pub use mixer::{AudioGains, AudioMixer, MAX_VOLUME_PERCENT};
 pub use source::{AudioCapture, AudioSourceKind, record_wav};
 pub use timeline::AudioTimeline;

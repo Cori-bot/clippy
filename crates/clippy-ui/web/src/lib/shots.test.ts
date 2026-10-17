@@ -5,7 +5,13 @@ import { describe, expect, it, vi } from 'vitest';
 // actually been wrong before.
 vi.mock('@tauri-apps/api/core', () => ({ convertFileSrc: (p: string) => p }));
 
-const { shotUrl, shotThumbUrl } = await import('./shots');
+const { shotUrl, shotThumbUrl, formatShotDate } = await import('./shots');
+
+describe('formatShotDate', () => {
+  it('writes the date and time in French', () => {
+    expect(formatShotDate('2026-08-27T14:30:12Z', 'UTC')).toBe('27 août 2026 à 14:30:12');
+  });
+});
 
 describe('screenshot URLs', () => {
   it('points into the Screenshots subfolder, not the clips folder', () => {

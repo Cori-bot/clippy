@@ -46,8 +46,9 @@ pub fn thumb_path(shots: &Path, id: &str) -> PathBuf {
 /// it. [`scan`] skips zero-byte entries, so a reservation stranded by a dying
 /// process is invisible rather than a permanently broken tile.
 pub fn allocate_shot_id(shots: &Path) -> Result<String> {
-    std::fs::create_dir_all(shots)
-        .with_context(|| format!("could not create screenshot folder {}", shots.display()))?;
+    std::fs::create_dir_all(shots).with_context(|| {
+        format!("impossible de créer le dossier des captures d’écran {}", shots.display())
+    })?;
     let stamp = library::now_id_stamp();
     for suffix in 1u32..=10_000 {
         let id = if suffix == 1 { stamp.clone() } else { format!("{stamp}_{suffix}") };
@@ -64,7 +65,7 @@ pub fn allocate_shot_id(shots: &Path) -> Result<String> {
             }
         }
     }
-    bail!("could not find a free screenshot id in {} after 10000 tries", shots.display())
+    bail!("aucun identifiant de capture d’écran libre dans {} après 10000 essais", shots.display())
 }
 
 /// Every screenshot in `shots`, newest first.
@@ -129,10 +130,10 @@ pub fn delete(shots: &Path, id: &str) -> Result<()> {
     // Before a single path is built, not after. This is the seal that stops a
     // hostile id from the control socket reaching the filesystem at all.
     if !library::is_valid_id(id) {
-        bail!("{id:?} is not a screenshot id");
+        bail!("{id:?} n’est pas un identifiant de capture d’écran");
     }
     std::fs::remove_file(image_path(shots, id))
-        .with_context(|| format!("could not delete screenshot {id}"))?;
+        .with_context(|| format!("impossible de supprimer la capture d’écran {id}"))?;
     match std::fs::remove_file(thumb_path(shots, id)) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

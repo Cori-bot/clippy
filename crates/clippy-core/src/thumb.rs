@@ -94,7 +94,7 @@ fn encode_wic(
     max_width: u32,
 ) -> Result<Vec<u8>> {
     if width == 0 || height == 0 {
-        bail!("cannot encode a {width}x{height} image");
+        bail!("impossible d’encoder une image {width}x{height}");
     }
     if stride < (width as usize).saturating_mul(4) {
         bail!("stride {stride} is too small for a {width}px BGRA row");
@@ -249,7 +249,7 @@ pub fn decode_jpeg_bgra(path: &Path) -> Result<(Vec<u8>, u32, u32, usize)> {
                 GENERIC_READ,
                 WICDecodeMetadataCacheOnDemand,
             )
-            .with_context(|| format!("decoding {}", path.display()))?;
+            .with_context(|| format!("décodage de {}", path.display()))?;
         let frame = decoder.GetFrame(0).context("first frame")?;
         let converter = factory.CreateFormatConverter().context("format converter")?;
         converter
@@ -271,7 +271,7 @@ pub fn decode_jpeg_bgra(path: &Path) -> Result<(Vec<u8>, u32, u32, usize)> {
         // `clipboard::copy_bgra`, rather than being refused where the bad
         // geometry is actually known.
         if width == 0 || height == 0 {
-            bail!("cannot decode a {width}x{height} screenshot");
+            bail!("impossible de décoder une capture d’écran {width}x{height}");
         }
         let stride = (width as usize).checked_mul(4).context("image geometry overflows")?;
         let len = stride.checked_mul(height as usize).context("image geometry overflows")?;

@@ -67,13 +67,13 @@ describe('msFromRatio / ratioFromMs', () => {
 
 describe('formatClock', () => {
   it('shows minutes, seconds and a tenth', () => {
-    expect(formatClock(0)).toBe('0:00.0');
-    expect(formatClock(5700)).toBe('0:05.7');
-    expect(formatClock(65400)).toBe('1:05.4');
+    expect(formatClock(0)).toBe('0:00,0');
+    expect(formatClock(5700)).toBe('0:05,7');
+    expect(formatClock(65400)).toBe('1:05,4');
   });
 
   it('never shows a negative time', () => {
-    expect(formatClock(-20)).toBe('0:00.0');
+    expect(formatClock(-20)).toBe('0:00,0');
   });
 });
 

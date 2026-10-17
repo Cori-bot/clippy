@@ -19,13 +19,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
-use serde_json::{Map, Value};
 use clippy_core::{
     capture::audio::{AudioGains, MAX_VOLUME_PERCENT},
-    config::{Config, MAX_FPS, MIN_FPS},
+    config::{CaptureMode, Config, MAX_FPS, MIN_FPS},
     control,
     control::SingleInstance,
     engine::EngineHandle,
@@ -33,8 +32,10 @@ use clippy_core::{
     export, library, shot, stats,
 };
 use clippy_proto::{ClipMeta, Event, ShotMeta};
+use serde_json::{Map, Value};
 
 use crate::clients::Clients;
+use crate::game::Sighting;
 
 /// The engine plus the single-instance slot it holds. Armed as a unit,
 /// disarmed as a unit — dropping this releases the encoder *and* the slot, so
@@ -42,6 +43,30 @@ use crate::clients::Clients;
 struct Armed {
     engine: EngineHandle,
     _slot: SingleInstance,
+}
+
+/// How long a game may be out of sight before it counts as gone.
+const GAME_GRACE: Duration = Duration::from_secs(5);
+
+/// Spacing between attempts to start the replay for a game when starting fails,
+/// so a broken encoder is retried calmly and not every second.
+const GAME_RETRY: Duration = Duration::from_secs(15);
+
+/// What the `game` capture mode knows. A leaf lock: nothing else is taken while
+/// it is held, except `armed` for a read in `game_tick`, which is the order
+/// everything else uses (`armed` may be held while this is taken, and the
+/// reverse is only ever the single read noted there).
+#[derive(Default)]
+struct GameWatch {
+    /// The replay was asked for. It runs when a game is in front, or at once in
+    /// `desktop` mode; cleared by `disarm`.
+    wanted: bool,
+    /// The engine is running because a game is in front, and stops with it.
+    started_by_game: bool,
+    /// The game in front or still running, or `None` after [`GAME_GRACE`].
+    sighting: Option<Sighting>,
+    last_seen: Option<Instant>,
+    last_attempt: Option<Instant>,
 }
 
 /// What `status` answers with, and the payload of the `armed` event.
@@ -86,6 +111,12 @@ pub struct DaemonStatus {
     /// can lose to a different program, so a single flag could only ever say
     /// which is *worse*, and the settings page has to mark one row.
     pub screenshot_hotkey_bound: Option<bool>,
+    /// The replay is on but idle, waiting for a game (`game` capture mode).
+    /// Distinct from `armed: false`, which means the user has not turned it on:
+    /// a UI shows "waiting for a game" for one and "off" for the other.
+    pub waiting_for_game: bool,
+    /// The program of the game in front or still running, when there is one.
+    pub game: Option<String>,
 }
 
 impl DaemonStatus {
@@ -128,6 +159,14 @@ impl DaemonStatus {
                 },
             );
         }
+        fields.insert("waiting_for_game".to_string(), Value::Bool(self.waiting_for_game));
+        fields.insert(
+            "game".to_string(),
+            match &self.game {
+                Some(name) => Value::from(name.as_str()),
+                None => Value::Null,
+            },
+        );
         Value::Object(fields)
     }
 }
@@ -206,7 +245,7 @@ mod clip_paths {
         /// and produced no path at all.
         pub(super) fn for_id(dir: PathBuf, id: &str) -> Result<Self> {
             if !library::is_valid_id(id) {
-                bail!("{id:?} is not a valid clip id");
+                bail!("{id:?} n’est pas un identifiant de clip valide");
             }
             Ok(Self {
                 mp4: library::mp4_path(&dir, id),
@@ -264,7 +303,7 @@ pub struct ArmOutcome {
 /// rather than requiring a re-arm. `screenshot_sound` is read fresh by
 /// `record_saved_shot` on every screenshot, the same way `clip_sound` already
 /// is for clips.
-pub(crate) const REQUIRES_REARM: [&str; 9] = [
+pub(crate) const REQUIRES_REARM: [&str; 10] = [
     "fps",
     // The encoded size is fixed when the session opens.
     "resolution",
@@ -277,6 +316,8 @@ pub(crate) const REQUIRES_REARM: [&str; 9] = [
     // How frames come off the screen is decided when the session opens: the
     // sink's converter and encoder are built on the backend's own device.
     "capture_method",
+    // Which applications are captured is decided when the audio streams open.
+    "audio_apps",
 ];
 
 /// The two capture levels, which follow a different re-arm rule from every
@@ -389,7 +430,7 @@ fn check_ranges(values: &Map<String, Value>) -> Result<()> {
         };
         let Some(number) = value.as_u64() else { continue };
         if number < min || number > max {
-            bail!("config.set: {key:?} accepts {min} to {max}, not {number}");
+            bail!("{key:?} accepte une valeur de {min} à {max}, pas {number}");
         }
     }
     Ok(())
@@ -472,6 +513,8 @@ pub struct Daemon {
     /// happened to hold — the arrangement where a level change silently lands
     /// on an object nobody is reading.
     pub(crate) gains: Arc<AudioGains>,
+    /// See [`GameWatch`].
+    game: Mutex<GameWatch>,
 }
 
 // Lock ordering, and the one rule that matters: `armed` is never held while
@@ -575,14 +618,150 @@ impl Daemon {
             armed: Mutex::new(None),
             library: Mutex::new(library),
             gains,
+            game: Mutex::new(GameWatch::default()),
         }
     }
 
-    /// Starts capture. Idempotent: arming an already-armed daemon reports the
+    /// Starts capture. In `game` mode that means "be ready": the replay waits for
+    /// a game to be in front and starts by itself, then stops when the game ends,
+    /// so nothing on the desktop is ever recorded. In `desktop` mode it starts
+    /// at once. Idempotent either way.
+    pub fn arm(&self) -> Result<ArmOutcome> {
+        if self.lock_config().capture_mode() != CaptureMode::Game {
+            return self.arm_now(None);
+        }
+        {
+            let armed = self.lock_armed();
+            if armed.is_some() {
+                return Ok(ArmOutcome { status: self.status_of(armed.as_ref()) });
+            }
+        }
+        let sighting = {
+            let mut game = self.lock_game();
+            game.wanted = true;
+            game.sighting.clone()
+        };
+        match sighting {
+            Some(seen) => self.start_for_game(&seen),
+            None => {
+                crate::window::publish_waiting(true);
+                let status = self.status();
+                self.clients.broadcast(&Event::new("standby", status.to_json()));
+                Ok(ArmOutcome { status })
+            }
+        }
+    }
+
+    /// Starts the engine on the screen the game is on, and remembers that a game
+    /// is why it runs, so the end of the game ends it.
+    fn start_for_game(&self, seen: &Sighting) -> Result<ArmOutcome> {
+        let screen = clippy_core::probe::monitors_true_pixels().ok().and_then(|found| {
+            found.iter().find(|m| m.left == seen.left && m.top == seen.top).map(|m| m.index)
+        });
+        let outcome = self.arm_now(screen)?;
+        self.lock_game().started_by_game = true;
+        tracing::info!(game = %seen.exe, "a game is in front: the replay is recording");
+        Ok(outcome)
+    }
+
+    /// One look at the game watcher's findings, once a second.
+    ///
+    /// `seen` is the game in front or still running, if any. A game that
+    /// disappears for under [`GAME_GRACE`] (a loading screen swapping windows)
+    /// is still the game. The replay starts when one is seen while it is wanted
+    /// and idle, and stops when it was started for a game and none is left.
+    pub fn game_tick(&self, seen: Option<Sighting>, now: Instant) {
+        let (start, stop) = {
+            let mut game = self.lock_game();
+            match seen {
+                Some(found) => {
+                    game.last_seen = Some(now);
+                    game.sighting = Some(found);
+                }
+                None => {
+                    if game.last_seen.is_none_or(|at| now.duration_since(at) >= GAME_GRACE) {
+                        game.sighting = None;
+                    }
+                }
+            }
+            let armed = self.lock_armed().is_some();
+            let retry_ok = game.last_attempt.is_none_or(|at| now.duration_since(at) >= GAME_RETRY);
+            let start =
+                (!armed && game.wanted && retry_ok).then(|| game.sighting.clone()).flatten();
+            if start.is_some() {
+                game.last_attempt = Some(now);
+            }
+            (start, armed && game.started_by_game && game.sighting.is_none())
+        };
+        if let Some(seen) = start {
+            if let Err(e) = self.start_for_game(&seen) {
+                tracing::warn!(error = %format!("{e:#}"), "could not start the replay for a game; will retry");
+            }
+        } else if stop {
+            tracing::info!("the game ended: the replay is waiting for the next one");
+            self.lock_game().started_by_game = false;
+            if let Err(e) = self.stop_engine("standby") {
+                tracing::warn!(error = %format!("{e:#}"), "could not pause the replay");
+            }
+        }
+    }
+
+    /// Reconciles a running or waiting replay with a `capture_mode` that just
+    /// changed, so the setting takes effect now and not at the next arm.
+    fn capture_mode_changed(&self, mode: CaptureMode) {
+        let armed = self.lock_armed().is_some();
+        match mode {
+            CaptureMode::Desktop => {
+                let waiting = {
+                    let mut game = self.lock_game();
+                    game.started_by_game = false;
+                    game.wanted && !armed
+                };
+                if waiting && let Err(e) = self.arm_now(None) {
+                    tracing::warn!(error = %format!("{e:#}"), "could not start the replay for the desktop");
+                }
+            }
+            CaptureMode::Game if armed => {
+                let sighted = {
+                    let mut game = self.lock_game();
+                    game.wanted = true;
+                    game.started_by_game = game.sighting.is_some();
+                    game.sighting.is_some()
+                };
+                if !sighted && let Err(e) = self.stop_engine("standby") {
+                    tracing::warn!(error = %format!("{e:#}"), "could not pause the replay");
+                }
+            }
+            CaptureMode::Game => {}
+        }
+    }
+
+    /// Stops capture and releases the single-instance slot. `Ok(false)` means
+    /// nothing was running or waiting: a no-op rather than an error, so a UI
+    /// syncing its toggle after a reconnect never sees a spurious failure.
+    pub fn disarm(&self) -> Result<bool> {
+        let was_waiting = {
+            let mut game = self.lock_game();
+            let was = game.wanted;
+            game.wanted = false;
+            game.started_by_game = false;
+            was
+        };
+        crate::window::publish_waiting(false);
+        let stopped = self.stop_engine("disarmed")?;
+        if !stopped && was_waiting {
+            self.clients.broadcast(&Event::new("disarmed", Value::Object(Map::new())));
+            return Ok(true);
+        }
+        Ok(stopped)
+    }
+
+    /// Starts capture on `monitor`, or on the configured screen when `None`.
+    /// Idempotent: arming an already-armed daemon reports the
     /// current state rather than erroring, because a UI reconnecting after its
     /// own restart has no way to know whether the daemon it just found is
     /// already armed.
-    pub fn arm(&self) -> Result<ArmOutcome> {
+    fn arm_now(&self, monitor: Option<u32>) -> Result<ArmOutcome> {
         let mut armed = self.lock_armed();
         if armed.is_some() {
             return Ok(ArmOutcome { status: self.status_of(armed.as_ref()) });
@@ -604,7 +783,8 @@ impl Daemon {
         // `ensure_writable` already names it and gives the OS's reason, and
         // repeating it produced "cannot arm: the clip directory D:\x is not
         // usable: could not create clip directory D:\x: …".
-        library::ensure_writable(&self.lock_config().clip_dir_path()).context("cannot arm")?;
+        library::ensure_writable(&self.lock_config().clip_dir_path())
+            .context("impossible d’activer le replay")?;
 
         // The slot first, then the engine. With a `clippy replay` session holding
         // the slot, "another clippy capture session … is already running" is the
@@ -612,7 +792,10 @@ impl Daemon {
         // win over the confusing encoder-in-use error the engine would
         // otherwise produce.
         let slot = control::acquire_single_instance()?;
-        let config = self.lock_config().clone();
+        let mut config = self.lock_config().clone();
+        if let Some(monitor) = monitor {
+            config.monitor_index = monitor;
+        }
         // `spawn` returns only once the first capture session is live, so a
         // hardware failure ("no hardware encoder on the capture adapter")
         // arrives here verbatim instead of being lost on the engine thread.
@@ -627,6 +810,7 @@ impl Daemon {
         // tray menu, the control socket, and the desktop UI in stage 4, and an
         // icon that only tracked its own menu would show "idle" through a
         // UI-initiated recording. A no-op when there is no window.
+        crate::window::publish_waiting(false);
         crate::window::publish_armed(true);
         let status = self.status_of(armed.as_ref());
         // Released before the broadcast below, so `clients` is never taken
@@ -644,10 +828,10 @@ impl Daemon {
         Ok(ArmOutcome { status })
     }
 
-    /// Stops capture and releases the single-instance slot. `Ok(false)` means
-    /// the daemon was already idle — a no-op rather than an error, so a UI
-    /// syncing its toggle after a reconnect never sees a spurious failure.
-    pub fn disarm(&self) -> Result<bool> {
+    /// Stops the engine and releases the single-instance slot, then tells
+    /// clients with `event`: `disarmed` when the user turned the replay off,
+    /// `standby` when it is only waiting for the next game.
+    fn stop_engine(&self, event: &str) -> Result<bool> {
         // The guard is bound, not left as a temporary of a `let-else`: a
         // temporary is released at the end of its statement, which would leave
         // `armed` reading `None` for the whole of the teardown below — while
@@ -689,7 +873,13 @@ impl Daemon {
         // "armed", and its own disarm button could not fix it — that call
         // returns `Ok(false)` for an already-idle daemon, which broadcasts
         // nothing, so the toggle stayed wrong until the app restarted.
-        self.clients.broadcast(&Event::new("disarmed", Value::Object(Map::new())));
+        let payload = if event == "standby" {
+            crate::window::publish_waiting(true);
+            self.status().to_json()
+        } else {
+            Value::Object(Map::new())
+        };
+        self.clients.broadcast(&Event::new(event, payload));
         Ok(true)
     }
 
@@ -714,7 +904,7 @@ impl Daemon {
         let saved = {
             let armed = self.lock_armed();
             let Some(state) = armed.as_ref() else {
-                bail!("not armed — send arm first");
+                bail!("le replay n’est pas activé — activez-le d’abord");
             };
             state.engine.clip()?
         };
@@ -737,7 +927,7 @@ impl Daemon {
         let meta = {
             let armed = self.lock_armed();
             let Some(state) = armed.as_ref() else {
-                bail!("not armed — arm Clippy to take a screenshot");
+                bail!("le replay n’est pas activé — activez-le pour prendre une capture d’écran");
             };
             state.engine.screenshot()?
         };
@@ -780,10 +970,11 @@ impl Daemon {
     pub fn shots_reveal(&self, id: &str) -> Result<()> {
         let path = self.shot_image_path(id)?;
         if !path.exists() {
-            bail!("no screenshot {id}");
+            bail!("capture d’écran {id} introuvable");
         }
-        crate::reveal::in_explorer(&path)
-            .with_context(|| format!("could not show screenshot {id} in Explorer"))
+        crate::reveal::in_explorer(&path).with_context(|| {
+            format!("impossible d’afficher la capture d’écran {id} dans l’Explorateur")
+        })
     }
 
     /// Puts an already-saved screenshot back on the clipboard.
@@ -808,7 +999,7 @@ impl Daemon {
         // created under it are still alive.
         let _apartment = crate::com::Apartment::enter()?;
         let (bgra, width, height, stride) = clippy_core::thumb::decode_jpeg_bgra(&path)
-            .with_context(|| format!("could not read screenshot {id}"))?;
+            .with_context(|| format!("impossible de lire la capture d’écran {id}"))?;
         clippy_core::clipboard::copy_bgra(&bgra, width, height, stride)
     }
 
@@ -820,7 +1011,7 @@ impl Daemon {
     /// the clip library.
     fn shot_image_path(&self, id: &str) -> Result<PathBuf> {
         if !library::is_valid_id(id) {
-            bail!("{id:?} is not a screenshot id");
+            bail!("{id:?} n’est pas un identifiant de capture d’écran");
         }
         Ok(shot::image_path(&shot::shots_dir(&self.clip_dir()), id))
     }
@@ -970,6 +1161,10 @@ impl Daemon {
         let clip_hotkey_bound = crate::window::hotkey_bound(crate::window::HotkeyKind::Clip);
         let screenshot_hotkey_bound =
             crate::window::hotkey_bound(crate::window::HotkeyKind::Screenshot);
+        let (wanted, game) = {
+            let watch = self.lock_game();
+            (watch.wanted, watch.sighting.as_ref().map(|s| s.exe.clone()))
+        };
         match armed {
             // Armed: every field comes from the engine, so a `monitor_index`
             // changed in config since arming still reports what is *actually*
@@ -988,6 +1183,8 @@ impl Daemon {
                     clip_dir,
                     clip_hotkey_bound,
                     screenshot_hotkey_bound,
+                    waiting_for_game: false,
+                    game,
                 }
             }
             // Idle: the config is the only truth there is.
@@ -1004,6 +1201,8 @@ impl Daemon {
                 clip_dir,
                 clip_hotkey_bound,
                 screenshot_hotkey_bound,
+                waiting_for_game: wanted,
+                game,
             },
         }
     }
@@ -1143,7 +1342,7 @@ impl Daemon {
         for key in values.keys() {
             if !defaults.contains_key(key) {
                 let known: Vec<&str> = defaults.keys().map(String::as_str).collect();
-                bail!("config.set: unknown key {key:?} (known keys: {})", known.join(", "));
+                bail!("clé inconnue {key:?} (clés connues\u{a0}: {})", known.join(", "));
             }
         }
         // Before the lock, before the merge, before the file: an out-of-range
@@ -1166,7 +1365,13 @@ impl Daemon {
             merged.insert(key.clone(), value.clone());
         }
 
-        let updated: Config = match serde_json::from_value(Value::Object(merged)) {
+        if let Some(mode) = values.get("capture_mode").and_then(Value::as_str)
+            && !matches!(mode.trim().to_ascii_lowercase().as_str(), "desktop" | "game")
+        {
+            bail!("capture_mode accepte « desktop » ou « game », pas {mode:?}");
+        }
+
+        let mut updated: Config = match serde_json::from_value(Value::Object(merged)) {
             Ok(updated) => updated,
             // `from_value`'s message says what was wrong ("invalid type:
             // string, expected u32") but not *which* key, and a settings page
@@ -1178,12 +1383,16 @@ impl Daemon {
                     let mut one = base.clone();
                     one.insert(key.clone(), value.clone());
                     if serde_json::from_value::<Config>(Value::Object(one)).is_err() {
-                        bail!("config.set: {key:?} does not accept {value}: {e}");
+                        bail!("{key:?} n’accepte pas {value}\u{a0}: {e}");
                     }
                 }
-                bail!("config.set: {e}");
+                bail!("valeur invalide\u{a0}: {e}");
             }
         };
+        // Names typed by a client reach the capture byte for byte; see the
+        // function for what it fixes. The list `config.get` then reports is the
+        // cleaned one, so the picker repaints from what is really matched.
+        updated.audio_apps = clippy_core::config::normalize_audio_apps(&updated.audio_apps);
 
         // The last gate, and the only one that touches the filesystem. A
         // `clip_dir` naming somewhere that cannot take clips is refused here,
@@ -1232,7 +1441,7 @@ impl Daemon {
             } else {
                 Some(Some(
                     clippy_core::sound::decode::to_wav(std::path::Path::new(chosen))
-                        .context("that file cannot be used as a sound")?,
+                        .context("ce fichier ne peut pas être utilisé comme son")?,
                 ))
             }
         } else {
@@ -1242,10 +1451,9 @@ impl Daemon {
         // Disk first, then memory — the same order the clip library uses. A
         // failed write leaves the daemon agreeing with the file rather than
         // capturing at a setting no restart would reproduce.
-        let path = self
-            .config_path
-            .as_deref()
-            .context("there is nowhere to save the config — APPDATA is not set")?;
+        let path = self.config_path.as_deref().context(
+            "aucun emplacement où enregistrer la configuration — APPDATA n’est pas défini",
+        )?;
 
         // Before the file, not after. `autostart` lives in the registry
         // (spec §7.3), so this is the one key whose real write is not
@@ -1261,11 +1469,16 @@ impl Daemon {
         // `config.get` reports what actually happened rather than a stale
         // file value.
         if values.contains_key("autostart") {
-            crate::autostart::set_enabled(updated.autostart)
-                .with_context(|| format!("could not set autostart to {}", updated.autostart))?;
+            crate::autostart::set_enabled(updated.autostart).with_context(|| {
+                if updated.autostart {
+                    "impossible d’activer le lancement au démarrage de Windows"
+                } else {
+                    "impossible de désactiver le lancement au démarrage de Windows"
+                }
+            })?;
         }
 
-        updated.save_to(path).context("config.set could not save the config")?;
+        updated.save_to(path).context("impossible d’enregistrer la configuration")?;
 
         // After the config is on disk, not before. A failed write here
         // (the rename in `write_sound_cache` is atomic, so it can only
@@ -1405,8 +1618,9 @@ impl Daemon {
         // A failed scan is a warning, not an error. The setting is written and
         // applied by now; answering `config.set` with a failure would tell the
         // user their folder change did not take when it did.
+        let new_mode = config.capture_mode();
+        drop(config);
         if clip_dir_moved {
-            drop(config);
             if let Err(e) = self.rescan_library() {
                 tracing::warn!(
                     error = %format!("{e:#}"),
@@ -1414,6 +1628,12 @@ impl Daemon {
                     "the new clips folder could not be scanned; the library list is stale"
                 );
             }
+        }
+
+        // After the config guard is released: switching the mode may start or
+        // stop the engine, and starting reads the config again.
+        if values.contains_key("capture_mode") {
+            self.capture_mode_changed(new_mode);
         }
 
         Ok(ConfigUpdate { accepted, requires_rearm, clip_dir_resolved })
@@ -1627,7 +1847,9 @@ impl Daemon {
         let mp4_was_missing = match std::fs::remove_file(paths.mp4()) {
             Ok(()) => false,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-            Err(e) => return Err(e).with_context(|| format!("could not delete clip {id}")),
+            Err(e) => {
+                return Err(e).with_context(|| format!("impossible de supprimer le clip {id}"));
+            }
         };
 
         // The clip is gone whatever happens next, so a stuck sidecar or
@@ -1667,7 +1889,7 @@ impl Daemon {
         self.lock_library().retain(|clip| clip.id != id);
 
         if mp4_was_missing {
-            bail!("no clip {id} in the library")
+            bail!("clip {id} introuvable dans la bibliothèque")
         }
         Ok(())
     }
@@ -1679,7 +1901,7 @@ impl Daemon {
     pub fn rename(&self, id: &str, title: &str) -> Result<ClipMeta> {
         let title = title.trim();
         if title.is_empty() {
-            bail!("a clip title cannot be blank");
+            bail!("le titre d’un clip ne peut pas être vide");
         }
         self.edit_meta(id, |meta| meta.title = title.to_string())
     }
@@ -1709,10 +1931,10 @@ impl Daemon {
     pub fn reveal(&self, id: &str) -> Result<()> {
         let paths = self.paths_for(id)?;
         if !paths.mp4().exists() {
-            bail!("no clip {id} in the library");
+            bail!("clip {id} introuvable dans la bibliothèque");
         }
         crate::reveal::in_explorer(paths.mp4())
-            .with_context(|| format!("could not show clip {id} in Explorer"))
+            .with_context(|| format!("impossible d’afficher le clip {id} dans l’Explorateur"))
     }
 
     /// Every keyframe position in a clip, for the trim bar's ticks.
@@ -1728,10 +1950,10 @@ impl Daemon {
     pub(crate) fn keyframes(&self, clip_id: &str) -> Result<Value> {
         let paths = self.paths_for(clip_id)?;
         if !paths.mp4().is_file() {
-            bail!("no clip {clip_id}");
+            bail!("clip {clip_id} introuvable");
         }
         let keys = export::keyframes_ms(paths.mp4())
-            .with_context(|| format!("could not index the keyframes of clip {clip_id}"))?;
+            .with_context(|| format!("impossible d’indexer les images clés du clip {clip_id}"))?;
         let mut out = Map::new();
         out.insert("clip_id".to_string(), Value::from(clip_id));
         out.insert("keyframes".to_string(), Value::from(keys));
@@ -1760,13 +1982,15 @@ impl Daemon {
         // change, and a client that reads its own mode back learns the daemon
         // does not do that one yet instead of hunting a typo.
         if mode != "fast" {
-            bail!("export mode \"{mode}\" is not supported yet; only \"fast\" is implemented");
+            bail!(
+                "le mode d’export \"{mode}\" n’est pas encore pris en charge\u{a0}; seul \"fast\" est disponible"
+            );
         }
         let paths = self.paths_for(clip_id)?;
         if !paths.mp4().is_file() {
-            bail!("no clip {clip_id}");
+            bail!("clip {clip_id} introuvable");
         }
-        // The source's own sidecar carries the width/height/fps/encoder the
+        //The source's own sidecar carries the width/height/fps/encoder the
         // export inherits verbatim — a stream copy changes none of them — and
         // the duration the requested range is clamped against.
         let source_meta = library::read_sidecar(paths.sidecar())
@@ -1933,7 +2157,7 @@ impl Daemon {
         let mut meta = {
             let library = self.lock_library();
             let Some(found) = library.iter().find(|clip| clip.id == id) else {
-                bail!("no clip {id} in the library");
+                bail!("clip {id} introuvable dans la bibliothèque");
             };
             found.clone()
         };
@@ -1944,7 +2168,7 @@ impl Daemon {
         // other order would answer "renamed" about a title that vanishes at the
         // next scan.
         library::write_sidecar(paths.dir(), &meta)
-            .with_context(|| format!("could not update clip {id}"))?;
+            .with_context(|| format!("impossible de mettre à jour le clip {id}"))?;
 
         if let Some(entry) = self.lock_library().iter_mut().find(|clip| clip.id == id) {
             *entry = meta.clone();
@@ -1958,6 +2182,10 @@ impl Daemon {
     // `clients.rs`.
     fn lock_armed(&self) -> MutexGuard<'_, Option<Armed>> {
         self.armed.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn lock_game(&self) -> MutexGuard<'_, GameWatch> {
+        self.game.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn lock_config(&self) -> MutexGuard<'_, Config> {
@@ -2286,13 +2514,13 @@ mod tests {
 
             let rename_err = daemon.rename(evil, "x").unwrap_err().to_string();
             assert!(
-                rename_err.contains("is not a valid clip id"),
+                rename_err.contains("n’est pas un identifiant de clip valide"),
                 "rename on {evil:?} must be refused at validation, not fall through to a lookup: {rename_err}"
             );
 
             let favorite_err = daemon.set_favorite(evil, true).unwrap_err().to_string();
             assert!(
-                favorite_err.contains("is not a valid clip id"),
+                favorite_err.contains("n’est pas un identifiant de clip valide"),
                 "favorite on {evil:?} must be refused at validation, not fall through to a lookup: {favorite_err}"
             );
 
@@ -2311,7 +2539,8 @@ mod tests {
         daemon.rename(id, "Ace on Ascent").unwrap();
 
         let on_disk =
-            clippy_core::library::read_sidecar(&clippy_core::library::sidecar_path(&dir, id)).unwrap();
+            clippy_core::library::read_sidecar(&clippy_core::library::sidecar_path(&dir, id))
+                .unwrap();
         assert_eq!(on_disk.title, "Ace on Ascent");
         assert_eq!(on_disk.id, id, "the id is the file stem and never changes");
         assert!(
@@ -2418,7 +2647,8 @@ mod tests {
         daemon.set_favorite(id, true).unwrap();
 
         let on_disk =
-            clippy_core::library::read_sidecar(&clippy_core::library::sidecar_path(&dir, id)).unwrap();
+            clippy_core::library::read_sidecar(&clippy_core::library::sidecar_path(&dir, id))
+                .unwrap();
         assert!(on_disk.favorite);
         assert_eq!(on_disk.title, "Clutch", "favoriting must not undo a rename");
 
@@ -2499,11 +2729,13 @@ mod tests {
                 "clip_dir",
                 "clip_hotkey_bound",
                 "encoder",
+                "game",
                 "monitor_index",
                 "ring_seconds_total",
                 "ring_seconds_used",
                 "screenshot_hotkey_bound",
                 "version",
+                "waiting_for_game",
             ],
             "the status key set is published; a UI binds to exactly these"
         );
@@ -2518,6 +2750,61 @@ mod tests {
         // on test scheduling order.
         assert_eq!(object.get("clip_dir").and_then(|v| v.as_str()), Some(r"D:\Clips"));
         assert_eq!(object.get("version").and_then(|v| v.as_str()), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    fn sighting(exe: &str) -> Sighting {
+        Sighting { exe: exe.to_string(), left: 0, top: 0 }
+    }
+
+    /// In `game` mode, turning the replay on with no game in front must not
+    /// record the desktop: it waits, and says it is waiting. This path starts no
+    /// engine, so it runs without a GPU.
+    #[test]
+    fn game_mode_waits_for_a_game_instead_of_recording_the_desktop() {
+        let daemon =
+            idle("game-waits", Config { capture_mode: "game".into(), ..Config::default() });
+        let outcome = daemon.arm().expect("waiting is not a failure");
+        assert!(!outcome.status.armed, "nothing is recording");
+        assert!(outcome.status.waiting_for_game);
+        let status = daemon.status();
+        assert!(status.waiting_for_game && !status.armed);
+        assert_eq!(status.to_json()["waiting_for_game"], serde_json::Value::Bool(true));
+    }
+
+    /// Turning it off while it waits is a real change, so a UI that asked gets
+    /// `true` and the wait is over; a second call finds nothing to stop.
+    #[test]
+    fn disarming_a_waiting_replay_ends_the_wait() {
+        let daemon =
+            idle("game-disarm", Config { capture_mode: "game".into(), ..Config::default() });
+        daemon.arm().expect("waits");
+        assert!(daemon.disarm().expect("disarm"));
+        assert!(!daemon.status().waiting_for_game);
+        assert!(!daemon.disarm().expect("disarm again"), "already off");
+    }
+
+    /// A loading screen swaps windows for a moment; that must not count as the
+    /// game ending. Only a game gone for longer than the grace period does.
+    #[test]
+    fn a_game_out_of_sight_for_a_moment_is_still_the_game() {
+        let daemon =
+            idle("game-grace", Config { capture_mode: "game".into(), ..Config::default() });
+        let start = Instant::now();
+        daemon.game_tick(Some(sighting("eldenring.exe")), start);
+        assert_eq!(daemon.status().game.as_deref(), Some("eldenring.exe"));
+        daemon.game_tick(None, start + Duration::from_secs(2));
+        assert_eq!(daemon.status().game.as_deref(), Some("eldenring.exe"), "inside the grace");
+        daemon.game_tick(None, start + GAME_GRACE + Duration::from_secs(1));
+        assert_eq!(daemon.status().game, None, "past the grace");
+    }
+
+    #[test]
+    fn an_unknown_capture_mode_is_refused() {
+        let daemon = idle("game-mode-typo", Config::default());
+        let mut values = Map::new();
+        values.insert("capture_mode".into(), Value::from("gmae"));
+        let error = daemon.set_config(&values).expect_err("typo");
+        assert!(format!("{error:#}").contains("capture_mode"), "{error:#}");
     }
 
     /// The three answers "is this hotkey listening?" can have, as they reach a
@@ -2541,6 +2828,8 @@ mod tests {
             clip_dir: String::new(),
             clip_hotkey_bound: clip,
             screenshot_hotkey_bound: shot,
+            waiting_for_game: false,
+            game: None,
         };
         let at = |clip, shot, key: &str| status(clip, shot).to_json()[key].clone();
         let null = serde_json::Value::Null;
@@ -2651,7 +2940,7 @@ mod tests {
         };
         assert!(error.contains("fps"), "the error names the key: {error}");
         assert!(
-            error.contains("does not accept"),
+            error.contains("n’accepte pas"),
             "a string fps is a type problem, not a range problem: {error}"
         );
     }
@@ -2665,7 +2954,7 @@ mod tests {
             Ok(_) => panic!("an idle daemon has no ring to clip from"),
             Err(e) => format!("{e:#}"),
         };
-        assert_eq!(error, "not armed — send arm first");
+        assert_eq!(error, "le replay n’est pas activé — activez-le d’abord");
     }
 
     /// A clip that reaches the library must reach the clients too.
@@ -2891,7 +3180,7 @@ mod tests {
         let error = daemon
             .set_config(&one("mic_volume", over))
             .expect_err("one past the ceiling is out of range");
-        assert!(format!("{error}").contains("0 to 200"), "unexpected message: {error}");
+        assert!(format!("{error}").contains("de 0 à 200"), "unexpected message: {error}");
         cleanup(&dir);
     }
 

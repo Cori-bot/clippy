@@ -165,7 +165,23 @@ describe('resolveStepperInput', () => {
 
 describe('formatCombo', () => {
   it('title-cases each named key in a normal combo', () => {
-    expect(formatCombo('ctrl+shift+f10')).toEqual(['Ctrl', 'Shift', 'F10']);
+    expect(formatCombo('ctrl+shift+f10')).toEqual(['Ctrl', 'Maj', 'F10']);
+  });
+
+  it('shows the French name of the keys that have one', () => {
+    expect(formatCombo('alt+enter')).toEqual(['Alt', 'Entrée']);
+    expect(formatCombo('ctrl+escape')).toEqual(['Ctrl', 'Échap']);
+    expect(formatCombo('win+delete')).toEqual(['Win', 'Suppr']);
+    expect(formatCombo('ctrl+ ')).toEqual(['Ctrl', 'Espace']);
+    expect(formatCombo('ctrl+space')).toEqual(['Ctrl', 'Espace']);
+    expect(formatCombo('alt+arrowleft')).toEqual(['Alt', '←']);
+    expect(formatCombo('alt+arrowup')).toEqual(['Alt', '↑']);
+    expect(formatCombo('alt+arrowright')).toEqual(['Alt', '→']);
+    expect(formatCombo('alt+arrowdown')).toEqual(['Alt', '↓']);
+  });
+
+  it('does not resolve a token to something inherited from Object', () => {
+    expect(formatCombo('constructor')).toEqual(['Constructor']);
   });
 
   it('upper-cases a single character', () => {
@@ -181,11 +197,11 @@ describe('formatCombo', () => {
   });
 
   it('drops empty segments from a doubled + in the middle', () => {
-    expect(formatCombo('ctrl++shift')).toEqual(['Ctrl', 'Shift']);
+    expect(formatCombo('ctrl++shift')).toEqual(['Ctrl', 'Maj']);
   });
 
   it('drops the empty segment left by a leading +', () => {
-    expect(formatCombo('+shift')).toEqual(['Shift']);
+    expect(formatCombo('+shift')).toEqual(['Maj']);
   });
 });
 

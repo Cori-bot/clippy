@@ -36,10 +36,11 @@ pub const OLD_SUFFIX: &str = ".old";
 
 /// The folder Clippy is installed in — where this executable lives.
 pub fn install_dir() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("could not locate clippy-ui.exe: {e}"))?;
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("impossible de localiser clippy-ui.exe\u{a0}: {e}"))?;
     exe.parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| "could not work out which folder Clippy is installed in".to_string())
+        .ok_or_else(|| "impossible de déterminer le dossier d’installation de Clippy".to_string())
 }
 
 /// Whether files can be created here, established by creating one.
@@ -52,8 +53,9 @@ pub fn writable(dir: &Path) -> Result<(), String> {
     let probe = dir.join(".clippy-write-probe");
     std::fs::write(&probe, b"clippy").map_err(|_| {
         format!(
-            "Clippy cannot update itself in {}, because it does not have permission to write there. \
-             Move the Clippy folder somewhere like your Documents, or download the update by hand.",
+            "Clippy ne peut pas se mettre à jour dans {}, car il n’a pas l’autorisation d’y écrire. \
+             Déplacer le dossier de Clippy ailleurs, par exemple dans Documents, ou télécharger la \
+             mise à jour à la main.",
             dir.display()
         )
     })?;
@@ -63,14 +65,17 @@ pub fn writable(dir: &Path) -> Result<(), String> {
 
 /// Extracts `zip` under `into` and returns the directory holding the binaries.
 pub fn unpack(zip: &Path, into: &Path) -> Result<PathBuf, String> {
-    let file = std::fs::File::open(zip).map_err(|e| format!("could not open the update: {e}"))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("the update is not a valid zip: {e}"))?;
+    let file = std::fs::File::open(zip)
+        .map_err(|e| format!("impossible d’ouvrir la mise à jour\u{a0}: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("la mise à jour n’est pas un zip valide\u{a0}: {e}"))?;
     // `extract` validates each entry's CRC-32 as it writes, so a corrupt member
     // is caught here rather than by whatever tries to run it. It also refuses
     // entry names that escape `into` -- which is why this is the crate's own
     // `extract` on a current major rather than a hand-rolled write loop.
-    archive.extract(into).map_err(|e| format!("could not unpack the update: {e}"))?;
+    archive
+        .extract(into)
+        .map_err(|e| format!("impossible de décompresser la mise à jour\u{a0}: {e}"))?;
     payload_root(into)
 }
 
@@ -87,14 +92,14 @@ fn payload_root(extracted: &Path) -> Result<PathBuf, String> {
         return Ok(extracted.to_path_buf());
     }
     let entries = std::fs::read_dir(extracted)
-        .map_err(|e| format!("could not read the unpacked update: {e}"))?;
+        .map_err(|e| format!("impossible de lire la mise à jour décompressée\u{a0}: {e}"))?;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() && complete(&path) {
             return Ok(path);
         }
     }
-    Err("the downloaded update does not contain the Clippy programs".to_string())
+    Err("la mise à jour téléchargée ne contient pas les programmes de Clippy".to_string())
 }
 
 /// The one filesystem operation the swap turns on.
@@ -131,7 +136,9 @@ fn swap_with(install: &Path, payload: &Path, rename: &Rename) -> Result<(), Stri
     // module is a refusal that leaves the install exactly as it found it.
     for name in BINARIES {
         if !payload.join(name).is_file() {
-            return Err(format!("the downloaded update is missing {name}, so nothing was changed"));
+            return Err(format!(
+                "il manque {name} dans la mise à jour téléchargée\u{a0}: rien n’a été modifié"
+            ));
         }
     }
 
@@ -144,7 +151,7 @@ fn swap_with(install: &Path, payload: &Path, rename: &Rename) -> Result<(), Stri
         let old = install.join(format!("{name}{OLD_SUFFIX}"));
 
         if let Err(e) = rename(&live, &old) {
-            let cause = format!("could not move the old {name} aside: {e}");
+            let cause = format!("impossible de mettre de côté l’ancien {name}\u{a0}: {e}");
             return Err(undo(install, &vacated, &cause, rename));
         }
         // Recorded between the two renames, not after them. Right here the
@@ -153,7 +160,7 @@ fn swap_with(install: &Path, payload: &Path, rename: &Rename) -> Result<(), Stri
         vacated.push(name);
 
         if let Err(e) = rename(&payload.join(name), &live) {
-            let cause = format!("could not put the new {name} in place: {e}");
+            let cause = format!("impossible de mettre le nouveau {name} en place\u{a0}: {e}");
             return Err(undo(install, &vacated, &cause, rename));
         }
     }
@@ -182,20 +189,24 @@ fn undo(install: &Path, vacated: &[&str], cause: &str, rename: &Rename) -> Strin
     let stranded = roll_back(install, vacated, rename);
     if stranded.is_empty() {
         return format!(
-            "{cause}. Clippy was not updated; the version you were running is still installed."
+            "{cause}. Clippy n’a pas été mis à jour\u{a0}; la version utilisée jusqu’ici est toujours \
+             installée."
         );
     }
     let names =
         stranded.iter().map(|name| format!("{name}{OLD_SUFFIX}")).collect::<Vec<_>>().join(", ");
     format!(
-        "{cause}, and putting the previous version back failed too, so some of Clippy's programs \
-         are now missing or left at a different version. Fix this before starting Clippy again: \
-         starting it first may permanently delete the \"{OLD_SUFFIX}\" copy named below, since \
-         Clippy clears out leftover \"{OLD_SUFFIX}\" files at startup and cannot tell this one \
-         apart from ordinary litter. In {}, for each of {names}: drop the \"{OLD_SUFFIX}\" \
-         ending to restore it. If the name without \"{OLD_SUFFIX}\" is missing, that is a plain \
-         rename; if it already exists, it is a different version, and the rename will overwrite \
-         it with the \"{OLD_SUFFIX}\" copy. Or download Clippy again from the releases page.",
+        "{cause}, et la remise en place de la version précédente a aussi échoué\u{a0}: certains \
+         programmes de Clippy sont désormais manquants ou laissés dans une version différente. \
+         À corriger avant de relancer Clippy\u{a0}: le relancer d’abord pourrait supprimer \
+         définitivement la copie «\u{a0}{OLD_SUFFIX}\u{a0}» indiquée plus bas, car Clippy efface \
+         au démarrage les fichiers «\u{a0}{OLD_SUFFIX}\u{a0}» restants et ne peut pas distinguer \
+         celui-ci d’un simple résidu. Dans {}, pour chacun de {names}\u{a0}: retirer la \
+         terminaison «\u{a0}{OLD_SUFFIX}\u{a0}» pour le restaurer. Si le nom sans \
+         «\u{a0}{OLD_SUFFIX}\u{a0}» est absent, c’est un simple renommage\u{a0}; s’il existe \
+         déjà, c’est une autre version, et le renommage l’écrasera avec la copie \
+         «\u{a0}{OLD_SUFFIX}\u{a0}». Ou télécharger de nouveau Clippy depuis la page des \
+         publications.",
         install.display()
     )
 }
@@ -450,8 +461,11 @@ mod tests {
         let install = scratch("interrupted");
         install_with(&install, "new");
         std::fs::remove_file(install.join("clippy-daemon.exe")).expect("remove");
-        std::fs::write(install.join(format!("clippy-daemon.exe{OLD_SUFFIX}")), "old clippy-daemon.exe")
-            .expect("write");
+        std::fs::write(
+            install.join(format!("clippy-daemon.exe{OLD_SUFFIX}")),
+            "old clippy-daemon.exe",
+        )
+        .expect("write");
         // An ordinary leftover beside it, which must still be swept away.
         std::fs::write(install.join(format!("clippy.exe{OLD_SUFFIX}")), "old clippy.exe")
             .expect("write");
@@ -464,7 +478,11 @@ mod tests {
             "the only copy left of a program must be restored, not deleted"
         );
         assert!(!install.join(format!("clippy-daemon.exe{OLD_SUFFIX}")).exists());
-        assert_eq!(contents(&install, "clippy.exe"), "new clippy.exe", "the live build is untouched");
+        assert_eq!(
+            contents(&install, "clippy.exe"),
+            "new clippy.exe",
+            "the live build is untouched"
+        );
         assert!(
             !install.join(format!("clippy.exe{OLD_SUFFIX}")).exists(),
             "a leftover beside a live binary is still litter"
@@ -658,7 +676,7 @@ mod tests {
 
         assert!(error.contains("clippy.exe"), "the message must name the file: {error}");
         assert!(
-            error.contains("still installed"),
+            error.contains("toujours installée"),
             "a clean refusal must tell the user they lost nothing: {error}"
         );
         assert_install_is_untouched(&install);
@@ -718,7 +736,7 @@ mod tests {
         let error = swap_with(&install, &payload, &rename).expect_err("the swap must fail");
 
         assert!(
-            error.contains("missing or left at a different version"),
+            error.contains("manquants ou laissés dans une version différente"),
             "a stranded install must not read like an ordinary failed update: {error}"
         );
         assert!(
@@ -760,7 +778,7 @@ mod tests {
         let error = swap_with(&install, &payload, &rename).expect_err("the swap must fail");
 
         assert!(
-            error.contains("missing or left at a different version"),
+            error.contains("manquants ou laissés dans une version différente"),
             "this is not an ordinary failed update: {error}"
         );
         assert!(
@@ -768,7 +786,7 @@ mod tests {
             "the user has to be told which file is involved: {error}"
         );
         assert!(
-            error.contains("overwrite"),
+            error.contains("l’écrasera"),
             "dropping the .old suffix here replaces a file that exists and works, not a plain \
              rename -- the message must say so: {error}"
         );
@@ -868,7 +886,7 @@ mod tests {
 
         let error = unpack(&archive, &dir.join("staged")).expect_err("must refuse");
 
-        assert!(error.contains("not a valid zip"), "{error}");
+        assert!(error.contains("n’est pas un zip valide"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

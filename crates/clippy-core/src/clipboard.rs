@@ -28,7 +28,7 @@ const RETRY_AFTER: std::time::Duration = std::time::Duration::from_millis(30);
 ///   copying it verbatim shears the image.
 pub fn dibv5(bgra: &[u8], width: u32, height: u32, stride: usize) -> Result<Vec<u8>> {
     if width == 0 || height == 0 {
-        bail!("cannot copy a {width}x{height} image to the clipboard");
+        bail!("impossible de copier une image {width}x{height} dans le presse-papiers");
     }
     let row = (width as usize).checked_mul(4).context("image geometry overflows")?;
     if stride < row {
@@ -82,7 +82,7 @@ pub fn copy_bgra(bgra: &[u8], width: u32, height: u32, stride: usize) -> Result<
         if OpenClipboard(Some(HWND::default())).is_err() {
             std::thread::sleep(RETRY_AFTER);
             OpenClipboard(Some(HWND::default()))
-                .context("another program is holding the clipboard")?;
+                .context("un autre programme utilise le presse-papiers")?;
         }
         let result = set_dib(&dib);
         // Unconditional. An early return between open and close would leave

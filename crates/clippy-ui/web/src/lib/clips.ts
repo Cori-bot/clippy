@@ -41,15 +41,17 @@ export function formatDuration(ms: number): string {
 }
 
 export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB'];
+  // French units (octets) and a decimal comma, with a no-break space so the
+  // number never wraps away from its unit.
+  if (bytes < 1024) return `${bytes} o`;
+  const units = ['Ko', 'Mo', 'Go'];
   let value = bytes / 1024;
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
     value /= 1024;
     unit++;
   }
-  return `${value.toFixed(1)} ${units[unit]}`;
+  return `${value.toFixed(1).replace('.', ',')} ${units[unit]}`;
 }
 
 /**
@@ -70,5 +72,5 @@ export function mergeSaved(clips: ClipMeta[], saved: ClipMeta): ClipMeta[] {
 }
 
 export function counterLabel(index: number, total: number): string {
-  return total === 0 ? '' : `${index + 1} of ${total}`;
+  return total === 0 ? '' : `${index + 1} sur ${total}`;
 }

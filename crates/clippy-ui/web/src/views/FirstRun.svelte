@@ -8,10 +8,17 @@
   import Icon from '../components/ui/Icon.svelte';
   import KeycapInput from '../components/ui/KeycapInput.svelte';
   import Select from '../components/ui/Select.svelte';
+  import Toggle from '../components/ui/Toggle.svelte';
 
   let step = $state(1);
   let monitors = $state<Monitor[]>([]);
   let monitorIndex = $state(0);
+  // What the wizard sets up besides the capture itself. Both start on because
+  // that is what makes the hotkey work without opening the app first, and both
+  // are shown as choices so nothing is switched on out of sight.
+  let captureMode = $state('desktop');
+  let autostart = $state(true);
+  let autoArm = $state(true);
   /**
    * The whole config record, not just the hotkey string it used to be.
    *
@@ -157,16 +164,16 @@
       // saved it -- the common path is a user who never touched the row, and
       // for them this is the write that puts it in the file.
       //
-      // `auto_arm` and `autostart` go in the same call, which is what "set up
-      // Clippy" means to someone who just pressed Finish and arm: from now on
-      // the recorder starts with Windows and arms itself, so the hotkey works
-      // without opening this app first. Both stay switchable in Settings and
-      // from the tray icon.
+      // `auto_arm` and `autostart` go in the same call. Both are on unless the
+      // user turned them off on the last step: from then on the recorder starts
+      // with Windows and arms itself, so the hotkey works without opening this
+      // app first. Both stay switchable in Settings and from the tray icon.
       await call('config.set', {
+        capture_mode: captureMode,
         monitor_index: monitorIndex,
         clip_hotkey: hotkey,
-        auto_arm: true,
-        autostart: true,
+        auto_arm: autoArm,
+        autostart,
       });
     } catch (e) {
       // Setup itself did not happen -- staying on this step, whose only
@@ -193,32 +200,49 @@
 </script>
 
 <div class="wizard">
-  <h1>Set up Clippy</h1>
-  <p class="step tnum">Step {step} of 3</p>
+  <h1>Configurer Clippy</h1>
+  <p class="step tnum">Étape {step} sur 3</p>
 
   {#if step === 1}
-    <h2>Which screen do you play on?</h2>
+    <h2>Que faut-il enregistrer&nbsp;?</h2>
     <Select
-      value={String(monitorIndex)}
-      options={monitors.map((m) => ({
-        value: String(m.index),
-        label: `${m.name} - ${m.width}x${m.height} (${m.adapter})`,
-      }))}
-      label="Monitor"
-      onchange={(v) => (monitorIndex = Number(v))} />
-    <Button variant="primary" onclick={() => (step = 2)}>Next</Button>
+      value={captureMode}
+      options={[
+        { value: 'desktop', label: 'Jeux et bureau' },
+        { value: 'game', label: 'Jeux uniquement' },
+      ]}
+      label="Quoi enregistrer"
+      onchange={(v) => (captureMode = v)} />
+    <p class="hint">
+      {captureMode === 'game'
+        ? 'Le replay attend qu’un jeu soit au premier plan en plein écran et n’enregistre jamais le bureau.'
+        : 'Tout ce qui est affiché à l’écran est enregistré tant que le replay est actif.'}
+    </p>
+    {#if captureMode === 'desktop'}
+      <h2>Quel écran capturer&nbsp;?</h2>
+      <Select
+        value={String(monitorIndex)}
+        options={monitors.map((m) => ({
+          value: String(m.index),
+          label: `${m.name} – ${m.width}×${m.height} (${m.adapter})`,
+        }))}
+        label="Écran"
+        onchange={(v) => (monitorIndex = Number(v))} />
+    {/if}
+    <Button variant="primary" onclick={() => (step = 2)}>Suivant</Button>
   {:else if step === 2}
-    <h2>Confirm your clip hotkey</h2>
-    <p class="hint">Press it now. Some overlays quietly take a hotkey inside games, so this checks Clippy really gets it.</p>
+    <h2>Confirmer le raccourci de clip</h2>
+    <p class="hint">Appuyer dessus maintenant. Certains overlays interceptent discrètement un raccourci dans les jeux&nbsp;: cette vérification confirme que Clippy le reçoit bien.</p>
     <div class="hkrow">
       <KeycapInput
         combo={capture ?? hotkey}
         capturing={capture !== null}
-        label="Clip hotkey"
+        label="Raccourci de clip"
         oncapture={captureHotkey}
+        oncancel={() => (capture = null)}
         onstart={startCapture} />
       {#if capture !== null && capture !== hotkey}
-        <Button size="sm" variant="primary" onclick={saveHotkey}>Save</Button>
+        <Button size="sm" variant="primary" onclick={saveHotkey}>Enregistrer</Button>
       {/if}
     </div>
     <!--
@@ -238,35 +262,48 @@
       {:else}
         <span class="dot"></span>
       {/if}
-      <span>{problem ?? (heard ? 'Clippy received it.' : 'Waiting for a press. Click the keys above to pick a different combination.')}</span>
+      <span>{problem ?? (heard ? 'Clippy l’a bien reçu.' : 'En attente d’un appui. Cliquer sur les touches ci-dessus pour choisir une autre combinaison.')}</span>
     </p>
-    <Button variant="primary" onclick={() => (step = 3)}>Next</Button>
+    <div class="nav">
+      <Button variant="ghost" onclick={() => (step = 1)}>Retour</Button>
+      <Button variant="primary" onclick={() => (step = 3)}>Suivant</Button>
+    </div>
   {:else}
-    <h2>Where should clips go?</h2>
+    <h2>Où enregistrer les clips&nbsp;?</h2>
     <!-- Read-only because the daemon owns the picker, and a typed path that
          does not exist is a refusal the user has to decode. There is no Reset
          here because the box already shows the default -- nothing has been
          changed away from yet. -->
     <div class="pathrow">
       <span class="path">{clipDir}</span>
-      <Button onclick={pickFolder}>Choose...</Button>
+      <Button onclick={pickFolder}>Choisir…</Button>
     </div>
-    <p class="hint">You can change this any time in Settings, or from the Clippy tray icon.</p>
-    <p class="hint">
-      Clippy will start with Windows and arm itself, so your hotkey works without opening the app.
-      Turn that off in Settings or from the tray icon.
-    </p>
-    <Button variant="primary" onclick={finish}>Finish and arm</Button>
+    <p class="hint">Modifiable à tout moment dans Paramètres ou depuis l’icône Clippy de la zone de notification.</p>
+    <div class="opt">
+      <Toggle checked={autostart} label="Lancer Clippy avec Windows" onchange={(next) => (autostart = next)} />
+      <span>Lancer Clippy avec Windows</span>
+    </div>
+    <div class="opt">
+      <Toggle checked={autoArm} label="Activer le replay à chaque lancement" onchange={(next) => (autoArm = next)} />
+      <span>Activer le replay à chaque lancement</span>
+    </div>
+    <p class="hint">Ainsi le raccourci fonctionne sans ouvrir l’application. Modifiable dans Paramètres ou depuis l’icône de la zone de notification.</p>
+    <div class="nav">
+      <Button variant="ghost" onclick={() => (step = 2)}>Retour</Button>
+      <Button variant="primary" onclick={finish}>Terminer et activer le replay</Button>
+    </div>
   {/if}
 </div>
 
 <style>
   .wizard { width: min(560px, 100%); margin: 8vh auto; padding: 0 24px; display: grid; gap: 10px; justify-items: start; }
-  h1 { font-size: 21px; font-weight: 650; margin: 0; }
+  h1 { font-size: 19px; font-weight: 650; margin: 0; }
   h2 { font-size: 15px; font-weight: 650; margin: 14px 0 4px; }
   .step { color: var(--faint); margin: 0; font-size: 11px; }
   .hint { color: var(--dim); font-size: 11.5px; margin: 2px 0; }
   .hkrow { display: flex; align-items: center; gap: 8px; }
+  .nav { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .opt { display: flex; align-items: center; gap: 10px; font-size: 13px; }
   .status {
     display: flex;
     align-items: center;

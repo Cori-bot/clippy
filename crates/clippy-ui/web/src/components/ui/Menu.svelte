@@ -192,7 +192,7 @@
     text-align: left;
     cursor: pointer;
   }
-  .item.active { background: var(--hover); }
+  .item.active { background: rgba(255, 255, 255, 0.12); }
   .item.danger { color: var(--danger); }
   .item.danger.active { background: color-mix(in srgb, var(--danger) 13%, transparent); }
   hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; }

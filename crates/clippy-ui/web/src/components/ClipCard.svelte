@@ -31,10 +31,10 @@
 
   /** One list for the `⋯` menu and the right-click menu, so they cannot drift apart. */
   const items: MenuItem[] = $derived([
-    { id: 'favorite', label: clip.favorite ? 'Unfavourite' : 'Favourite', icon: clip.favorite ? 'star-filled' : 'star' },
-    { id: 'rename', label: 'Rename', icon: 'pencil' },
-    { id: 'reveal', label: 'Show in folder', icon: 'folder' },
-    { id: 'delete', label: 'Delete', icon: 'trash', danger: true, separatorBefore: true },
+    { id: 'favorite', label: clip.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris', icon: clip.favorite ? 'star-filled' : 'star' },
+    { id: 'rename', label: 'Renommer', icon: 'pencil' },
+    { id: 'reveal', label: 'Afficher dans le dossier', icon: 'folder' },
+    { id: 'delete', label: 'Supprimer', icon: 'trash', danger: true, separatorBefore: true },
   ]);
 
   function closeMenus() {
@@ -76,7 +76,7 @@
   {oncontextmenu}>
   {#if selectable}
     <input class="select-clip" type="checkbox" data-card-control
-      aria-label="Select {clip.title}" {checked}
+      aria-label="Sélectionner {clip.title}" {checked}
       onclick={(event) => { event.stopPropagation(); ontoggle?.(event.shiftKey); }} />
   {/if}
   <!-- `aria-label`, because nothing inside this button can name it: the
@@ -99,7 +99,7 @@
            read until it is opened, so a colour was the whole of it. The Icon
            inside stays `aria-hidden`; the span is what carries the name. -->
       {#if clip.favorite}
-        <span class="star" role="img" aria-label="Favourited"><Icon name="star-filled" size={13} /></span>
+        <span class="star" role="img" aria-label="Favori"><Icon name="star-filled" size={13} /></span>
       {/if}
 
       {#if renaming}
@@ -121,7 +121,7 @@
       {:else}
         <span class="title">{clip.title}</span>
         <span class="dots" data-card-control>
-          <IconButton icon="dots" label="More actions for {clip.title}" size={14}
+          <IconButton icon="dots" label="Autres actions pour {clip.title}" size={14}
             onclick={() => (menuOpen = !menuOpen)} />
           {#if menuOpen}
             <Menu {items} onpick={pick} onclose={closeMenus} />
@@ -133,7 +133,7 @@
          inside a `{...}` expression renders as the six literal characters
          `&middot;` -- entities are only decoded in markup. -->
     <span class="sub tnum">
-      {formatBytes(clip.bytes)} &middot; {clip.width}x{clip.height}{#if clip.fps} &middot; {clip.fps} fps{/if}
+      {formatBytes(clip.bytes)} &middot; {clip.width}x{clip.height}{#if clip.fps} &middot; {clip.fps}&nbsp;fps{/if}
     </span>
   </div>
 
@@ -209,6 +209,9 @@
   .card:focus-within .dots,
   .card.selected .dots,
   .card.menuOpen .dots { opacity: 1; }
+  /* `Menu` hangs off this 30px-wide box and shrinks to fit it, so the longer
+     French labels ("Afficher dans le dossier") would wrap onto two lines. */
+  .dots :global(.menu) { width: max-content; }
 
   .rn {
     flex: 1;

@@ -7,12 +7,12 @@
 //! from the worker. The worker asks for a state change by posting a message.
 
 use anyhow::{Context as _, Result, anyhow};
+use serde_json::Value;
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFY_ICON_MESSAGE,
     NOTIFYICONDATAW, Shell_NotifyIconW,
 };
-use serde_json::Value;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, HICON, HMENU,
     MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, PostMessageW,
@@ -40,6 +40,11 @@ pub const ID_CLIP_SOUND: usize = 10;
 const ID_RESOLUTION_BASE: usize = 100;
 const ID_FPS_BASE: usize = 200;
 const ID_REPLAY_BASE: usize = 300;
+const ID_CAPTURE_MODE_BASE: usize = 400;
+
+/// What the capture mode submenu offers: a label and the config value it writes.
+pub const CAPTURE_MODE_CHOICES: [(&str, &str); 2] =
+    [("Jeux et bureau", "desktop"), ("Jeux uniquement", "game")];
 
 /// What the quality submenus offer: a label and the config value it writes.
 /// Short lists on purpose -- any value is still one `config.set` away in the
@@ -59,6 +64,9 @@ pub const REPLAY_CHOICES: [u32; 5] = [10, 15, 30, 60, 120];
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MenuPrefs {
     pub armed: bool,
+    /// On, but idle until a game is in front.
+    pub waiting: bool,
+    pub capture_mode: String,
     pub autostart: bool,
     pub auto_arm: bool,
     pub clip_sound: bool,
@@ -78,6 +86,9 @@ pub fn choice_for_id(id: usize) -> Option<(&'static str, Value)> {
     }
     if let Some(i) = index(ID_REPLAY_BASE, REPLAY_CHOICES.len()) {
         return Some(("replay_seconds", Value::from(REPLAY_CHOICES[i])));
+    }
+    if let Some(i) = index(ID_CAPTURE_MODE_BASE, CAPTURE_MODE_CHOICES.len()) {
+        return Some(("capture_mode", Value::from(CAPTURE_MODE_CHOICES[i].1)));
     }
     None
 }
@@ -123,6 +134,8 @@ pub struct Tray {
     hwnd: HWND,
     icons: [HICON; 2],
     armed: bool,
+    /// The replay is on but idle, waiting for a game (`game` capture mode).
+    waiting: bool,
 }
 
 impl Tray {
@@ -131,7 +144,7 @@ impl Tray {
     /// dropped on that same thread.
     pub unsafe fn add(hwnd: HWND) -> Result<Self> {
         let icons = [unsafe { make_icon(false) }?, unsafe { make_icon(true) }?];
-        let tray = Self { hwnd, icons, armed: false };
+        let tray = Self { hwnd, icons, armed: false, waiting: false };
         // A failed `NIM_ADD` is kept rather than propagated, because its most
         // likely cause is benign and self-correcting: the daemon autostarts at
         // login (§7.3) and can beat `explorer.exe` to the desktop, so there is
@@ -163,11 +176,12 @@ impl Tray {
 
     /// Swaps the icon and the tooltip. Cheap enough to call on every state
     /// change; a `NIM_MODIFY` that changes nothing is skipped outright.
-    pub fn set_armed(&mut self, armed: bool) {
-        if self.armed == armed {
+    pub fn set_state(&mut self, armed: bool, waiting: bool) {
+        if self.armed == armed && self.waiting == waiting {
             return;
         }
         self.armed = armed;
+        self.waiting = waiting;
         match unsafe { self.notify(NIM_MODIFY) } {
             // The tray icon is the daemon's only output on a machine with no
             // console, so its state changes are logged: "the icon is wrong" is
@@ -189,7 +203,11 @@ impl Tray {
         };
         // The tooltip is the only text the user gets for "is it recording?"
         // without opening the menu, so it names the state outright.
-        let tip = if self.armed { "Clippy — armed" } else { "Clippy — idle" };
+        let tip = match (self.armed, self.waiting) {
+            (true, _) => "Clippy — replay activé",
+            (false, true) => "Clippy — en attente d’un jeu",
+            (false, false) => "Clippy — replay désactivé",
+        };
         for (i, c) in tip.encode_utf16().enumerate().take(data.szTip.len() - 1) {
             data.szTip[i] = c;
         }
@@ -253,17 +271,36 @@ unsafe fn append_choices(menu: HMENU, title: &str, base: usize, choices: &[(Stri
 pub unsafe fn show_menu(hwnd: HWND, prefs: &MenuPrefs) -> Option<usize> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        let toggle = if prefs.armed { "Disarm" } else { "Arm" };
+        let toggle = match (prefs.armed, prefs.waiting) {
+            (true, _) => "Désactiver le replay",
+            (false, true) => "Désactiver le replay (en attente d’un jeu)",
+            (false, false) => "Activer le replay",
+        };
         let _ = AppendMenuW(menu, MF_STRING, ID_TOGGLE, &HSTRING::from(toggle));
         // Both need a live buffer, so they are greyed rather than hidden while
         // disarmed: the menu keeps one shape, and the reason a click would do
         // nothing is visible.
         let needs_armed = if prefs.armed { MF_STRING } else { MF_STRING | MF_GRAYED };
-        let _ = AppendMenuW(menu, needs_armed, ID_CLIP, &HSTRING::from("Save clip now"));
-        let _ = AppendMenuW(menu, needs_armed, ID_SCREENSHOT, &HSTRING::from("Take screenshot"));
+        let _ = AppendMenuW(
+            menu,
+            needs_armed,
+            ID_CLIP,
+            &HSTRING::from("Enregistrer un clip maintenant"),
+        );
+        let _ = AppendMenuW(
+            menu,
+            needs_armed,
+            ID_SCREENSHOT,
+            &HSTRING::from("Prendre une capture d’écran"),
+        );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_UI, &HSTRING::from("Open Clippy"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, &HSTRING::from("Open clips folder"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_UI, &HSTRING::from("Ouvrir Clippy"));
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            ID_OPEN_FOLDER,
+            &HSTRING::from("Ouvrir le dossier des clips"),
+        );
         // Directly under "Open clips folder": the two are the same subject, and
         // a user who just looked at where clips land is the one who wants to
         // move them. The ellipsis is the Windows convention for "this opens a
@@ -272,7 +309,7 @@ pub unsafe fn show_menu(hwnd: HWND, prefs: &MenuPrefs) -> Option<usize> {
             menu,
             MF_STRING,
             ID_CHANGE_FOLDER,
-            &HSTRING::from("Change clips folder..."),
+            &HSTRING::from("Changer le dossier des clips…"),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
 
@@ -281,41 +318,48 @@ pub unsafe fn show_menu(hwnd: HWND, prefs: &MenuPrefs) -> Option<usize> {
         // fixed when the session opens.
         let resolutions: Vec<(String, bool)> = RESOLUTION_CHOICES
             .iter()
-            .map(|(label, value)| {
-                (label.to_string(), prefs.resolution.eq_ignore_ascii_case(value))
-            })
+            .map(|(label, value)| (label.to_string(), prefs.resolution.eq_ignore_ascii_case(value)))
             .collect();
-        append_choices(menu, "Resolution", ID_RESOLUTION_BASE, &resolutions);
+        append_choices(menu, "Résolution", ID_RESOLUTION_BASE, &resolutions);
         let rates: Vec<(String, bool)> =
             FPS_CHOICES.iter().map(|f| (format!("{f} fps"), prefs.fps == *f)).collect();
-        append_choices(menu, "Frame rate", ID_FPS_BASE, &rates);
+        append_choices(menu, "Fréquence d’images", ID_FPS_BASE, &rates);
         let lengths: Vec<(String, bool)> = REPLAY_CHOICES
             .iter()
-            .map(|s| (format!("{s} seconds"), prefs.replay_seconds == *s))
+            .map(|s| (format!("{s} secondes"), prefs.replay_seconds == *s))
             .collect();
-        append_choices(menu, "Replay length", ID_REPLAY_BASE, &lengths);
+        append_choices(menu, "Durée du replay", ID_REPLAY_BASE, &lengths);
+        // Takes effect at once, with no re-arm: the daemon starts or pauses the
+        // replay to match.
+        let modes: Vec<(String, bool)> = CAPTURE_MODE_CHOICES
+            .iter()
+            .map(|(label, value)| {
+                (label.to_string(), prefs.capture_mode.eq_ignore_ascii_case(value))
+            })
+            .collect();
+        append_choices(menu, "Mode de capture", ID_CAPTURE_MODE_BASE, &modes);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
 
         let _ = AppendMenuW(
             menu,
             item_flags(prefs.autostart),
             ID_AUTOSTART,
-            &HSTRING::from("Start with Windows"),
+            &HSTRING::from("Lancer au démarrage de Windows"),
         );
         let _ = AppendMenuW(
             menu,
             item_flags(prefs.auto_arm),
             ID_AUTO_ARM,
-            &HSTRING::from("Arm when Clippy starts"),
+            &HSTRING::from("Activer le replay au lancement de Clippy"),
         );
         let _ = AppendMenuW(
             menu,
             item_flags(prefs.clip_sound),
             ID_CLIP_SOUND,
-            &HSTRING::from("Play a sound when a clip is saved"),
+            &HSTRING::from("Jouer un son à l’enregistrement d’un clip"),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, &HSTRING::from("Quit"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, &HSTRING::from("Quitter"));
 
         let mut cursor = POINT::default();
         let _ = GetCursorPos(&mut cursor);
@@ -390,6 +434,11 @@ mod tests {
         );
         assert_eq!(choice_for_id(ID_FPS_BASE + 4), Some(("fps", Value::from(120))));
         assert_eq!(choice_for_id(ID_REPLAY_BASE + 1), Some(("replay_seconds", Value::from(15))));
+        assert_eq!(
+            choice_for_id(ID_CAPTURE_MODE_BASE + 1),
+            Some(("capture_mode", Value::from("game")))
+        );
+        assert_eq!(choice_for_id(ID_CAPTURE_MODE_BASE + CAPTURE_MODE_CHOICES.len()), None);
         for plain in [ID_TOGGLE, ID_OPEN_UI, ID_QUIT, ID_CLIP, ID_AUTOSTART, ID_CLIP_SOUND] {
             assert_eq!(choice_for_id(plain), None, "id {plain} is not a choice");
         }

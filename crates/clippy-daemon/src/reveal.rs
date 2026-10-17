@@ -57,9 +57,9 @@ fn select(file: &Path) -> Result<()> {
     std::thread::Builder::new()
         .name("clippy-reveal".into())
         .spawn(move || select_here(&file))
-        .context("could not start the reveal thread")?
+        .context("impossible de démarrer le fil d’affichage dans l’Explorateur")?
         .join()
-        .map_err(|_| anyhow::anyhow!("the reveal thread panicked"))?
+        .map_err(|_| anyhow::anyhow!("le fil d’affichage dans l’Explorateur a planté"))?
 }
 
 /// The shell call itself, on a thread that owns its apartment.
@@ -69,7 +69,7 @@ fn select(file: &Path) -> Result<()> {
 /// shell memory after `CoUninitialize` would be handing it back to an allocator
 /// that is no longer there.
 fn select_here(file: &Path) -> Result<()> {
-    let folder = file.parent().context("a clip path with no folder above it")?;
+    let folder = file.parent().context("chemin de clip sans dossier parent")?;
     let _apartment = Apartment::enter()?;
 
     let folder = Pidl::parse(folder)?;
@@ -97,7 +97,7 @@ fn new_window(file: &Path) -> Result<()> {
         .arg("/select,")
         .arg(file)
         .spawn()
-        .with_context(|| format!("could not open Explorer for {}", file.display()))?;
+        .with_context(|| format!("impossible d’ouvrir l’Explorateur pour {}", file.display()))?;
     Ok(())
 }
 
@@ -114,7 +114,7 @@ impl Pidl {
         let wide = wide(path);
         let mut pidl = std::ptr::null_mut();
         unsafe { SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None) }
-            .with_context(|| format!("the shell could not resolve {}", path.display()))?;
+            .with_context(|| format!("l’Explorateur n’a pas pu résoudre {}", path.display()))?;
         Ok(Self(pidl))
     }
 }

@@ -44,8 +44,8 @@ fn count_empty_read(consecutive_empty_reads: u32, path: &Path) -> Result<u32> {
     let consecutive_empty_reads = consecutive_empty_reads + 1;
     if consecutive_empty_reads > MAX_CONSECUTIVE_EMPTY_READS {
         bail!(
-            "{} never finished decoding: Media Foundation returned no audio \
-             after {MAX_CONSECUTIVE_EMPTY_READS} consecutive reads",
+            "le décodage de {} ne se termine jamais\u{a0}: Media Foundation n’a renvoyé aucun son \
+             après {MAX_CONSECUTIVE_EMPTY_READS} lectures consécutives",
             path.display()
         );
     }
@@ -91,14 +91,14 @@ pub fn to_wav(path: &Path) -> Result<Vec<u8>> {
     // Before MF is even started: a path that is simply not there is the common
     // mistake, and it deserves a plain answer rather than a codec's.
     if !path.is_file() {
-        bail!("{} is not a file", path.display());
+        bail!("{} n’est pas un fichier", path.display());
     }
 
     let _session = Session::start()?;
 
     let reader: IMFSourceReader =
         unsafe { MFCreateSourceReaderFromURL(&HSTRING::from(path), None) }
-            .with_context(|| format!("Windows could not read {} as a sound", path.display()))?;
+            .with_context(|| format!("Windows n’a pas pu lire {} comme un son", path.display()))?;
 
     // Asking for PCM here is what makes MF do the work: it inserts whatever
     // decoder and resampler the source needs to reach this format, so an mp3
@@ -124,8 +124,9 @@ pub fn to_wav(path: &Path) -> Result<Vec<u8>> {
     }
 
     let stream = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
-    unsafe { reader.SetCurrentMediaType(stream, None, &wanted) }
-        .with_context(|| format!("{} has no audio Windows can decode", path.display()))?;
+    unsafe { reader.SetCurrentMediaType(stream, None, &wanted) }.with_context(|| {
+        format!("{} ne contient aucun son que Windows sait décoder", path.display())
+    })?;
 
     let mut pcm: Vec<u8> = Vec::new();
     let mut consecutive_empty_reads: u32 = 0;
@@ -133,7 +134,7 @@ pub fn to_wav(path: &Path) -> Result<Vec<u8>> {
         let mut flags = 0u32;
         let mut sample: Option<IMFSample> = None;
         unsafe { reader.ReadSample(stream, 0, None, Some(&mut flags), None, Some(&mut sample)) }
-            .with_context(|| format!("reading decoded audio from {} failed", path.display()))?;
+            .with_context(|| format!("la lecture du son décodé de {} a échoué", path.display()))?;
 
         if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
             break;
@@ -168,7 +169,7 @@ pub fn to_wav(path: &Path) -> Result<Vec<u8>> {
     }
 
     if pcm.is_empty() {
-        bail!("{} contains no audio", path.display());
+        bail!("{} ne contient aucun son", path.display());
     }
 
     Ok(wav_from_pcm(&capped(pcm), CHANNELS, SAMPLE_RATE, BITS_PER_SAMPLE))

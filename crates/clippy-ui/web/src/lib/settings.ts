@@ -1,11 +1,18 @@
-export type FieldKind = 'number' | 'text' | 'select' | 'bool' | 'folder' | 'hotkey' | 'slider' | 'sound' | 'tier';
+export type FieldKind = 'number' | 'text' | 'select' | 'bool' | 'folder' | 'hotkey' | 'slider' | 'sound' | 'tier' | 'apps';
 
 export type Field = {
   key: string;
   label: string;
   kind: FieldKind;
-  section: 'Capture' | 'Audio' | 'Quality' | 'Clips' | 'Clippy' | 'Updates';
+  section: 'Capture' | 'Quality' | 'Audio' | 'Clips' | 'Shortcuts' | 'Sounds' | 'App' | 'Updates';
+  /** The one line the page shows under the label. */
   help: string;
+  /** The rest, behind « Détails », for what most people never need. */
+  more?: string;
+  /** Hidden behind « Avancé » at the end of its section. */
+  advanced?: true;
+  /** The setting this row only matters under, and what to say when it is not. */
+  onlyWhen?: { key: string; value: string; reason: string };
   min?: number;
   max?: number;
   options?: { value: string; label: string }[];
@@ -17,6 +24,8 @@ export type Field = {
    * tiered setting would repeat it.
    */
   tiers?: { value: number; label: string }[];
+  /** An `apps` field's wording: what it says when the list is empty, and its add button. */
+  picker?: { empty: string; add: string };
   /** Filled at runtime from monitors.list / encoders.list. */
   dynamic?: 'monitors';
   /**
@@ -92,10 +101,10 @@ export const CUSTOM_TIER = 'custom';
  * nothing migrated.
  */
 export const BITRATE_TIERS: { value: number; label: string }[] = [
-  { value: 5000, label: 'Low - 5000 kbps' },
-  { value: 8000, label: 'Medium - 8000 kbps' },
-  { value: 14000, label: 'High - 14000 kbps' },
-  { value: 20000, label: 'Extra high - 20000 kbps' },
+  { value: 5000, label: 'Faible – 5 000 kbps' },
+  { value: 8000, label: 'Moyen – 8 000 kbps' },
+  { value: 14000, label: 'Élevé – 14 000 kbps' },
+  { value: 20000, label: 'Très élevé – 20 000 kbps' },
 ];
 
 /**
@@ -113,53 +122,129 @@ export function tierFor(field: Field, value: unknown): string {
 export function tierOptions(field: Field): { value: string; label: string }[] {
   return [
     ...(field.tiers ?? []).map((t) => ({ value: String(t.value), label: t.label })),
-    { value: CUSTOM_TIER, label: 'Custom...' },
+    { value: CUSTOM_TIER, label: 'Personnalisé…' },
   ];
 }
 
+/** How many applications the daemon accepts in `audio_apps` (`config.rs`'s `MAX_AUDIO_APPS`). */
+export const MAX_AUDIO_APPS = 8;
+
+/** An executable name as people say it: `spotify.exe` is "Spotify". */
+export function appLabel(exe: string): string {
+  const stem = exe.replace(/\.exe$/i, '');
+  return stem.charAt(0).toUpperCase() + stem.slice(1);
+}
+
+/**
+ * The list with `exe` added, or the same list when there is nothing to add.
+ *
+ * Cleans what a person typed the way the daemon will (bare file name, lower
+ * case) so the chip shown is the name that gets matched, and gives a bare word
+ * its extension: "spotify" means `spotify.exe`. Returns the very same array
+ * when nothing changes, which is how a caller tells.
+ */
+export function withApp(list: string[], exe: string): string[] {
+  let name = (exe.split(/[\\/]/).pop() ?? '').trim().toLowerCase();
+  if (name && !name.includes('.')) name += '.exe';
+  if (!name || list.includes(name) || list.length >= MAX_AUDIO_APPS) return list;
+  return [...list, name];
+}
+
+export function withoutApp(list: string[], exe: string): string[] {
+  return list.filter((e) => e !== exe);
+}
+
 export const FIELDS: Field[] = [
-  { key: 'monitor_index', label: 'Monitor', kind: 'select', section: 'Capture', dynamic: 'monitors', help: 'Which screen is captured.' },
-  { key: 'fps', label: 'Frame rate', kind: 'number', section: 'Capture', ...span('fps'), help: 'Capture and encode rate.' },
-  { key: 'replay_seconds', label: 'Replay buffer', kind: 'number', section: 'Capture', ...span('replay_seconds'), help: 'Seconds kept in RAM. Memory cost scales with this times the bitrate.' },
-  { key: 'gpu_priority', label: 'GPU priority', kind: 'select', section: 'Capture', options: [
-      { value: 'low', label: 'Low - never cost game fps' },
-      { value: 'normal', label: 'Normal - smoother capture' },
-    ], help: 'Low drops capture frames under contention instead of taking frames from the game.' },
-  { key: 'capture_method', label: 'Capture method', kind: 'select', section: 'Capture', options: [
-      { value: 'auto', label: 'Automatic' },
+  { key: 'capture_mode', label: 'Quoi enregistrer', kind: 'select', section: 'Capture', options: [
+      { value: 'desktop', label: 'Jeux et bureau' },
+      { value: 'game', label: 'Jeux uniquement' },
+    ], help: 'Jeux uniquement : n’enregistre que lorsqu’un jeu est au premier plan, jamais le bureau. Jeux et bureau : tout l’écran.',
+    more: 'Comme dans l’application NVIDIA. « Jeux uniquement » attend qu’un jeu soit au premier plan en plein écran (ou listé plus bas), enregistre l’écran où il se trouve et s’arrête dès qu’il se ferme : le bureau, le navigateur et les lecteurs vidéo ne sont jamais capturés. S’applique immédiatement.' },
+  { key: 'game_apps', label: 'Jeux reconnus', kind: 'apps', section: 'Capture', picker: { empty: 'Détection automatique', add: 'Ajouter un jeu' },
+    onlyWhen: { key: 'capture_mode', value: 'game', reason: 'Actif seulement avec « Jeux uniquement »' },
+    help: 'Les jeux en plein écran sont détectés tout seuls. Ajouter ici un jeu en fenêtré, ou un programme que la détection ignore.',
+    more: 'Détection automatique : tout programme en plein écran qui n’est pas un navigateur, un lecteur vidéo ou une application de bureau.' },
+  { key: 'monitor_index', label: 'Écran', kind: 'select', section: 'Capture', dynamic: 'monitors',
+    onlyWhen: { key: 'capture_mode', value: 'desktop', reason: 'Avec « Jeux uniquement », c’est l’écran du jeu qui est capturé' },
+    help: 'Écran à capturer.' },
+  { key: 'fps', label: 'Fréquence d’images', kind: 'number', section: 'Capture', ...span('fps'), help: 'Fréquence de capture et d’encodage.' },
+  { key: 'replay_seconds', label: 'Tampon de replay', kind: 'number', section: 'Capture', ...span('replay_seconds'), help: 'Secondes conservées en mémoire (RAM). La mémoire utilisée est proportionnelle à cette durée multipliée par le débit.' },
+  { key: 'gpu_priority', label: 'Priorité GPU', kind: 'select', section: 'Capture', advanced: true, options: [
+      { value: 'low', label: 'Faible – aucun impact sur les fps' },
+      { value: 'normal', label: 'Normale – capture plus fluide' },
+    ], help: 'Faible abandonne des images de capture quand le GPU est saturé, plutôt que de ralentir le jeu.' },
+  { key: 'capture_method', label: 'Méthode de capture', kind: 'select', section: 'Capture', advanced: true, options: [
+      { value: 'auto', label: 'Automatique' },
       { value: 'wgc', label: 'Windows Graphics Capture' },
-      { value: 'dd', label: 'Desktop Duplication' },
-    ], help: 'If Windows draws a yellow border around your screen while Clippy is armed, choose Desktop Duplication -- it is not subject to that border. It cannot record the mouse cursor, in clips or in screenshots. Automatic is Windows Graphics Capture.' },
+      { value: 'dd', label: 'Duplication du Bureau' },
+    ], help: 'Si Windows dessine une bordure jaune autour de l’écran, choisir Duplication du Bureau. Elle n’enregistre pas le curseur de la souris.',
+    more: 'Duplication du Bureau n’est pas soumise à cette bordure, mais ne peut pas enregistrer le curseur de la souris, ni dans les clips ni dans les captures d’écran. Automatique correspond à Windows Graphics Capture.' },
 
-  { key: 'system_volume', label: 'PC sound', kind: 'slider', section: 'Audio', ...span('system_volume'), help: 'How loud your PC\'s own sound is in the clip. Affects the recording only, never your Windows volume. 100 is the sound untouched; above that Clippy amplifies it, which can distort. 0 turns it off.' },
-  { key: 'mic_volume', label: 'Microphone', kind: 'slider', section: 'Audio', ...span('mic_volume'), help: 'How loud your voice is in the clip. 100 is your microphone untouched; above that Clippy amplifies it, which is the fix for a mic that stays too quiet even at full Windows level, and can distort. 0 closes the microphone entirely, so Windows stops showing Clippy as using it.' },
+  { key: 'bitrate_kbps', label: 'Débit cible', kind: 'tier', section: 'Quality', ...span('bitrate_kbps'), tiers: BITRATE_TIERS,
+    help: 'Données allouées à chaque seconde de vidéo. Plus c’est élevé, mieux les mouvements rapides sont tenus, mais clips et RAM grossissent.',
+    more: 'Le tampon de replay conserve autant de secondes que réglé : un débit plus élevé occupe donc plus de RAM, et plus d’espace disque par clip. Personnalisé accepte n’importe quelle valeur.' },
+  { key: 'max_bitrate_kbps', label: 'Débit maximal', kind: 'number', section: 'Quality', advanced: true, ...span('max_bitrate_kbps'), help: '0 équivaut à 1,5 fois le débit cible. Ce plafond détermine aussi l’utilisation maximale de RAM du tampon de replay.' },
+  { key: 'rate_control', label: 'Contrôle du débit', kind: 'select', section: 'Quality', advanced: true, options: [
+      { value: 'vbr', label: 'VBR – qualité prioritaire' },
+      { value: 'cbr', label: 'CBR – taille prévisible' },
+    ], help: 'Façon dont l’encodeur répartit son débit.' },
 
-  { key: 'bitrate_kbps', label: 'Target bitrate', kind: 'tier', section: 'Quality', ...span('bitrate_kbps'), tiers: BITRATE_TIERS, help: 'How much data a second of video gets. Higher tiers hold up better in fast motion and cost more disk per clip -- and more RAM, because the replay buffer holds this many seconds of it. Custom takes any number.' },
-  { key: 'max_bitrate_kbps', label: 'Peak bitrate', kind: 'number', section: 'Quality', ...span('max_bitrate_kbps'), help: '0 means 1.5x the target. This cap is also the replay buffer\'s worst-case RAM.' },
-  { key: 'rate_control', label: 'Rate control', kind: 'select', section: 'Quality', options: [
-      { value: 'vbr', label: 'VBR - quality-leaning' },
-      { value: 'cbr', label: 'CBR - predictable size' },
-    ], help: 'How the encoder spends its bitrate.' },
+  { key: 'system_volume', label: 'Son du PC', kind: 'slider', section: 'Audio', ...span('system_volume'),
+    help: 'Volume du son du PC dans le clip, sans toucher à celui de Windows. 100 laisse le son inchangé, 0 le coupe.',
+    more: 'Au-delà de 100, Clippy amplifie le son, ce qui peut provoquer de la distorsion. N’affecte que l’enregistrement.' },
+  { key: 'mic_volume', label: 'Microphone', kind: 'slider', section: 'Audio', ...span('mic_volume'),
+    help: 'Volume de la voix dans le clip. 100 laisse le microphone inchangé, 0 le coupe.',
+    more: 'Au-delà de 100, Clippy amplifie la voix : utile si le micro reste trop faible même au maximum dans Windows, mais peut provoquer de la distorsion. À 0, Windows cesse d’indiquer que Clippy utilise le microphone.' },
+  { key: 'audio_apps', label: 'Son enregistré', kind: 'apps', section: 'Audio',
+    help: 'Par défaut, tout le son du PC. Ajouter des applications pour n’enregistrer que leur son (ex. Spotify sans YouTube). Windows 11 requis.',
+    more: 'Une application apparaît dans la liste dès qu’elle a produit du son. « Autre application » accepte aussi le nom de son exécutable.' },
 
-  { key: 'clip_dir', label: 'Clips folder', kind: 'folder', section: 'Clips', help: 'Where clips are saved. Empty means Videos\\Clippy.' },
-  { key: 'max_library_gb', label: 'Library limit', kind: 'number', section: 'Clips', ...span('max_library_gb'), help: 'GB. When exceeded the oldest non-favorite clips are deleted. 0 turns the limit off.' },
+  { key: 'clip_dir', label: 'Dossier des clips', kind: 'folder', section: 'Clips', help: 'Emplacement d’enregistrement des clips. Vide : Videos\\Clippy.' },
+  { key: 'max_library_gb', label: 'Limite de la bibliothèque', kind: 'number', section: 'Clips', ...span('max_library_gb'), help: 'En Go. Au-delà de la limite, les clips non favoris les plus anciens sont supprimés. 0 désactive la limite.' },
 
-  { key: 'clip_hotkey', label: 'Clip hotkey', kind: 'hotkey', section: 'Clippy', liveTest: true, boundKey: 'clip_hotkey_bound', help: 'Press the combination to test it. If the test does nothing, or if it works here but your game ignores the key, try Hotkey detection below -- overlays and some games take the key before Clippy ever sees it.' },
-  { key: 'screenshot_hotkey', label: 'Screenshot hotkey', kind: 'hotkey', section: 'Clippy', boundKey: 'screenshot_hotkey_bound', help: 'Saves a picture of the screen and copies it to your clipboard. Only works while Clippy is armed, because the picture comes from the recording that is already running.' },
-  { key: 'hotkey_mode', label: 'Hotkey detection', kind: 'select', section: 'Clippy', options: [
+  { key: 'clip_hotkey', label: 'Raccourci du clip', kind: 'hotkey', section: 'Shortcuts', liveTest: true, boundKey: 'clip_hotkey_bound',
+    help: 'Appuyer sur la combinaison pour la tester. Si rien ne se passe en jeu, essayer Détection des raccourcis plus bas.',
+    more: 'Si le test ne fait rien, ou s’il fonctionne ici mais que le jeu ignore la touche, essayer Détection des raccourcis plus bas : les surcouches et certains jeux interceptent la touche avant que Clippy ne la voie.' },
+  { key: 'screenshot_hotkey', label: 'Raccourci de capture d’écran', kind: 'hotkey', section: 'Shortcuts', boundKey: 'screenshot_hotkey_bound', help: 'Enregistre une image de l’écran et la copie dans le presse-papiers. Ne fonctionne que lorsque le replay est actif.',
+    more: 'L’image provient de l’enregistrement déjà en cours.' },
+  { key: 'hotkey_mode', label: 'Détection des raccourcis', kind: 'select', section: 'Shortcuts', options: [
       { value: 'standard', label: 'Standard' },
-      { value: 'low_level', label: 'Low Level - Detection Guarantee' },
-    ], help: 'Applies to both hotkeys above. If your hotkey does nothing in a game, this is the setting to try. Standard asks Windows to reserve the combination: that is refused outright when another program already owns it, and even when it succeeds some games and overlays take the key before Windows hands it over -- confirmed in Euro Truck Simulator 2, where Clippy held the key and never saw a press. Low level watches the keyboard directly, so it sees the key either way, and passes the key on so whatever else uses it keeps working. Some anti-cheat software is wary of programs that watch the keyboard; OBS, Discord and Steam all do it, but Clippy cannot promise how yours reads it. Neither mode helps if the game runs as administrator and Clippy does not.' },
-  { key: 'screenshot_sound', label: 'Screenshot sound', kind: 'bool', section: 'Clippy', help: 'A short blip when a screenshot is saved, different from the clip sound so you can tell them apart without looking.' },
-  { key: 'clip_sound', label: 'Clip sound', kind: 'bool', section: 'Clippy', help: 'Plays a sound when a clip is saved, even when the Clippy window is closed.' },
-  { key: 'clip_sound_path', label: 'Sound file', kind: 'sound', section: 'Clippy', help: 'Your own sound, or Clippy\'s built-in one. mp3, wav, m4a and anything else Windows can play. Only the first 10 seconds are used.' },
-  { key: 'autostart', label: 'Start with Windows', kind: 'bool', section: 'Clippy', help: 'Off by default. Writes the registry Run entry, which is the source of truth.' },
-  { key: 'auto_arm', label: 'Arm when Clippy starts', kind: 'bool', section: 'Clippy', help: 'Starts filling the replay buffer as soon as Clippy does, so there is nothing to remember to switch on. Worth pairing with "Start with Windows". Takes effect the next time Clippy starts, and holds the encoder and the buffer\'s memory for as long as it stays armed.' },
-  { key: 'discord_presence', label: 'Discord presence', kind: 'bool', section: 'Clippy', help: 'Shows "Clipping with Clippy" on your Discord profile, with a button your friends can use to get it, for as long as Clippy is running. Talks only to the Discord app on this PC and sends nothing about you.' },
-  { key: 'stats_seconds', label: 'Stats interval', kind: 'number', section: 'Clippy', ...span('stats_seconds'), help: 'Seconds between performance reports. 0 turns them off.' },
+      { value: 'low_level', label: 'Bas niveau – détection garantie' },
+    ], help: 'À essayer si un raccourci ne fait rien dans un jeu. « Bas niveau » lit le clavier directement.',
+    more: 'S’applique aux deux raccourcis. Standard demande à Windows de réserver la combinaison : la demande est refusée d’emblée si un autre programme l’utilise déjà, et même lorsqu’elle aboutit, certains jeux et surcouches interceptent la touche avant que Windows ne la transmette (constaté dans Euro Truck Simulator 2, où Clippy détenait la touche sans jamais voir d’appui). Bas niveau surveille directement le clavier : la touche est vue dans les deux cas, puis retransmise afin que les autres programmes qui l’utilisent continuent de fonctionner. Certains logiciels anti-triche se méfient des programmes qui surveillent le clavier ; OBS, Discord et Steam le font aussi, mais Clippy ne peut pas garantir comment un anti-triche donné l’interprète. Aucun des deux modes n’aide si le jeu s’exécute en tant qu’administrateur et que Clippy ne le fait pas.' },
 
-  { key: 'check_for_updates', label: 'Check for updates', kind: 'bool', section: 'Updates', help: 'Asks github.com once per launch whether a newer Clippy exists. Sends nothing about you. Updates are never installed without you clicking.' },
+  { key: 'screenshot_sound', label: 'Son de capture d’écran', kind: 'bool', section: 'Sounds', help: 'Un bref son à l’enregistrement d’une capture d’écran, différent de celui du clip pour les distinguer sans regarder.' },
+  { key: 'clip_sound', label: 'Son du clip', kind: 'bool', section: 'Sounds', help: 'Joue un son à l’enregistrement d’un clip, même lorsque la fenêtre de Clippy est fermée.' },
+  { key: 'clip_sound_path', label: 'Fichier son', kind: 'sound', section: 'Sounds', help: 'Un son personnel, ou celui intégré à Clippy. mp3, wav, m4a et tout autre format que Windows sait lire. Seules les 10 premières secondes sont utilisées.' },
+
+  { key: 'autostart', label: 'Lancer au démarrage de Windows', kind: 'bool', section: 'App', help: 'Désactivé par défaut. Écrit l’entrée Run du registre, qui fait foi.' },
+  { key: 'auto_arm', label: 'Activer le replay au lancement de Clippy', kind: 'bool', section: 'App',
+    help: 'Remplit le tampon de replay dès le lancement de Clippy. À associer avec « Lancer au démarrage de Windows ».',
+    more: 'Prend effet au prochain lancement de Clippy et mobilise l’encodeur ainsi que la mémoire du tampon tant que le replay reste actif.' },
+  { key: 'discord_presence', label: 'Présence Discord', kind: 'bool', section: 'App',
+    help: 'Affiche « Clipping with Clippy » sur le profil Discord, avec un bouton pour que les amis l’obtiennent.',
+    more: 'Ne communique qu’avec l’application Discord de ce PC et n’envoie aucune information personnelle.' },
+  { key: 'stats_seconds', label: 'Intervalle des statistiques', kind: 'number', section: 'App', advanced: true, ...span('stats_seconds'), help: 'Secondes entre deux rapports de performances. 0 les désactive.' },
+
+  { key: 'check_for_updates', label: 'Rechercher les mises à jour', kind: 'bool', section: 'Updates', help: 'Interroge github.com une fois par lancement pour savoir si une version plus récente existe. Rien n’est installé sans validation.',
+    more: 'N’envoie aucune information personnelle.' },
 ];
+
+/** A field's help in full: the line the page shows and the details behind « Détails ». */
+export function fullHelp(field: Field): string {
+  return field.more ? `${field.help} ${field.more}` : field.help;
+}
+
+/**
+ * Why this row currently has no effect, or null when it does -- or when the
+ * setting it depends on has not loaded yet, which must not dim the whole page.
+ */
+export function inactiveReason(field: Field, config: Record<string, unknown>): string | null {
+  const gate = field.onlyWhen;
+  if (!gate) return null;
+  const current = config[gate.key];
+  return current === undefined || current === gate.value ? null : gate.reason;
+}
 
 /**
  * The sections `Settings.svelte` renders, in display order, and the single
@@ -168,7 +253,24 @@ export const FIELDS: Field[] = [
  * rather than silently unrendered. `Updates` sits last because it is an
  * app-level concern, below the capture and clip settings above it.
  */
-export const SECTIONS: Field['section'][] = ['Capture', 'Audio', 'Quality', 'Clips', 'Clippy', 'Updates'];
+export const SECTIONS: Field['section'][] = ['Capture', 'Quality', 'Audio', 'Clips', 'Shortcuts', 'Sounds', 'App', 'Updates'];
+
+/**
+ * What each section's heading says. The `section` values themselves are
+ * identifiers (compared, iterated and used as keys), so the words a person
+ * reads live here instead of replacing them. « Capture » is kept for screenshots
+ * only, so the recording section is « Enregistrement ».
+ */
+export const SECTION_LABELS: Record<Field['section'], string> = {
+  Capture: 'Enregistrement',
+  Quality: 'Qualité',
+  Audio: 'Audio',
+  Clips: 'Clips',
+  Shortcuts: 'Raccourcis',
+  Sounds: 'Sons',
+  App: 'Application',
+  Updates: 'Mises à jour',
+};
 
 function span(key: string): { min: number; max: number } {
   const [min, max] = BOUNDS[key];
@@ -204,7 +306,9 @@ export function validate(key: string, value: unknown): string | null {
   const bound = BOUNDS[key];
   if (!bound || typeof value !== 'number') return null;
   const [min, max] = bound;
-  return value < min || value > max ? `${key} accepts ${min} to ${max}` : null;
+  const fr = (n: number) => n.toLocaleString('fr-FR');
+  const name = FIELDS.find((f) => f.key === key)?.label ?? key;
+  return value < min || value > max ? `${name} accepte les valeurs de ${fr(min)} à ${fr(max)}` : null;
 }
 
 /**
@@ -252,10 +356,10 @@ export function hotkeyProblem(
   config: Record<string, unknown>,
 ): string | null {
   if (field.kind !== 'hotkey' || bound !== false) return null;
-  const combination = String(config[field.key] ?? '').toUpperCase() || 'That combination';
+  const typed = String(config[field.key] ?? '').toUpperCase();
   return String(config['hotkey_mode'] ?? 'standard') === 'low_level'
-    ? `Windows would not let Clippy watch the keyboard for ${combination}. Set Hotkey detection back to Standard, or pick a different combination.`
-    : `${combination} is already taken by another program, so Clippy never sees it. Pick a different combination, or set Hotkey detection to Low level to hear it anyway.`;
+    ? `Windows n’a pas permis à Clippy de surveiller le clavier pour ${typed ? `la combinaison ${typed}` : 'cette combinaison'}. Remettre Détection des raccourcis sur Standard, ou choisir une autre combinaison.`
+    : `${typed ? `La combinaison ${typed}` : 'Cette combinaison'} est déjà utilisée par un autre programme : Clippy ne la reçoit donc jamais. Choisir une autre combinaison, ou régler Détection des raccourcis sur Bas niveau pour la capter malgré tout.`;
 }
 
 /**

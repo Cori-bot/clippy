@@ -78,8 +78,8 @@ fn count_empty_read(empty_reads: u32, source: &Path, label: &str) -> Result<u32>
     let empty_reads = empty_reads + 1;
     if empty_reads > MAX_CONSECUTIVE_EMPTY_READS {
         anyhow::bail!(
-            "{} stopped delivering {label} samples after {MAX_CONSECUTIVE_EMPTY_READS} \
-             consecutive empty reads",
+            "{} a cessé de fournir des échantillons {label} après {MAX_CONSECUTIVE_EMPTY_READS} \
+             lectures vides consécutives",
             source.display()
         );
     }
@@ -102,12 +102,12 @@ fn audio_stream() -> u32 {
 /// AAC samples untouched. That is the whole stream copy.
 fn open_compressed(source: &Path, with_audio: bool) -> Result<IMFSourceReader> {
     if !source.is_file() {
-        anyhow::bail!("{} is not a file", source.display());
+        anyhow::bail!("{} n’est pas un fichier", source.display());
     }
     ensure_mf_started()?;
     let reader: IMFSourceReader =
         unsafe { MFCreateSourceReaderFromURL(&HSTRING::from(source), None) }
-            .with_context(|| format!("Windows could not open {}", source.display()))?;
+            .with_context(|| format!("Windows n’a pas pu ouvrir {}", source.display()))?;
     unsafe {
         reader
             .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
@@ -165,7 +165,7 @@ pub fn keyframes_ms(source: &Path) -> Result<Vec<u64>> {
         let mut flags = 0u32;
         let mut sample: Option<IMFSample> = None;
         unsafe { reader.ReadSample(stream, 0, None, Some(&mut flags), None, Some(&mut sample)) }
-            .with_context(|| format!("reading video from {} failed", source.display()))?;
+            .with_context(|| format!("la lecture de la vidéo de {} a échoué", source.display()))?;
         if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
             break;
         }
@@ -261,7 +261,7 @@ pub fn export_fast(request: FastExport<'_>) -> Result<ExportOutcome> {
     // an export written over the clip it is reading -- this is the one place
     // that must.
     if names_the_same_file(request.dest, request.source) {
-        anyhow::bail!("the export destination cannot be the source clip");
+        anyhow::bail!("la destination de l’export ne peut pas être le clip source");
     }
 
     // Deliberately before any attempt: a source that cannot even be indexed
@@ -400,7 +400,7 @@ fn prepare(
     // writer "do not transform this" -- the same guaranteed-passthrough trick
     // `ClipMuxer::new` uses with the encoder's negotiated H.264 type.
     let video_type = unsafe { reader.GetNativeMediaType(video_stream(), 0) }
-        .context("this clip has no video track")?;
+        .context("ce clip n’a pas de piste vidéo")?;
     // `GetNativeMediaType` describes the streams the file has and does not
     // care whether `open_compressed` managed to select them, so this can hand
     // back a type for an audio stream that will not actually read. Detecting
@@ -450,7 +450,7 @@ fn run_export(
         // -- measured against this codepath, not assumed -- and the caller
         // deserves this sentence rather than that HRESULT. Video is copied
         // first, so zero packets here means the sink has seen nothing.
-        anyhow::bail!("that range contains no video");
+        anyhow::bail!("cette plage ne contient aucune vidéo");
     }
 
     // An audio failure propagates, unlike the empty audio range below: `?`
@@ -540,7 +540,7 @@ fn open_sink(
         // The passthrough guarantee, enforced rather than assumed. See above.
         attrs.SetUINT32(&MF_READWRITE_DISABLE_CONVERTERS, 1)?;
         let writer = MFCreateSinkWriterFromURL(&HSTRING::from(dest), None, Some(&attrs))
-            .with_context(|| format!("could not create {}", dest.display()))?;
+            .with_context(|| format!("impossible de créer {}", dest.display()))?;
 
         let video_out = writer.AddStream(video_type).context("AddStream(export video)")?;
         writer
@@ -589,7 +589,7 @@ fn copy_stream(
         let mut flags = 0u32;
         let mut sample: Option<IMFSample> = None;
         unsafe { reader.ReadSample(in_stream, 0, None, Some(&mut flags), None, Some(&mut sample)) }
-            .with_context(|| format!("reading {} failed", source.display()))?;
+            .with_context(|| format!("la lecture de {} a échoué", source.display()))?;
         if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
             break;
         }
@@ -869,7 +869,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            format!("{err:#}").contains("cannot be the source"),
+            format!("{err:#}").contains("ne peut pas être le clip source"),
             "the refusal must name the reason: {err:#}"
         );
         assert_eq!(
@@ -1030,7 +1030,7 @@ mod tests {
         let err = export_fast(FastExport { source, dest: &dest, start_ms: 0, end_ms: 0 })
             .expect_err("a zero-length range must not produce a clip");
         assert!(
-            format!("{err:#}").contains("no video"),
+            format!("{err:#}").contains("aucune vidéo"),
             "the caller must see why, not a raw HRESULT: {err:#}"
         );
         assert!(

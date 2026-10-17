@@ -1,196 +1,235 @@
 Clippy 1.5.0
-==========
+============
 
-A clip recorder for Windows, for people whose PC cannot spare the frames.
-Clippy keeps the last few seconds of your screen in memory and writes them to
-a file when you press a key. Capture and encoding run on the GPU, so the
-cost to your game is close to nothing, and the app itself stays out of the
-way while you play.
-
-
-NEW IN 1.5.0
-------------
-
-  * Browse your whole clip library, including more than 1,000 clips.
-    Only nearby thumbnails stay on screen, keeping large libraries light.
-
-  * The Clips header shows the complete library size, even while clips
-    are still loading. Totals update after saves, deletions and automatic
-    storage cleanup.
-
-  * Delete several clips together: click Select, choose your clips, then
-    Delete selected and confirm once. Select all and Shift-click ranges
-    work across the whole list. Progress is shown during deletion, and
-    any files that could not be deleted stay selected for another try.
+Un enregistreur de clips pour Windows, pour les PC qui ne peuvent pas se
+permettre de perdre des images. Clippy garde en mémoire les dernières secondes
+de votre écran et les écrit dans un fichier quand vous appuyez sur une touche.
+La capture et l'encodage se font sur la carte graphique : le coût pour votre
+jeu est proche de zéro, et l'application reste discrète pendant que vous jouez.
 
 
-GETTING STARTED
----------------
-
-  1. Run the installer (Clippy_<version>_x64-setup.exe): it installs for
-     your user only, needs no administrator rights, and adds a Start menu
-     entry. Or, with the zip, unzip everything into one folder and keep the
-     files together: the app looks for the recorder right beside itself.
-
-  2. Open Clippy from the Start menu (or run clippy-ui.exe from the zip's
-     folder). It starts the background recorder for you.
-
-  3. The first time, a short setup asks for your screen, your hotkey and
-     where clips go. Press "Finish and arm". From then on Clippy starts with
-     Windows and arms itself, so there is nothing to open or press first.
-     The tray icon shows when it is recording.
-
-  4. Press Alt+F10 during your game to save the last 15 seconds.
-
-  5. Right-click the tray icon for quick options: save a clip or a
-     screenshot, resolution, frame rate, replay length, start with Windows,
-     arm on start, the clip sound, and Quit.
-
-Windows SmartScreen will probably warn you the first time, because these
-binaries are not code-signed. "More info" -> "Run anyway".
-
-
-WHAT IS IN THIS FOLDER
-----------------------
-
-  clippy-ui.exe      The app: your clips, playback and settings.
-  clippy-daemon.exe  The background recorder that lives in the tray. The app
-                   (and Windows, at login) starts it, so you do not
-                   normally run this yourself.
-  clippy.exe         A command-line interface, for scripting and diagnostics.
-  README.txt       This file.
-
-
-REQUIREMENTS
-------------
-
-  * Windows 10 or 11, 64-bit.
-  * A GPU with a hardware H.264 encoder -- any Intel, AMD or NVIDIA graphics
-    from roughly the last decade qualifies.
-
-No runtime to install. The Visual C++ libraries are linked in.
-
-
-DEFAULTS
---------
-
-  Replay length     15 seconds
-  Frame rate        60 fps
-  Bitrate           8000 kbps, variable
-  Clip hotkey       Alt+F10
-  Screenshot hotkey Alt+F8
-  Clips folder      %USERPROFILE%\Videos\Clippy
-  Library cap       off -- Clippy never deletes a clip to save space
-  GPU priority      low -- your game gets the GPU first
-  PC sound          100  (0-200 -- above 100 amplifies)
-  Microphone        100  (0-200 -- above 100 amplifies)
-  Start with Windows  off
-  Arm when Clippy starts  off
-  Discord presence  on
-
-All of these are in Settings.
-
-
-WHERE THINGS LIVE
------------------
-
-  Clips     %USERPROFILE%\Videos\Clippy   (changeable in Settings)
-  Settings  %APPDATA%\clippy\config.toml
-
-
-UPDATES
--------
-
-Clippy asks github.com once, when you open the app, whether a newer version
-exists. It sends nothing about you -- no account, no identifier, no
-information about your clips or your PC.
-
-When there is one, a bar appears at the top of the window. Nothing is
-downloaded or installed until you click Update. Clippy then replaces itself
-and restarts, keeping your settings and your clips.
-
-To turn the check off:  Settings -> Updates -> Check for updates.
-
-Clippy cannot update itself if you put it somewhere Windows protects, such as
-Program Files. It will say so and point you at the download page.
-
-If you ever update by unzipping into a *new* folder rather than letting Clippy
-update itself, check "Start with Windows" afterwards. Windows remembers the
-old folder, so it would go on starting the copy you replaced. Clippy notices
-this and shows the setting as off; switching it back on points Windows here.
-
-
-SCREENSHOTS
------------
-
-Alt+F8 saves a picture of the screen, the way Alt+F10 saves a clip. It goes
-to a Screenshots folder inside your clips folder, and onto your clipboard at
-the same time, so you can paste it straight into Discord or a chat window
-without going to find the file first.
-
-Clippy has to be recording. The picture comes off the same live capture the
-clips come off, so with Clippy stopped there is nothing to take a picture of,
-and the key says so rather than doing nothing. Press Start first.
-
-The Screenshots tab shows everything you have taken. Click one to see it
-full size; copy, show in folder and delete are on the card.
-
-A screenshot plays a different sound from a clip, so you can tell which key
-you hit without looking. Settings -> Clippy has a switch for it, and the
-Screenshot hotkey is there too if something else on your PC already owns
-Alt+F8.
-
-
-CLIP SOUND
+NOUVEAUTÉS
 ----------
 
-Clippy plays a short sound when it saves a clip, so you know the hotkey worked
-without leaving your game. It plays whether or not the Clippy window is open.
+  * Entièrement en français : application, menu de la zone de notification,
+    messages d'erreur et installateur.
 
-To use your own:  Settings -> Clippy -> Sound file -> Choose...
+  * Mode de capture, comme dans l'application NVIDIA. « Jeux uniquement »
+    attend qu'un jeu soit au premier plan en plein écran, enregistre l'écran
+    où il se trouve et s'arrête quand il se ferme : le bureau, le navigateur
+    et les lecteurs vidéo ne sont jamais capturés. « Jeux et bureau »
+    enregistre tout ce qui est affiché tant que le replay est actif.
+    Paramètres -> Capture -> Mode de capture, ou clic droit sur l'icône.
+    Un jeu en fenêtré se déclare dans « Jeux reconnus ».
 
-mp3, wav, m4a and anything else Windows can play will work. Only the first
-10 seconds are used. Clippy converts your file once and keeps its own copy, so
-moving or deleting the original later will not stop the sound.
+  * Le son par application. Par défaut, tout le son du PC est enregistré.
+    Dans Paramètres -> Audio -> Applications enregistrées, choisissez par
+    exemple Spotify : le clip ne contient alors que sa musique, pas la vidéo
+    YouTube qui joue dans le navigateur. Nécessite Windows 11.
 
-Reset puts Clippy's own sound back. To turn the sound off entirely, use the
-Clip sound switch just above it.
+  * Des sons de clip et de capture d'écran plus doux.
 
-There is no volume slider. Use Windows' volume mixer to set how loud
-clippy-daemon.exe is.
+  * Un installateur (Clippy_<version>_x64-setup.exe), sans droits
+    administrateur.
 
+  * Le replay s'active tout seul : l'application lance l'enregistreur, et
+    « Lancer au démarrage de Windows » et « Activer le replay au lancement
+    de Clippy » sont proposés dès le premier lancement.
 
-KNOWN LIMITS IN THIS RELEASE
-----------------------------
-
-  * No installer yet. Unzip it where you want it; an MSI is planned. Clippy
-    still updates itself in place, so you only download it by hand once.
-
-  * If Alt+F10 does nothing, something else already owns it -- the NVIDIA
-    overlay claims it on many machines. Settings -> Hotkey lets you pick
-    another combination, and the Test button there tells you whether Clippy
-    actually received your key.
-
-  * Trimming is fast mode only. The in point lands on the last keyframe at
-    or before where you put it -- about a second's grain in clips Clippy
-    recorded, and possibly further back in an .mp4 from somewhere else.
-    Frame-accurate trimming, for starting on an exact frame, is not in yet.
-
-  * Clippy can only clip while the tray recorder is running, and opening the
-    app is what starts it. If you would rather have it ready at login
-    without opening the app, turn on "Start with Windows" in Settings --
-    that starts the tray recorder, not the window.
-
-  * Messages from Clippy -- a clip saved, an export finished, something
-    that went wrong -- are not drawn over a video playing fullscreen.
-    They clear themselves after a few seconds, so one raised while you
-    are fullscreen is missed rather than delayed.
+  * Navigation dans toute la bibliothèque, même au-delà de 1 000 clips, et
+    suppression de plusieurs clips à la fois (Sélectionner, puis Supprimer).
 
 
-LICENSE
+POUR COMMENCER
+--------------
+
+  1. Lancez l'installateur (Clippy_<version>_x64-setup.exe) : il s'installe
+     pour votre utilisateur seulement, sans droits administrateur, avec une
+     entrée dans le menu Démarrer. Avec le zip, décompressez tout dans un même
+     dossier et gardez les fichiers ensemble : l'application cherche
+     l'enregistreur juste à côté d'elle.
+
+  2. Ouvrez Clippy depuis le menu Démarrer (ou lancez clippy-ui.exe depuis le
+     dossier du zip). Il démarre l'enregistreur en arrière-plan.
+
+  3. Au premier lancement, une courte configuration demande l'écran, le
+     raccourci et le dossier des clips. Cliquez sur « Terminer et activer ».
+     Ensuite Clippy démarre avec Windows et active le replay tout seul : rien
+     à ouvrir ni à presser. L'icône de la zone de notification indique quand
+     il enregistre.
+
+  4. Appuyez sur Alt+F10 pendant votre partie pour enregistrer les 15
+     dernières secondes.
+
+  5. Clic droit sur l'icône de la zone de notification pour les réglages
+     rapides : enregistrer un clip ou une capture d'écran, résolution,
+     fréquence d'images, durée du replay, mode de capture, démarrage avec
+     Windows, son du clip, et Quitter.
+
+Windows SmartScreen vous avertira probablement la première fois, car ces
+fichiers ne sont pas signés. « Informations complémentaires » -> « Exécuter
+quand même ».
+
+
+CONTENU DU DOSSIER
+------------------
+
+  clippy-ui.exe      L'application : vos clips, la lecture et les paramètres.
+  clippy-daemon.exe  L'enregistreur d'arrière-plan, dans la zone de
+                   notification. L'application (et Windows, à l'ouverture de
+                   session) le lance : vous n'avez pas à le démarrer vous-même.
+  clippy.exe         Une interface en ligne de commande, pour les scripts et
+                   le diagnostic.
+  README.txt       Ce fichier.
+
+
+CONFIGURATION REQUISE
+---------------------
+
+  * Windows 10 ou 11, 64 bits. Le son par application demande Windows 11.
+  * Une carte graphique avec encodeur H.264 matériel : toute puce Intel, AMD
+    ou NVIDIA des dix dernières années environ convient.
+
+Aucun runtime à installer. Les bibliothèques Visual C++ sont intégrées.
+
+
+VALEURS PAR DÉFAUT
+------------------
+
+  Durée du replay          15 secondes
+  Fréquence d'images       60 fps
+  Débit                    8000 kbps, variable
+  Raccourci du clip        Alt+F10
+  Raccourci de capture     Alt+F8
+  Dossier des clips        %USERPROFILE%\Videos\Clippy
+  Limite de la bibliothèque  aucune : Clippy ne supprime jamais un clip pour
+                           gagner de la place
+  Priorité GPU             faible : votre jeu passe en premier
+  Mode de capture          jeux et bureau
+  Son du PC                100  (0 à 200 : au-delà de 100, le son est amplifié)
+  Applications enregistrées  toutes
+  Microphone               100  (0 à 200 : au-delà de 100, le son est amplifié)
+  Lancer au démarrage de Windows  désactivé
+  Activer le replay au lancement  désactivé
+  Présence Discord         activée
+
+Tout se règle dans Paramètres.
+
+
+OÙ SE TROUVENT LES FICHIERS
+---------------------------
+
+  Clips        %USERPROFILE%\Videos\Clippy   (modifiable dans Paramètres)
+  Paramètres   %APPDATA%\clippy\config.toml
+
+
+MISES À JOUR
+------------
+
+Clippy demande une fois à github.com, à l'ouverture de l'application, s'il
+existe une version plus récente. Rien n'est envoyé à votre sujet : ni compte,
+ni identifiant, ni information sur vos clips ou votre PC.
+
+Quand il y en a une, une barre apparaît en haut de la fenêtre. Rien n'est
+téléchargé ni installé tant que vous ne cliquez pas sur « Mettre à jour ».
+Clippy se remplace alors et redémarre, en conservant vos paramètres et vos
+clips.
+
+Pour désactiver la vérification :  Paramètres -> Mises à jour -> Rechercher
+les mises à jour.
+
+Clippy ne peut pas se mettre à jour s'il est placé dans un dossier protégé par
+Windows, comme Program Files. Il l'indique et renvoie vers la page de
+téléchargement.
+
+Si vous mettez à jour en décompressant dans un *nouveau* dossier plutôt qu'en
+laissant Clippy se mettre à jour, revérifiez « Lancer au démarrage de Windows »
+ensuite. Windows se souvient de l'ancien dossier et continuerait à lancer la
+copie remplacée. Clippy le détecte et affiche le réglage comme désactivé ; le
+réactiver pointe Windows vers ce dossier-ci.
+
+
+CAPTURES D'ÉCRAN
+----------------
+
+Alt+F8 enregistre une image de l'écran, comme Alt+F10 enregistre un clip. Elle
+va dans un dossier Screenshots à l'intérieur du dossier des clips, et dans le
+presse-papiers en même temps : vous pouvez la coller directement dans Discord
+ou une conversation sans aller chercher le fichier.
+
+Le replay doit être actif. L'image vient de la même capture en direct que les
+clips : replay arrêté, il n'y a rien à photographier, et la touche le dit au
+lieu de ne rien faire.
+
+L'onglet Captures d'écran montre tout ce que vous avez pris. Cliquez sur une
+image pour la voir en grand ; copier, afficher dans le dossier et supprimer
+sont sur la carte.
+
+Une capture d'écran joue un autre son qu'un clip, pour distinguer la touche
+pressée sans regarder. Paramètres -> Clippy propose un interrupteur pour ce
+son, et le raccourci de capture s'y change aussi si autre chose sur votre PC
+utilise déjà Alt+F8.
+
+
+SON DU CLIP
+-----------
+
+Clippy joue un court son quand il enregistre un clip, pour vous confirmer que
+le raccourci a fonctionné sans quitter votre jeu. Il se joue que la fenêtre de
+Clippy soit ouverte ou non.
+
+Pour utiliser le vôtre :  Paramètres -> Clippy -> Fichier son -> Choisir…
+
+mp3, wav, m4a et tout ce que Windows sait lire conviennent. Seules les 10
+premières secondes sont utilisées. Clippy convertit votre fichier une fois et
+garde sa propre copie : déplacer ou supprimer l'original ne coupe pas le son.
+
+« Rétablir » remet le son de Clippy. Pour couper le son entièrement, utilisez
+l'interrupteur « Son du clip » juste au-dessus.
+
+Il n'y a pas de curseur de volume. Réglez le volume de clippy-daemon.exe dans
+le mélangeur de volume de Windows.
+
+
+LIMITES CONNUES DE CETTE VERSION
+--------------------------------
+
+  * Si Alt+F10 ne fait rien, autre chose l'utilise déjà : la surcouche NVIDIA
+    s'en empare sur beaucoup de machines. Paramètres -> Détection des
+    raccourcis permet de choisir une autre combinaison, et le bouton Tester
+    indique si Clippy a bien reçu votre touche.
+
+  * Le rognage se fait en mode rapide uniquement. Le point d'entrée tombe sur
+    la dernière image clé avant l'endroit choisi : environ une seconde de
+    grain dans les clips enregistrés par Clippy, parfois plus loin dans un
+    .mp4 venu d'ailleurs. Le rognage à l'image près n'existe pas encore.
+
+  * Clippy ne peut enregistrer que si l'enregistreur de la zone de
+    notification tourne, et ouvrir l'application le lance. Pour qu'il soit
+    prêt dès la connexion sans ouvrir l'application, activez « Lancer au
+    démarrage de Windows » : cela démarre l'enregistreur, pas la fenêtre.
+
+  * En mode « Jeux uniquement », un jeu est reconnu quand son programme est en
+    plein écran et ne figure pas dans la liste des applications de bureau
+    (navigateurs, lecteurs vidéo, etc.), ou quand vous l'avez ajouté dans
+    « Jeux reconnus ». Si le jeu change d'écran en cours de partie, la capture
+    reste sur l'écran où elle a démarré jusqu'à la prochaine partie.
+
+  * Le son par application ne distingue pas les onglets d'un navigateur : il
+    capture le navigateur entier. Pour garder Spotify sans YouTube, choisissez
+    Spotify, pas le navigateur.
+
+  * Les messages de Clippy (clip enregistré, export terminé, problème) ne
+    s'affichent pas par-dessus une vidéo lue en plein écran. Ils disparaissent
+    d'eux-mêmes après quelques secondes : un message émis pendant le plein
+    écran est manqué, pas retardé.
+
+
+LICENCE
 -------
 
-Clippy is MIT licensed; the full text is in the source repository below.
-The icons come from Lucide, whose licence is at the end of this file.
+Clippy est sous licence MIT ; le texte complet se trouve dans le dépôt des
+sources ci-dessous. Les icônes viennent de Lucide, dont la licence figure à la
+fin de ce fichier.
 
-Source, issues and newer releases:  https://github.com/OWNER/clippy
+Sources, tickets et nouvelles versions :  https://github.com/OWNER/clippy

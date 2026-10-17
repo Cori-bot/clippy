@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BITRATE_TIERS, CUSTOM_TIER, FIELDS, READ_ONLY_EXTRAS, SECTIONS, clipHotkeyProblem, comboFromEvent, hotkeyProblem, hotkeySaveTarget, hotkeySeed, tierFor, tierOptions, unknownKeys, validate } from './settings';
+import { BITRATE_TIERS, CUSTOM_TIER, FIELDS, fullHelp, inactiveReason, MAX_AUDIO_APPS, appLabel, withApp, withoutApp, READ_ONLY_EXTRAS, SECTIONS, SECTION_LABELS, clipHotkeyProblem, comboFromEvent, hotkeyProblem, hotkeySaveTarget, hotkeySeed, tierFor, tierOptions, unknownKeys, validate } from './settings';
 
 describe('FIELDS', () => {
   it('covers every config key the daemon has today', () => {
@@ -9,7 +9,7 @@ describe('FIELDS', () => {
       'max_library_gb', 'autostart', 'system_volume', 'mic_volume', 'check_for_updates',
       'clip_sound', 'clip_sound_path', 'discord_presence',
       'screenshot_hotkey', 'screenshot_sound',
-      'hotkey_mode',
+      'hotkey_mode', 'audio_apps', 'capture_mode', 'game_apps',
     ];
     const covered = FIELDS.map((f) => f.key);
     for (const key of shipped) expect(covered).toContain(key);
@@ -37,9 +37,9 @@ describe('FIELDS', () => {
     expect(field, 'capture_method must be a rendered field').toBeDefined();
     const dd = field!.options?.find((o) => o.value === 'dd');
     expect(dd, 'Desktop Duplication must be offered').toBeDefined();
-    expect(field!.help.toLowerCase()).toContain('cursor');
+    expect(fullHelp(field!).toLowerCase()).toContain('curseur');
     // The symptom, not the API: a user picks this because of what they can see.
-    expect(field!.help.toLowerCase()).toContain('yellow border');
+    expect(fullHelp(field!).toLowerCase()).toContain('bordure jaune');
     // The frame-rate warning is deliberately GONE, and this asserts its
     // absence. It was true: the backend acquired a frame on every present and
     // discarded the surplus, which starved the encoder down to 20 fps against
@@ -47,8 +47,8 @@ describe('FIELDS', () => {
     // -- 55.4 and 55.8 fps against 58.9, and confirmed on the reporting user's
     // own machine. Copy that still warned about it would send people back to
     // the yellow border for nothing.
-    expect(field!.help.toLowerCase()).not.toContain('frame rate');
-    expect(field!.help.toLowerCase()).not.toContain('fewer frames');
+    expect(fullHelp(field!).toLowerCase()).not.toContain('fréquence d’images');
+    expect(fullHelp(field!).toLowerCase()).not.toContain('moins d’images');
   });
 
   /**
@@ -67,14 +67,14 @@ describe('FIELDS', () => {
     expect(field, 'hotkey_mode must be a rendered field').toBeDefined();
     expect(field!.options?.map((o) => o.value)).toEqual(['standard', 'low_level']);
 
-    const help = field!.help.toLowerCase();
-    expect(help, 'the anti-cheat caveat is the whole reason this is opt-in').toContain('anti-cheat');
+    const help = fullHelp(field!).toLowerCase();
+    expect(help, 'the anti-cheat caveat is the whole reason this is opt-in').toContain('anti-triche');
     // The symptom that sends someone here, in their words, not the API's.
-    expect(help).toContain('does nothing');
+    expect(help).toContain('ne fait rien');
     // Elevation is the failure this mode does NOT fix, and saying so is what
     // stops it being the next thing a stuck user blames.
-    expect(help).toContain('administrator');
-    for (const sell of ['better', 'recommended', 'improved']) {
+    expect(help).toContain('administrateur');
+    for (const sell of ['meilleur', 'recommand', 'amélior']) {
       expect(help, `"${sell}" would read as an endorsement`).not.toContain(sell);
     }
   });
@@ -96,10 +96,10 @@ describe('FIELDS', () => {
    * apply to them.
    */
   it('sends both kinds of dead hotkey to the same setting', () => {
-    const help = FIELDS.find((f) => f.key === 'clip_hotkey')!.help.toLowerCase();
-    expect(help, 'the refused case').toContain('test does nothing');
-    expect(help, 'the intercepted case: it works here and not in the game').toContain('works here');
-    expect(help, 'and where to go about either').toContain('hotkey detection');
+    const help = fullHelp(FIELDS.find((f) => f.key === 'clip_hotkey')!).toLowerCase();
+    expect(help, 'the refused case').toContain('test ne fait rien');
+    expect(help, 'the intercepted case: it works here and not in the game').toContain('fonctionne ici');
+    expect(help, 'and where to go about either').toContain('détection des raccourcis');
   });
 
   it('renders both levels as sliders in the Audio section', () => {
@@ -115,8 +115,8 @@ describe('FIELDS', () => {
     // 100 is unity; 200 is the ceiling the mixer's MAX_VOLUME_PERCENT sets.
     // A page that let someone ask for 201 would produce a round trip that
     // fails for a reason the field cannot explain.
-    expect(validate('mic_volume', 201)).toMatch(/0 to 200/);
-    expect(validate('system_volume', 201)).toMatch(/0 to 200/);
+    expect(validate('mic_volume', 201)).toMatch(/0 à 200/);
+    expect(validate('system_volume', 201)).toMatch(/0 à 200/);
     expect(validate('mic_volume', 0)).toBeNull();
     expect(validate('system_volume', 100)).toBeNull();
   });
@@ -206,9 +206,9 @@ describe('unknownKeys', () => {
 
 describe('validate', () => {
   it('mirrors the daemon bounds so the error arrives before the round trip', () => {
-    expect(validate('fps', 0)).toMatch(/30 to 120/);
+    expect(validate('fps', 0)).toMatch(/30 à 120/);
     expect(validate('fps', 60)).toBeNull();
-    expect(validate('replay_seconds', 601)).toMatch(/1 to 600/);
+    expect(validate('replay_seconds', 601)).toMatch(/1 à 600/);
     expect(validate('max_library_gb', 0)).toBeNull();
   });
 
@@ -236,6 +236,14 @@ describe('settings fields', () => {
     const usedSections = new Set(FIELDS.map((f) => f.section));
     for (const section of usedSections) expect(SECTIONS).toContain(section);
   });
+
+  it('has a heading for every section it renders, Audio staying Audio', () => {
+    // The `section` values are identifiers; the page reads SECTION_LABELS for
+    // the words. A section without a label would render an empty heading.
+    for (const section of SECTIONS) expect(SECTION_LABELS[section], section).toBeTruthy();
+    expect(SECTION_LABELS.Audio).toBe('Audio');
+    expect(SECTION_LABELS.Updates).toBe('Mises à jour');
+  });
 });
 
 describe('the clip sound fields', () => {
@@ -257,7 +265,7 @@ describe('the clip sound fields', () => {
   it('says which formats work, because PlaySound is not the whole story', () => {
     const help = FIELDS.find((f) => f.key === 'clip_sound_path')!.help;
     expect(help).toMatch(/mp3/i);
-    expect(help).toMatch(/10 seconds/i);
+    expect(help).toMatch(/10 premières secondes/i);
   });
 });
 
@@ -280,7 +288,7 @@ describe('the screenshot fields', () => {
   it('says the screenshot needs Clippy armed', () => {
     // The likeliest support question, and the help text is the only place it
     // can be answered before it is asked.
-    expect(FIELDS.find((f) => f.key === 'screenshot_hotkey')!.help).toMatch(/armed/i);
+    expect(FIELDS.find((f) => f.key === 'screenshot_hotkey')!.help).toMatch(/replay est actif/i);
   });
 
   it('does not offer a live test, because the screenshot hotkey arm never broadcasts hotkey_pressed', () => {
@@ -374,9 +382,9 @@ describe('hotkeyProblem', () => {
   it('names the combination and both ways out when Windows refused it', () => {
     const problem = hotkeyProblem(clip, false, standard)!;
     expect(problem).toContain('ALT+F10');
-    expect(problem.toLowerCase()).toContain('another program');
-    expect(problem.toLowerCase()).toContain('pick a different combination');
-    expect(problem).toContain('Low level');
+    expect(problem.toLowerCase()).toContain('autre programme');
+    expect(problem.toLowerCase()).toContain('choisir une autre combinaison');
+    expect(problem).toContain('Bas niveau');
   });
 
   /**
@@ -387,9 +395,9 @@ describe('hotkeyProblem', () => {
    */
   it('gives the opposite advice when it is the hook that failed', () => {
     const problem = hotkeyProblem(clip, false, { ...standard, hotkey_mode: 'low_level' })!;
-    expect(problem.toLowerCase()).toContain('watch the keyboard');
+    expect(problem.toLowerCase()).toContain('surveiller le clavier');
     expect(problem).toContain('Standard');
-    expect(problem.toLowerCase()).not.toContain('another program');
+    expect(problem.toLowerCase()).not.toContain('autre programme');
   });
 
   it('reads each row own combination, not the clip one', () => {
@@ -483,5 +491,70 @@ describe('comboFromEvent', () => {
     for (const key of ['Control', 'Alt', 'Shift', 'Meta']) {
       expect(comboFromEvent(press(key, { altKey: true })), key).toBeNull();
     }
+  });
+});
+
+describe('audio applications', () => {
+  it('names an executable the way a person would', () => {
+    expect(appLabel('spotify.exe')).toBe('Spotify');
+    expect(appLabel('brave.EXE')).toBe('Brave');
+    expect(appLabel('no-extension')).toBe('No-extension');
+  });
+
+  it('adds a cleaned name once, and hands back the same list when nothing changes', () => {
+    const base = ['spotify.exe'];
+    expect(withApp(base, ' Brave ')).toEqual(['spotify.exe', 'brave.exe']);
+    expect(withApp(base, 'C:\\Apps\\Discord.exe')).toEqual(['spotify.exe', 'discord.exe']);
+    expect(withApp(base, 'SPOTIFY.EXE')).toBe(base);
+    expect(withApp(base, '   ')).toBe(base);
+  });
+
+  it('stops at the number the daemon accepts', () => {
+    const full = Array.from({ length: MAX_AUDIO_APPS }, (_, i) => `app${i}.exe`);
+    expect(withApp(full, 'one-more.exe')).toBe(full);
+  });
+
+  it('removes one application and leaves the rest', () => {
+    expect(withoutApp(['a.exe', 'b.exe'], 'a.exe')).toEqual(['b.exe']);
+    expect(withoutApp(['a.exe'], 'a.exe')).toEqual([]);
+  });
+});
+
+describe('the settings page stays scannable', () => {
+  it('keeps the visible help to a line or two, and the rest behind « Détails »', () => {
+    // The page was 27 rows with up to 924 characters of help each. What is shown
+    // is bounded; what is not needed by most people goes in `more`.
+    for (const field of FIELDS) {
+      expect(field.help.length, `${field.key}: ${field.help.length} characters`).toBeLessThanOrEqual(190);
+    }
+  });
+
+  it('joins the details back onto the help for anything that needs the whole text', () => {
+    const mode = FIELDS.find((f) => f.key === 'hotkey_mode')!;
+    expect(fullHelp(mode)).toBe(`${mode.help} ${mode.more}`);
+    const plain = FIELDS.find((f) => f.key === 'fps')!;
+    expect(fullHelp(plain)).toBe(plain.help);
+  });
+
+  it('dims the game list outside game mode, and the screen choice inside it', () => {
+    const games = FIELDS.find((f) => f.key === 'game_apps')!;
+    const screen = FIELDS.find((f) => f.key === 'monitor_index')!;
+    expect(inactiveReason(games, { capture_mode: 'desktop' })).toMatch(/Jeux uniquement/);
+    expect(inactiveReason(games, { capture_mode: 'game' })).toBeNull();
+    expect(inactiveReason(screen, { capture_mode: 'game' })).not.toBeNull();
+    expect(inactiveReason(screen, { capture_mode: 'desktop' })).toBeNull();
+  });
+
+  it('dims nothing before the config has loaded', () => {
+    for (const field of FIELDS) expect(inactiveReason(field, {}), field.key).toBeNull();
+  });
+
+  it('names the setting by its label when a bound is exceeded', () => {
+    expect(validate('fps', 500)).toMatch(/^Fréquence d’images accepte/);
+  });
+
+  it('puts the expert settings behind « Avancé »', () => {
+    const advanced = FIELDS.filter((f) => f.advanced).map((f) => f.key);
+    expect(advanced).toEqual(['gpu_priority', 'capture_method', 'max_bitrate_kbps', 'rate_control', 'stats_seconds']);
   });
 });

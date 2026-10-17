@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte';
-  import { shotThumbUrl, shotUrl } from '../lib/shots';
+  import { formatShotDate, shotThumbUrl, shotUrl } from '../lib/shots';
   import { formatBytes } from '../lib/clips';
   import type { ShotMeta } from '../lib/types';
   import IconButton from './ui/IconButton.svelte';
@@ -20,9 +20,9 @@
 
   /** The same three actions as the buttons on the tile. */
   const items: MenuItem[] = [
-    { id: 'copy', label: 'Copy', icon: 'copy' },
-    { id: 'reveal', label: 'Show in folder', icon: 'folder' },
-    { id: 'delete', label: 'Delete', icon: 'trash', danger: true, separatorBefore: true },
+    { id: 'copy', label: 'Copier', icon: 'copy' },
+    { id: 'reveal', label: 'Afficher dans le dossier', icon: 'folder' },
+    { id: 'delete', label: 'Supprimer', icon: 'trash', danger: true, separatorBefore: true },
   ];
 
   function pick(id: string) {
@@ -39,7 +39,7 @@
   }
 
   const dir = $derived(app.status?.clip_dir ?? '');
-  const taken = $derived(new Date(shot.created).toLocaleString());
+  const taken = $derived(formatShotDate(shot.created));
 
   /**
    * The thumbnail, falling back to the full image. A screenshot whose
@@ -56,7 +56,7 @@
 <!-- The right-click is a pointer shortcut to the tile's own buttons, not the
      only way to reach them, so the card needs no role for it. -->
 <div class="card" class:selected {oncontextmenu}>
-  <button type="button" class="hit" onclick={onopen} aria-label={`Open screenshot from ${taken}`}>
+  <button type="button" class="hit" onclick={onopen} aria-label={`Ouvrir la capture d’écran du ${taken}`}>
     <img {src} alt="" loading="lazy" onerror={() => { if (dir) src = shotUrl(dir, shot.id); }} />
   </button>
   <div class="meta">
@@ -70,9 +70,9 @@
        Space off them, the way `ClipCard`'s equivalent controls are already
        covered. -->
   <div class="actions" data-card-control>
-    <IconButton icon="copy" label="Copy" onclick={() => app.copyShot(shot.id)} />
-    <IconButton icon="folder" label="Show in folder" onclick={() => app.revealShot(shot.id)} />
-    <IconButton icon="trash" label="Delete" onclick={ondelete} />
+    <IconButton icon="copy" label="Copier" onclick={() => app.copyShot(shot.id)} />
+    <IconButton icon="folder" label="Afficher dans le dossier" onclick={() => app.revealShot(shot.id)} />
+    <IconButton icon="trash" label="Supprimer" onclick={ondelete} />
   </div>
 
   <!-- `fixed`, so the card's `overflow: hidden` does not clip it: only a

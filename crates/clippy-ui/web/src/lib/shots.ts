@@ -15,6 +15,15 @@ function shotFile(clipDir: string, id: string, suffix: string): string {
   return `${clipDir.replace(/[\\/]+$/, '')}\\Screenshots\\${id}${suffix}`;
 }
 
+/**
+ * When a screenshot was taken, written the French way ("26 août 2026 à 14:30:12").
+ * One helper so the tile, the viewer's alt text and the delete dialog cannot
+ * word the same instant three different ways. `timeZone` is only for tests.
+ */
+export function formatShotDate(created: string, timeZone?: string): string {
+  return new Date(created).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'medium', timeZone });
+}
+
 /** The full-resolution screenshot. */
 export function shotUrl(clipDir: string, id: string): string {
   return convertFileSrc(shotFile(clipDir, id, '.jpg'));

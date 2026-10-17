@@ -494,7 +494,7 @@ try {
     }
     $blocked | ForEach-Object { Write-Host "  | $_" }
     Confirm-Check "clippy.exe replay is refused while the daemon is armed" `
-        (($blockedExit -ne 0) -and ("$blocked" -match 'already running')) `
+        (($blockedExit -ne 0) -and ("$blocked" -match 'session de capture.*en cours')) `
         "exit=$blockedExit output=$blocked"
 
     # Step 9 -- disarm.

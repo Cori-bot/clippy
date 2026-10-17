@@ -63,9 +63,10 @@ describe('formatDuration', () => {
 
 describe('formatBytes', () => {
   it('uses the unit a person would', () => {
-    expect(formatBytes(19812352)).toBe('18.9 MB');
-    expect(formatBytes(1024)).toBe('1.0 KB');
-    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(19812352)).toBe('18,9 Mo');
+    expect(formatBytes(1024)).toBe('1,0 Ko');
+    expect(formatBytes(0)).toBe('0 o');
+    expect(formatBytes(5 * 1024 ** 3)).toBe('5,0 Go');
   });
 });
 
@@ -87,8 +88,8 @@ describe('mergeSaved', () => {
 
 describe('counterLabel', () => {
   it('is one-based, the way spec §6.2 writes it', () => {
-    expect(counterLabel(0, 47)).toBe('1 of 47');
-    expect(counterLabel(2, 47)).toBe('3 of 47');
+    expect(counterLabel(0, 47)).toBe('1 sur 47');
+    expect(counterLabel(2, 47)).toBe('3 sur 47');
   });
 
   it('says nothing when there is nothing', () => {

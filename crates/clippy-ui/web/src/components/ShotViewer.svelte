@@ -1,12 +1,19 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte';
-  import { shotUrl } from '../lib/shots';
+  import { formatShotDate, shotUrl } from '../lib/shots';
   import Button from './ui/Button.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
 
   const shot = $derived(app.shots[app.shotSelected] ?? null);
   const dir = $derived(app.status?.clip_dir ?? '');
+
+  // The viewer opens over the page without being navigated to, so keyboard focus
+  // would stay on the grid behind it. Land it on "Fermer" instead.
+  let viewer = $state<HTMLElement | null>(null);
+  $effect(() => {
+    viewer?.querySelector<HTMLButtonElement>('.bar button:last-of-type')?.focus();
+  });
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -27,14 +34,14 @@
 <svelte:window on:keydown={onkeydown} />
 
 {#if shot}
-  <div class="viewer">
-    <img src={dir ? shotUrl(dir, shot.id) : ''} alt={`Screenshot from ${new Date(shot.created).toLocaleString()}`} />
+  <div class="viewer" bind:this={viewer} role="dialog" aria-modal="true" aria-label="Capture d’écran">
+    <img src={dir ? shotUrl(dir, shot.id) : ''} alt={`Capture d’écran du ${formatShotDate(shot.created)}`} />
     <div class="bar">
       <span class="tnum">{app.shotSelected + 1} / {app.shots.length}</span>
       <span class="spacer"></span>
-      <Button size="sm" onclick={() => app.copyShot(shot.id)}>Copy</Button>
-      <Button size="sm" onclick={() => app.revealShot(shot.id)}>Show in folder</Button>
-      <Button size="sm" variant="primary" onclick={onclose}>Close</Button>
+      <Button size="sm" onclick={() => app.copyShot(shot.id)}>Copier</Button>
+      <Button size="sm" onclick={() => app.revealShot(shot.id)}>Afficher dans le dossier</Button>
+      <Button size="sm" variant="primary" onclick={onclose}>Fermer</Button>
     </div>
   </div>
 {/if}
@@ -56,7 +63,7 @@
    */
   .viewer {
     position: fixed;
-    inset: 0;
+    inset: 40px 0 0 0;
     display: flex;
     flex-direction: column;
     background: var(--bg);

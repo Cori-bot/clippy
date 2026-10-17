@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::SyncSender;
 
-use serde_json::{Map, Value};
 use clippy_proto::{ClipMeta, Command, Event, Request, Response};
+use serde_json::{Map, Value};
 
 use crate::clients::ClientId;
 use crate::pipe::ClientHandler;
@@ -20,8 +20,9 @@ use crate::state::{ConfigUpdate, Daemon};
 /// What `clip` answers when the ring holds no footage yet. Byte-identical to
 /// what `clippy replay` prints for the same condition (`clippy-core`'s
 /// `replay.rs`): the daemon and the CLI must not describe the same situation
-/// two different ways.
-const NOTHING_BUFFERED: &str = "nothing buffered yet — try again in a moment";
+/// two different ways. (The daemon's text is French since the UI shows it
+/// verbatim; the CLI's stays English, so they are no longer byte-identical.)
+const NOTHING_BUFFERED: &str = "le tampon de replay est encore vide — réessayer dans un instant";
 
 /// Implemented for `Daemon` rather than for `Arc<Daemon>` as the brief's sketch
 /// had it: `pipe::serve` already takes an `Arc<H>`, so implementing the trait
@@ -100,7 +101,7 @@ impl ClientHandler for Daemon {
                     Ok(data) => Response::ok(request.id, data),
                     Err(e) => {
                         tracing::error!(error = %e, "could not serialize a saved screenshot");
-                        Response::err(request.id, "the screenshot could not be serialized")
+                        Response::err(request.id, "la capture d’écran n’a pas pu être sérialisée")
                     }
                 },
                 // Broadcast the failure too, as `arm` and `clip` do. Like theirs,
@@ -155,6 +156,13 @@ impl ClientHandler for Daemon {
             },
             Ok(Command::EncodersList) => match clippy_core::probe::encoders() {
                 Ok(found) => named_array(request.id, "encoders", serde_json::to_value(&found)),
+                Err(e) => Response::err(request.id, format!("{e:#}")),
+            },
+            // Runs a COM enumeration of every playback device's sessions on a
+            // thread of its own, a few milliseconds; not cached, since the point
+            // is to show what is playing right now.
+            Ok(Command::AudioApps) => match clippy_core::capture::audio::list_audio_apps() {
+                Ok(found) => named_array(request.id, "apps", serde_json::to_value(&found)),
                 Err(e) => Response::err(request.id, format!("{e:#}")),
             },
             Ok(Command::StatsSubscribe { enabled }) => {
@@ -278,7 +286,7 @@ fn named_array(id: u64, key: &str, serialized: serde_json::Result<Value>) -> Res
         // socket message reaches directly.
         Err(e) => {
             tracing::error!(list = key, error = %e, "could not serialize a hardware list");
-            Response::err(id, format!("the {key} list could not be serialized"))
+            Response::err(id, format!("la liste {key} n’a pas pu être sérialisée"))
         }
     }
 }
@@ -323,7 +331,10 @@ fn clip(daemon: &Daemon, id: u64) -> Response {
             // socket message reaches.
             Err(e) => {
                 tracing::error!(error = %e, "could not serialize the saved clip's metadata");
-                Response::err(id, "the clip was saved but its metadata could not be serialized")
+                Response::err(
+                    id,
+                    "le clip a été enregistré, mais ses métadonnées n’ont pas pu être sérialisées",
+                )
             }
         },
         // The ring exists but holds nothing yet — a few hundred ms after
@@ -352,7 +363,7 @@ fn library_list(daemon: &Daemon, id: u64, offset: usize, limit: usize) -> Respon
             // `total` would otherwise render a hole it cannot see.
             Err(e) => {
                 tracing::error!(clip = %meta.id, error = %e, "could not serialize clip metadata");
-                return Response::err(id, "the clip library could not be serialized");
+                return Response::err(id, "la bibliothèque de clips n’a pas pu être sérialisée");
             }
         }
     }
@@ -374,7 +385,10 @@ fn updated_clip(id: u64, result: anyhow::Result<ClipMeta>) -> Response {
             Ok(data) => Response::ok(id, data),
             Err(e) => {
                 tracing::error!(error = %e, "could not serialize the updated clip's metadata");
-                Response::err(id, "the clip was updated but its metadata could not be serialized")
+                Response::err(
+                    id,
+                    "le clip a été mis à jour, mais ses métadonnées n’ont pas pu être sérialisées",
+                )
             }
         },
         Err(e) => Response::err(id, format!("{e:#}")),
@@ -457,7 +471,8 @@ mod tests {
     /// below depend on how many clips happen to be sitting there — and would
     /// aim a `library.delete` test at real footage.
     fn with_two_clips(name: &str) -> (Daemon, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("clippy-dispatch-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("clippy-dispatch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for id in ["20260726_100000", "20260726_110000"] {
@@ -532,7 +547,10 @@ mod tests {
         let response = idle("clip").dispatch(1, &request(9, "clip"));
         assert_eq!(response.id, 9);
         assert!(!response.ok);
-        assert_eq!(response.error.as_deref(), Some("not armed — send arm first"));
+        assert_eq!(
+            response.error.as_deref(),
+            Some("le replay n’est pas activé — activez-le d’abord")
+        );
     }
 
     /// Idempotent and quiet: a UI syncing its toggle on reconnect sends this
@@ -568,7 +586,7 @@ mod tests {
         assert_eq!(event.data.get("cmd").and_then(Value::as_str), Some("clip"));
         assert_eq!(
             event.data.get("error").and_then(Value::as_str),
-            Some("not armed — send arm first")
+            Some("le replay n’est pas activé — activez-le d’abord")
         );
     }
 
@@ -628,7 +646,7 @@ mod tests {
                 assert!(!response.ok, "{cmd} accepted {evil:?}");
                 let error = response.error.unwrap_or_default();
                 assert!(
-                    error.contains("is not a valid clip id"),
+                    error.contains("n’est pas un identifiant de clip valide"),
                     "{cmd} on {evil:?} should be refused at the validation boundary, not fall \
                      through to a lookup: {error}"
                 );
@@ -1282,7 +1300,7 @@ mod tests {
         let error = response.error.expect("a refused screenshot carries its reason");
         // Pressing a key and getting silence is the failure this wording exists
         // to prevent.
-        assert!(error.contains("not armed"), "the reason must be legible: {error}");
+        assert!(error.contains("n’est pas activé"), "the reason must be legible: {error}");
     }
 
     #[test]
@@ -1317,7 +1335,7 @@ mod tests {
             // seal itself produces "is not a screenshot id", so that is what
             // has to survive.
             assert!(
-                error.contains("is not a screenshot id"),
+                error.contains("n’est pas un identifiant de capture d’écran"),
                 "{cmd} must be refused by the id seal, not by a downstream failure: {error}"
             );
         }
@@ -1514,8 +1532,8 @@ mod tests {
     /// that is expected and is not what this test is about.
     #[test]
     fn sound_test_resolves_a_cache_path_for_a_custom_sound() {
-        let dir =
-            std::env::temp_dir().join(format!("clippy-dispatch-sound-custom-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("clippy-dispatch-sound-custom-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let config_path = dir.join("config.toml");

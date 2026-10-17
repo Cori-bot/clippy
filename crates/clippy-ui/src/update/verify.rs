@@ -22,7 +22,7 @@ pub fn digest_for(sums: &str, name: &str) -> Result<String, String> {
         .filter_map(|line| line.split_once("  "))
         .find(|(_, file)| file.trim() == name)
         .map(|(digest, _)| digest.trim().to_ascii_lowercase())
-        .ok_or_else(|| format!("the release does not publish a checksum for {name}"))
+        .ok_or_else(|| format!("la publication n’inclut pas de somme de contrôle pour {name}"))
 }
 
 /// Streams the file rather than reading it into memory. The zip is a few
@@ -30,10 +30,10 @@ pub fn digest_for(sums: &str, name: &str) -> Result<String, String> {
 /// machine with little RAM fails is worth writing once.
 pub fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("could not read the downloaded file: {e}"))?;
+        .map_err(|e| format!("impossible de lire le fichier téléchargé\u{a0}: {e}"))?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher)
-        .map_err(|e| format!("could not read the downloaded file: {e}"))?;
+        .map_err(|e| format!("impossible de lire le fichier téléchargé\u{a0}: {e}"))?;
     Ok(format!("{:x}", hasher.finalize()))
 }
 
@@ -45,8 +45,9 @@ pub fn check(path: &Path, sums: &str, name: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "{name} did not match the checksum GitHub published for it, so it was not installed. \
-             Download it by hand from the releases page if this keeps happening."
+            "{name} ne correspond pas à la somme de contrôle publiée par GitHub, il n’a donc pas \
+             été installé. Si le problème persiste, le télécharger à la main depuis la page des \
+             publications."
         ))
     }
 }

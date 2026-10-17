@@ -53,7 +53,7 @@
   <button
     type="button"
     class="pm"
-    aria-label="{label}: decrease"
+    aria-label="{label}&nbsp;: diminuer"
     disabled={value <= min}
     onclick={() => onchange(stepBy(value, -1, min, max, step))}>&minus;</button>
   <input
@@ -68,7 +68,7 @@
   <button
     type="button"
     class="pm"
-    aria-label="{label}: increase"
+    aria-label="{label}&nbsp;: augmenter"
     disabled={value >= max}
     onclick={() => onchange(stepBy(value, 1, min, max, step))}>+</button>
 </div>
@@ -78,7 +78,7 @@
     display: flex;
     align-items: center;
     background: var(--bg);
-    border: 1px solid var(--line-strong);
+    border: 1px solid var(--field-line);
     border-radius: var(--r);
     overflow: hidden;
   }

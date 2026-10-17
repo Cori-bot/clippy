@@ -69,7 +69,8 @@ const CHUNK: usize = 64 * 1024;
 /// named: a redirect is a URL somebody else chose, and the whole point of an
 /// allowlist is that it holds for URLs this code did not write.
 pub fn allowed(url: &str) -> Result<(), String> {
-    let rest = url.strip_prefix("https://").ok_or("updates are only fetched over HTTPS")?;
+    let rest =
+        url.strip_prefix("https://").ok_or("les mises à jour ne sont téléchargées qu’en HTTPS")?;
     // The host ends at the first '/', '?' or '#'. Splitting on all three
     // matters: `https://github.com?x=@evil` has no slash at all.
     let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
@@ -81,7 +82,7 @@ pub fn allowed(url: &str) -> Result<(), String> {
     if ALLOWED_HOSTS.contains(&host.as_str()) || host.ends_with(ALLOWED_SUFFIX) {
         Ok(())
     } else {
-        Err(format!("updates are not fetched from {host:?}"))
+        Err(format!("les mises à jour ne sont pas téléchargées depuis {host:?}"))
     }
 }
 
@@ -136,13 +137,13 @@ fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
             .get(&current)
             .header("User-Agent", &user_agent())
             .call()
-            .map_err(|e| format!("could not reach GitHub: {e}"))?;
+            .map_err(|e| format!("impossible de joindre GitHub\u{a0}: {e}"))?;
 
         if !response.status().is_redirection() {
             return if response.status().is_success() {
                 Ok(response)
             } else {
-                Err(format!("GitHub answered with {}", response.status()))
+                Err(format!("GitHub a répondu avec le code {}", response.status()))
             };
         }
 
@@ -150,16 +151,19 @@ fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
             .headers()
             .get("location")
             .and_then(|v| v.to_str().ok())
-            .ok_or("GitHub redirected without saying where to")?;
+            .ok_or("GitHub a redirigé sans indiquer où")?;
         current = location.to_string();
     }
-    Err("the download redirected too many times".into())
+    Err("le téléchargement a été redirigé trop de fois".into())
 }
 
 /// For the release feed and `SHA256SUMS.txt`, both small.
 pub fn fetch_text(url: &str) -> Result<String, String> {
     let mut response = get(url)?;
-    response.body_mut().read_to_string().map_err(|e| format!("could not read GitHub's answer: {e}"))
+    response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("impossible de lire la réponse de GitHub\u{a0}: {e}"))
 }
 
 /// Streams `url` to `dest`, calling `progress(received, total)` as it goes.
@@ -176,15 +180,17 @@ pub fn fetch_to_file(url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Res
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     if total > MAX_BYTES {
-        return Err(format!("the download is {total} bytes, which is larger than Clippy expects"));
+        return Err(format!(
+            "le téléchargement fait {total} octets, soit plus que ce que Clippy attend"
+        ));
     }
 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| format!("could not create the update folder: {e}"))?;
+            .map_err(|e| format!("impossible de créer le dossier de mise à jour\u{a0}: {e}"))?;
     }
     let mut file = std::fs::File::create(dest)
-        .map_err(|e| format!("could not write the downloaded update: {e}"))?;
+        .map_err(|e| format!("impossible d’écrire la mise à jour téléchargée\u{a0}: {e}"))?;
 
     let mut reader = response.body_mut().as_reader();
     stream_to_file(dest, &mut file, &mut reader, total, progress)
@@ -215,8 +221,9 @@ fn stream_to_file(
         let mut buffer = vec![0u8; CHUNK];
         let mut received: u64 = 0;
         loop {
-            let read =
-                reader.read(&mut buffer).map_err(|e| format!("the download stopped: {e}"))?;
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|e| format!("le téléchargement s’est interrompu\u{a0}: {e}"))?;
             if read == 0 {
                 break;
             }
@@ -225,13 +232,16 @@ fn stream_to_file(
             // Content-Length: a server is free to send more than it declared, or
             // to declare nothing at all.
             if received > MAX_BYTES {
-                return Err("the download kept going past the size Clippy expects".into());
+                return Err("le téléchargement a dépassé la taille attendue par Clippy".into());
             }
-            file.write_all(&buffer[..read])
-                .map_err(|e| format!("could not write the downloaded update: {e}"))?;
+            file.write_all(&buffer[..read]).map_err(|e| {
+                format!("impossible d’écrire la mise à jour téléchargée\u{a0}: {e}")
+            })?;
             progress(received, total.max(received));
         }
-        file.flush().map_err(|e| format!("could not finish writing the update: {e}"))?;
+        file.flush().map_err(|e| {
+            format!("impossible de terminer l’écriture de la mise à jour\u{a0}: {e}")
+        })?;
         Ok(())
     })();
 
@@ -336,7 +346,7 @@ mod tests {
         let result = stream_to_file(&dest, &mut file, &mut reader, 0, &|_, _| {});
 
         let error = result.expect_err("a stream past MAX_BYTES must be refused");
-        assert_eq!(error, "the download kept going past the size Clippy expects");
+        assert_eq!(error, "le téléchargement a dépassé la taille attendue par Clippy");
         assert!(!dest.exists(), "no partial file must be left when the download is oversized");
     }
 

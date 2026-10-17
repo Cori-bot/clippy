@@ -58,7 +58,7 @@ export function ratioFromMs(ms: number, durationMs: number): number {
 }
 
 /**
- * `m:ss.t`.
+ * `m:ss,t` -- a decimal comma, as French writes it (and as SubRip timecodes do).
  *
  * A tenth, unlike `formatDuration`'s whole seconds: that is the right grain
  * for a clip's length in a metadata line and the wrong one for a playhead,
@@ -70,7 +70,7 @@ export function formatClock(ms: number): string {
   const totalSeconds = Math.floor(safe / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, '0')}.${tenths}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')},${tenths}`;
 }
 
 /**

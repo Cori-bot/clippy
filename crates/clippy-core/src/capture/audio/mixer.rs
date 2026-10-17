@@ -1,15 +1,17 @@
 //! Mixing two capture sources into the one PCM stream clips carry.
 
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{
     Arc,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use anyhow::Result;
 
 use super::{
     AudioPacket, AudioTimeline, ENCODER_BLOCK_ALIGN,
+    apps::AppWatcher,
+    frames_to_100ns,
     source::{AudioCapture, AudioSourceKind},
 };
 
@@ -141,22 +143,58 @@ struct Source {
     timeline: AudioTimeline,
     staged: Vec<u8>,
     capture: Option<AudioCapture>,
+    /// Raised by the application watcher when this source's process has quit;
+    /// the mixer then drops it. `None` for every source that lives as long as
+    /// the session.
+    gone: Option<Arc<AtomicBool>>,
+}
+
+impl Source {
+    fn new(kind: AudioSourceKind, rx: Receiver<AudioPacket>) -> Self {
+        Self {
+            kind,
+            rx,
+            timeline: AudioTimeline::new(),
+            staged: Vec::new(),
+            capture: None,
+            gone: None,
+        }
+    }
+
+    /// A source that never receives anything: its timeline emits silence up to
+    /// every target, so an application-only mix still advances, and stays
+    /// frame-aligned with the video, while none of the applications is running.
+    fn silent() -> Self {
+        let (_tx, rx) = channel();
+        Self::new(AudioSourceKind::SystemAudio, rx)
+    }
 }
 
 /// Sums the open capture sources into the single PCM stream clips carry.
 ///
-/// Both timelines anchor to the same instant — the first video frame's QPC
-/// stamp — and both are pumped to the same target, silence-filling whatever
+/// All timelines anchor to the same instant — the first video frame's QPC
+/// stamp — and all are pumped to the same target, silence-filling whatever
 /// their device did not supply. That makes them frame-aligned by construction,
 /// so mixing is addition and needs no resampling or drift correction.
+///
+/// "The PC's sound" is a *group*: the whole system's loopback as one source, or,
+/// when applications are named, a silent anchor plus one source per running
+/// application, added together and scaled by the one system level. The
+/// microphone is the other member and is never part of that group.
 ///
 /// The surface mirrors [`AudioTimeline`]'s deliberately: `replay` and `record`
 /// swap one for the other and their call sites lose an argument. It owns the
 /// capture threads too, so each consumer has exactly one thing to hold and one
 /// thing to stop rather than a handle and a receiver per source.
 pub struct AudioMixer {
-    system: Option<Source>,
+    system: Vec<Source>,
     mic: Option<Source>,
+    /// Present when applications are named: opens and closes their captures as
+    /// they start and quit.
+    watcher: Option<AppWatcher>,
+    /// Where the mix is anchored, once known; an application that starts later
+    /// joins the timeline at the frame the mix has reached by then.
+    t0_qpc: Option<i64>,
     gains: Arc<AudioGains>,
     frames_emitted: u64,
     /// Reused across every `pump` so steady-state mixing allocates nothing:
@@ -173,17 +211,34 @@ impl AudioMixer {
     /// open while its own slider reads 0 is indistinguishable from one that is
     /// lying about it.
     ///
+    /// `apps` is [`crate::config::Config::audio_apps`]. Empty records the whole
+    /// system. Otherwise only those applications are recorded, and the system
+    /// level applies to them.
+    ///
     /// Never fails. A source that cannot be opened — no microphone plugged in,
     /// device held exclusively, driver refusal — is logged and omitted, so
     /// audio can never be the reason an arm fails.
-    pub fn start_sources(gains: Arc<AudioGains>) -> Self {
-        let system = Self::should_open(gains.system_percent())
-            .then(|| Self::open(AudioSourceKind::SystemAudio))
-            .flatten();
+    pub fn start_sources(gains: Arc<AudioGains>, apps: &[String]) -> Self {
+        let mut system = Vec::new();
+        let mut watcher = None;
+        if Self::should_open(gains.system_percent()) {
+            if apps.is_empty() {
+                system.extend(Self::open(AudioSourceKind::SystemAudio));
+            } else {
+                system.push(Source::silent());
+                match AppWatcher::start(apps.to_vec()) {
+                    Ok(w) => watcher = Some(w),
+                    Err(e) => tracing::warn!(
+                        error = %format!("{e:#}"),
+                        "application audio unavailable, recording continues without it"
+                    ),
+                }
+            }
+        }
         let mic = Self::should_open(gains.mic_percent())
             .then(|| Self::open(AudioSourceKind::Microphone))
             .flatten();
-        Self { system, mic, gains, frames_emitted: 0, mixed: Vec::new() }
+        Self { system, mic, watcher, t0_qpc: None, gains, frames_emitted: 0, mixed: Vec::new() }
     }
 
     /// Whether a source at this level should be opened at all.
@@ -200,13 +255,11 @@ impl AudioMixer {
 
     fn open(kind: AudioSourceKind) -> Option<Source> {
         match AudioCapture::start(kind) {
-            Ok((capture, rx)) => Some(Source {
-                kind,
-                rx,
-                timeline: AudioTimeline::new(),
-                staged: Vec::new(),
-                capture: Some(capture),
-            }),
+            Ok((capture, rx)) => {
+                let mut source = Source::new(kind, rx);
+                source.capture = Some(capture);
+                Some(source)
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %format!("{e:#}"),
@@ -225,64 +278,63 @@ impl AudioMixer {
         mic: Option<Receiver<AudioPacket>>,
         gains: Arc<AudioGains>,
     ) -> Self {
-        let build = |kind: AudioSourceKind, rx: Receiver<AudioPacket>| Source {
-            kind,
-            rx,
-            timeline: AudioTimeline::new(),
-            staged: Vec::new(),
-            capture: None,
-        };
         Self {
-            system: system.map(|rx| build(AudioSourceKind::SystemAudio, rx)),
-            mic: mic.map(|rx| build(AudioSourceKind::Microphone, rx)),
+            system: system
+                .map(|rx| Source::new(AudioSourceKind::SystemAudio, rx))
+                .into_iter()
+                .collect(),
+            mic: mic.map(|rx| Source::new(AudioSourceKind::Microphone, rx)),
+            watcher: None,
+            t0_qpc: None,
             gains,
             frames_emitted: 0,
             mixed: Vec::new(),
         }
     }
 
+    /// Every open source, the PC's sound and the microphone alike.
+    fn sources(&self) -> impl Iterator<Item = &Source> {
+        self.system.iter().chain(self.mic.iter())
+    }
+
+    fn sources_mut(&mut self) -> impl Iterator<Item = &mut Source> {
+        self.system.iter_mut().chain(self.mic.iter_mut())
+    }
+
     /// True when at least one source opened. This is `RecorderSettings::with_audio`:
     /// with both levels at 0 the MP4 carries no audio stream at all rather
     /// than a track of silence.
     pub fn active(&self) -> bool {
-        self.system.is_some() || self.mic.is_some()
+        !self.system.is_empty() || self.mic.is_some()
     }
 
     /// Anchors every open timeline; the first call wins.
     pub fn start(&mut self, t0_qpc: i64) {
-        for source in [self.system.as_mut(), self.mic.as_mut()].into_iter().flatten() {
+        self.t0_qpc.get_or_insert(t0_qpc);
+        for source in self.sources_mut() {
             source.timeline.start(t0_qpc);
         }
     }
 
     pub fn started(&self) -> bool {
-        [self.system.as_ref(), self.mic.as_ref()]
-            .into_iter()
-            .flatten()
-            .any(|source| source.timeline.started())
+        self.sources().any(|source| source.timeline.started())
     }
 
     pub fn frames_emitted(&self) -> u64 {
         self.frames_emitted
     }
 
-    /// The lesser of the two sources' own running silence-fill totals.
+    /// The least of the sources' own running silence-fill totals.
     ///
     /// This is an upper bound on "frames where every open source was
-    /// silence-filled," not that count itself: the two totals are
-    /// independent running sums, not a per-frame intersection. A system
-    /// silent for frames 0–100 and a mic silent for frames 200–300 would
-    /// make this return 100 even though no single frame was silent on both.
-    /// Precision is not needed — this only feeds a human-readable summary
-    /// line — so the cheap `min` stands rather than tracking the true
-    /// intersection.
+    /// silence-filled," not that count itself: the totals are independent
+    /// running sums, not a per-frame intersection. A system silent for frames
+    /// 0–100 and a mic silent for frames 200–300 would make this return 100
+    /// even though no single frame was silent on both. Precision is not needed
+    /// — this only feeds a human-readable summary line — so the cheap `min`
+    /// stands rather than tracking the true intersection.
     pub fn silence_frames_emitted(&self) -> u64 {
-        [self.system.as_ref(), self.mic.as_ref()]
-            .into_iter()
-            .flatten()
-            .map(|source| source.timeline.silence_frames_emitted())
-            .min()
-            .unwrap_or(0)
+        self.sources().map(|source| source.timeline.silence_frames_emitted()).min().unwrap_or(0)
     }
 
     /// Drains one source's timeline into its staging buffer.
@@ -290,70 +342,75 @@ impl AudioMixer {
     /// The timeline's `start_frame` is dropped deliberately: a timeline emits
     /// one gapless consecutive stream, so appending preserves order, and the
     /// mixer's own counter is the frame authority for the mixed stream.
-    fn stage(source: Option<&mut Source>, target_qpc: i64) {
-        let Some(Source { rx, timeline, staged, .. }) = source else { return };
+    fn stage(source: &mut Source, target_qpc: i64) {
+        let Source { rx, timeline, staged, .. } = source;
         timeline.pump(rx, target_qpc, &mut |_start_frame, pcm| staged.extend_from_slice(pcm));
+    }
+
+    /// Takes in the applications the watcher has started capturing, and drops
+    /// the ones whose process has quit.
+    ///
+    /// A newcomer's timeline begins at the frame the mix has reached, which is
+    /// where every other source's staged audio also begins, so adding it keeps
+    /// them aligned without replaying the minutes it was not running for.
+    fn follow_applications(&mut self) {
+        if let Some(watcher) = &self.watcher {
+            while let Some(app) = watcher.next_new_app() {
+                let mut source = Source::new(AudioSourceKind::SystemAudio, app.rx);
+                source.gone = Some(app.gone);
+                if let Some(t0) = self.t0_qpc {
+                    source.timeline.start(t0 + frames_to_100ns(self.frames_emitted));
+                }
+                self.system.push(source);
+            }
+        }
+        self.system.retain(|s| s.gone.as_ref().is_none_or(|gone| !gone.load(Ordering::Relaxed)));
     }
 
     /// Emits gapless consecutive mixed chunks as `(start_frame, pcm)`.
     ///
-    /// Reuses `self.mixed` rather than allocating a fresh buffer every call:
-    /// `bytes` is computed and drained within the same match arm as the
-    /// buffer it bounds, so a drain can never be asked to remove more than
-    /// that buffer holds — there is no second match to fall out of sync with.
+    /// Reuses `self.mixed` rather than allocating a fresh buffer every call.
+    /// Only the span every source has supplied is mixed: holding the excess
+    /// back costs one pump of latency, while emitting it would put audio on the
+    /// timeline that can never be corrected.
     pub fn pump(&mut self, target_qpc: i64, sink: &mut impl FnMut(u64, &[u8])) {
-        Self::stage(self.system.as_mut(), target_qpc);
-        Self::stage(self.mic.as_mut(), target_qpc);
+        self.follow_applications();
+        for source in self.sources_mut() {
+            Self::stage(source, target_qpc);
+        }
 
         self.mixed.clear();
-        // Only the span both sources have supplied can be mixed. Holding the
-        // excess back costs one pump of latency; emitting it would put audio
-        // on the timeline that can never be corrected.
-        let bytes = match (&mut self.system, &mut self.mic) {
-            (Some(system), Some(mic)) => {
-                let available = system.staged.len().min(mic.staged.len());
-                let bytes = available - (available % ENCODER_BLOCK_ALIGN);
-                if bytes == 0 {
-                    return;
-                }
-                self.mixed.extend_from_slice(&system.staged[..bytes]);
-                apply_gain(&mut self.mixed, self.gains.system());
-                mix_into(&mut self.mixed, &mic.staged[..bytes], self.gains.mic());
-                system.staged.drain(..bytes);
-                mic.staged.drain(..bytes);
-                bytes
-            }
-            (Some(system), None) => {
-                let available = system.staged.len();
-                let bytes = available - (available % ENCODER_BLOCK_ALIGN);
-                if bytes == 0 {
-                    return;
-                }
-                self.mixed.extend_from_slice(&system.staged[..bytes]);
-                apply_gain(&mut self.mixed, self.gains.system());
-                system.staged.drain(..bytes);
-                bytes
-            }
-            (None, Some(mic)) => {
-                let available = mic.staged.len();
-                let bytes = available - (available % ENCODER_BLOCK_ALIGN);
-                if bytes == 0 {
-                    return;
-                }
-                self.mixed.extend_from_slice(&mic.staged[..bytes]);
-                apply_gain(&mut self.mixed, self.gains.mic());
-                mic.staged.drain(..bytes);
-                bytes
-            }
-            (None, None) => return,
+        let Some(available) = self.sources().map(|source| source.staged.len()).min() else {
+            return;
         };
+        let bytes = available - (available % ENCODER_BLOCK_ALIGN);
+        if bytes == 0 {
+            return;
+        }
+
+        if let Some((first, rest)) = self.system.split_first() {
+            self.mixed.extend_from_slice(&first.staged[..bytes]);
+            for other in rest {
+                mix_into(&mut self.mixed, &other.staged[..bytes], 1.0);
+            }
+            apply_gain(&mut self.mixed, self.gains.system());
+            if let Some(mic) = &self.mic {
+                mix_into(&mut self.mixed, &mic.staged[..bytes], self.gains.mic());
+            }
+        } else if let Some(mic) = &self.mic {
+            self.mixed.extend_from_slice(&mic.staged[..bytes]);
+            apply_gain(&mut self.mixed, self.gains.mic());
+        }
+        for source in self.system.iter_mut().chain(self.mic.iter_mut()) {
+            source.staged.drain(..bytes);
+        }
 
         sink(self.frames_emitted, &self.mixed);
         self.frames_emitted += (bytes / ENCODER_BLOCK_ALIGN) as u64;
     }
 
     pub fn log_diagnostics(&self) {
-        for source in [self.system.as_ref(), self.mic.as_ref()].into_iter().flatten() {
+        for source in self.sources() {
             source.timeline.log_diagnostics(source.kind.label());
         }
     }
@@ -366,8 +423,13 @@ impl AudioMixer {
     /// mixer just to get an owned one. Idempotent — each handle is taken, so
     /// a second call stops nothing and succeeds.
     pub fn stop(&mut self) -> Result<()> {
+        // The watcher first: it owns the application captures, and its thread
+        // must be gone before the session that opened them is torn down.
+        if let Some(mut watcher) = self.watcher.take() {
+            watcher.stop();
+        }
         let mut outcome = Ok(());
-        for source in [self.system.as_mut(), self.mic.as_mut()].into_iter().flatten() {
+        for source in self.sources_mut() {
             let Some(capture) = source.capture.take() else { continue };
             if let Err(e) = capture.stop() {
                 tracing::warn!(
@@ -817,5 +879,74 @@ mod tests {
         let mut mixer = AudioMixer::with_sources(Some(system), None, AudioGains::new(100, 100));
         assert!(!mixer.started());
         assert!(drain(&mut mixer, frames_to_100ns(480)).is_empty());
+    }
+
+    /// A mixer in application mode: the silent anchor, plus whatever
+    /// applications the test adds.
+    fn application_mixer(gains: Arc<AudioGains>) -> AudioMixer {
+        let mut mixer = AudioMixer::with_sources(None, None, gains);
+        mixer.system.push(Source::silent());
+        mixer
+    }
+
+    fn add_application(mixer: &mut AudioMixer, rx: Receiver<AudioPacket>) -> Arc<AtomicBool> {
+        let gone = Arc::new(AtomicBool::new(false));
+        let mut app = Source::new(AudioSourceKind::SystemAudio, rx);
+        app.gone = Some(Arc::clone(&gone));
+        mixer.system.push(app);
+        gone
+    }
+
+    #[test]
+    fn with_no_application_running_the_mix_still_advances_in_silence() {
+        // The MP4 has its audio stream from the first frame, so the track must
+        // keep pace with the video even when the chosen application is closed.
+        let mut mixer = application_mixer(AudioGains::new(100, 100));
+        assert!(mixer.active());
+        mixer.start(0);
+        let emitted = drain(&mut mixer, frames_to_100ns(480));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].1.len(), 480 * ENCODER_BLOCK_ALIGN / 2);
+        assert!(emitted[0].1.iter().all(|&s| s == 0));
+    }
+
+    #[test]
+    fn running_applications_are_summed_and_share_the_system_level() {
+        let (_a, spotify) = source(1000, 480);
+        let (_b, browser) = source(500, 480);
+        let mut mixer = application_mixer(AudioGains::new(50, 100));
+        add_application(&mut mixer, spotify);
+        add_application(&mut mixer, browser);
+        mixer.start(0);
+        let emitted = drain(&mut mixer, frames_to_100ns(480));
+        // (1000 + 500) at 50 % (the squared taper, 0.25), the silent anchor adding 0.
+        assert!(emitted[0].1.iter().all(|&s| s == 375), "unexpected samples");
+    }
+
+    #[test]
+    fn an_application_that_quit_leaves_the_mix_but_not_the_others() {
+        let (_a, staying) = source(1000, 480);
+        let (_b, leaving) = source(700, 480);
+        let mut mixer = application_mixer(AudioGains::new(100, 100));
+        add_application(&mut mixer, staying);
+        let gone = add_application(&mut mixer, leaving);
+        mixer.start(0);
+        gone.store(true, Ordering::Relaxed);
+        mixer.follow_applications();
+        assert_eq!(mixer.system.len(), 2, "the anchor and the application still running");
+        let emitted = drain(&mut mixer, frames_to_100ns(480));
+        assert!(emitted[0].1.iter().all(|&s| s == 1000), "the departed application leaked in");
+    }
+
+    #[test]
+    fn the_microphone_stays_outside_the_application_group() {
+        let (_a, spotify) = source(1000, 480);
+        let (_b, mic) = source(300, 480);
+        let mut mixer = AudioMixer::with_sources(None, Some(mic), AudioGains::new(100, 100));
+        mixer.system.push(Source::silent());
+        add_application(&mut mixer, spotify);
+        mixer.start(0);
+        let emitted = drain(&mut mixer, frames_to_100ns(480));
+        assert!(emitted[0].1.iter().all(|&s| s == 1300), "unexpected samples");
     }
 }

@@ -48,6 +48,10 @@ export type Status = {
   ring_seconds_total: number;
   version: string;
   clip_dir: string;
+  /** Replay on, idle until a game is in front. Absent from an older daemon. */
+  waiting_for_game?: boolean;
+  /** The program of the game in front or still running, if any. */
+  game?: string | null;
   /**
    * Whether each hotkey is actually listening. `null` means the daemon has
    * not tried to bind it yet -- a real answer, and not the same as `false`.
@@ -70,6 +74,9 @@ export type Monitor = {
   top: number;
   adapter: string;
 };
+
+/** One row of `audio.apps`: a program with an audio session on this PC. */
+export type AudioApp = { exe: string; name: string; playing: boolean };
 
 export type Encoder = { name: string; codec: string; hardware: boolean };
 

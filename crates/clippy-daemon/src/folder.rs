@@ -43,9 +43,9 @@ pub fn pick(current: &Path) -> Result<Option<PathBuf>> {
     std::thread::Builder::new()
         .name("clippy-folder-picker".into())
         .spawn(move || show(&current))
-        .context("could not start the folder-picker thread")?
+        .context("impossible de démarrer le fil du sélecteur de dossier")?
         .join()
-        .map_err(|_| anyhow::anyhow!("the folder-picker thread panicked"))?
+        .map_err(|_| anyhow::anyhow!("le fil du sélecteur de dossier a planté"))?
 }
 
 /// The dialog itself, on a thread that owns its apartment. See [`pick`].
@@ -61,7 +61,7 @@ fn show(current: &Path) -> Result<Option<PathBuf>> {
 
     let dialog: IFileOpenDialog =
         unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }
-            .context("could not create the folder picker")?;
+            .context("impossible de créer le sélecteur de dossier")?;
 
     // FORCEFILESYSTEM keeps the result to somewhere clips can actually be
     // written: without it the picker will happily return a virtual shell
@@ -72,7 +72,7 @@ fn show(current: &Path) -> Result<Option<PathBuf>> {
         dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST)
     }
     .context("IFileDialog::SetOptions")?;
-    let _ = unsafe { dialog.SetTitle(&HSTRING::from("Choose where Clippy saves clips")) };
+    let _ = unsafe { dialog.SetTitle(&HSTRING::from("Choisir où Clippy enregistre les clips")) };
 
     // Open where the clips go today, so "change" starts from the current
     // answer rather than from wherever the shell last left off. Best-effort:
@@ -88,7 +88,7 @@ fn show(current: &Path) -> Result<Option<PathBuf>> {
         if e.code() == ERROR_CANCELLED.to_hresult() {
             return Ok(None);
         }
-        return Err(anyhow::Error::from(e).context("the folder picker failed"));
+        return Err(anyhow::Error::from(e).context("le sélecteur de dossier a échoué"));
     }
 
     chosen_path(&dialog)
@@ -103,10 +103,10 @@ fn show(current: &Path) -> Result<Option<PathBuf>> {
 fn chosen_path(dialog: &IFileOpenDialog) -> Result<Option<PathBuf>> {
     let item = unsafe { dialog.GetResult() }.context("IFileOpenDialog::GetResult")?;
     let wide = unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }
-        .context("the chosen item has no filesystem path")?;
+        .context("l’élément choisi n’a pas de chemin sur le disque")?;
     let chosen = unsafe { wide.to_string() };
     unsafe { CoTaskMemFree(Some(wide.0 as *const _)) };
-    Ok(Some(PathBuf::from(chosen.context("the chosen path is not valid UTF-16")?)))
+    Ok(Some(PathBuf::from(chosen.context("le chemin choisi n’est pas de l’UTF-16 valide")?)))
 }
 
 /// Shows the "choose a clip sound" dialog.
@@ -121,9 +121,9 @@ pub fn pick_sound() -> Result<Option<PathBuf>> {
     std::thread::Builder::new()
         .name("clippy-sound-picker".into())
         .spawn(show_sound)
-        .context("could not start the sound-picker thread")?
+        .context("impossible de démarrer le fil du sélecteur de son")?
         .join()
-        .map_err(|_| anyhow::anyhow!("the sound-picker thread panicked"))?
+        .map_err(|_| anyhow::anyhow!("le fil du sélecteur de son a planté"))?
 }
 
 fn show_sound() -> Result<Option<PathBuf>> {
@@ -131,20 +131,23 @@ fn show_sound() -> Result<Option<PathBuf>> {
 
     let dialog: IFileOpenDialog =
         unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }
-            .context("could not create the sound picker")?;
+            .context("impossible de créer le sélecteur de son")?;
 
     let options = unsafe { dialog.GetOptions() }.context("IFileDialog::GetOptions")?;
     unsafe { dialog.SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST) }
         .context("IFileDialog::SetOptions")?;
-    let _ = unsafe { dialog.SetTitle(&HSTRING::from("Choose the sound Clippy plays for a clip")) };
+    let _ = unsafe {
+        dialog
+            .SetTitle(&HSTRING::from("Choisir le son que Clippy joue à l’enregistrement d’un clip"))
+    };
 
     // The filter is a convenience, not the rule -- the decoder is what actually
     // decides. "All files" is second so somebody with an .opus or an .aiff can
     // still try it, and find out from the error rather than from a dialog that
     // refuses to show them their own file.
-    let audio = HSTRING::from("Audio files");
+    let audio = HSTRING::from("Fichiers audio");
     let audio_spec = HSTRING::from("*.mp3;*.wav;*.m4a;*.wma;*.flac");
-    let all = HSTRING::from("All files");
+    let all = HSTRING::from("Tous les fichiers");
     let all_spec = HSTRING::from("*.*");
     let filters = [
         COMDLG_FILTERSPEC { pszName: PCWSTR(audio.as_ptr()), pszSpec: PCWSTR(audio_spec.as_ptr()) },
@@ -156,7 +159,7 @@ fn show_sound() -> Result<Option<PathBuf>> {
         if e.code() == ERROR_CANCELLED.to_hresult() {
             return Ok(None);
         }
-        return Err(anyhow::Error::from(e).context("the sound picker failed"));
+        return Err(anyhow::Error::from(e).context("le sélecteur de son a échoué"));
     }
 
     chosen_path(&dialog)

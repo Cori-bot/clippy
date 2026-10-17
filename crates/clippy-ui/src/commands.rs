@@ -35,7 +35,7 @@ pub async fn clippy_call(
     // for the grant, not two.
     tauri::async_runtime::spawn_blocking(move || supervisor.call(&cmd, args))
         .await
-        .map_err(|e| format!("the call could not be scheduled: {e}"))?
+        .map_err(|e| format!("l’appel n’a pas pu être planifié\u{a0}: {e}"))?
 }
 
 #[tauri::command]
@@ -61,9 +61,11 @@ pub fn start_daemon(supervisor: State<'_, Arc<Supervisor>>) -> Result<(), String
     // however the install ended, so the offer on that panel is live again by
     // the time the user can act on it.
     if crate::update::install_in_progress() {
-        return Err("Clippy is installing an update, so the recorder cannot be started right now. \
-                    Try again once the update has finished."
-            .to_string());
+        return Err(
+            "Clippy installe une mise à jour\u{a0}: l’enregistreur ne peut pas être démarré \
+                    pour le moment. Réessayer une fois la mise à jour terminée."
+                .to_string(),
+        );
     }
     supervisor.launch()
 }

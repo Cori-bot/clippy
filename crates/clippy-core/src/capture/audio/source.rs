@@ -34,12 +34,20 @@ use super::{AudioPacket, CHANNELS, SAMPLE_RATE};
 pub enum AudioSourceKind {
     SystemAudio,
     Microphone,
+    /// The sound of one process and everything it started, wherever it plays
+    /// it. Needs Windows 10 build 20348 or later; on anything older the stream
+    /// fails to open and the mixer carries on without it.
+    Application {
+        pid: u32,
+    },
 }
 
 impl AudioSourceKind {
     fn direction(self) -> Direction {
         match self {
-            Self::SystemAudio => Direction::Render,
+            // An application stream has no device of its own to pick; it is a
+            // loopback, so it reads like one.
+            Self::SystemAudio | Self::Application { .. } => Direction::Render,
             Self::Microphone => Direction::Capture,
         }
     }
@@ -49,6 +57,7 @@ impl AudioSourceKind {
         match self {
             Self::SystemAudio => "system audio",
             Self::Microphone => "microphone",
+            Self::Application { .. } => "application audio",
         }
     }
 }
@@ -67,11 +76,19 @@ struct WasapiSession {
 
 impl WasapiSession {
     fn open(kind: AudioSourceKind, format: &WaveFormat) -> Result<Self> {
-        let enumerator = DeviceEnumerator::new().map_err(|e| anyhow!("device enumerator: {e}"))?;
-        let device = enumerator
-            .get_default_device(&kind.direction())
-            .map_err(|e| anyhow!("no default {} device: {e}", kind.label()))?;
-        let mut client = device.get_iaudioclient().map_err(|e| anyhow!("audio client: {e}"))?;
+        let mut client = if let AudioSourceKind::Application { pid } = kind {
+            // Include the process tree: Spotify and every browser play their
+            // sound from a child of the process the user knows.
+            AudioClient::new_application_loopback_client(pid, true)
+                .map_err(|e| anyhow!("application audio client (pid {pid}): {e}"))?
+        } else {
+            let enumerator =
+                DeviceEnumerator::new().map_err(|e| anyhow!("device enumerator: {e}"))?;
+            let device = enumerator
+                .get_default_device(&kind.direction())
+                .map_err(|e| anyhow!("no default {} device: {e}", kind.label()))?;
+            device.get_iaudioclient().map_err(|e| anyhow!("audio client: {e}"))?
+        };
         client
             .initialize_client(
                 format,
@@ -105,10 +122,17 @@ impl AudioCapture {
             .name(match kind {
                 AudioSourceKind::SystemAudio => "clippy-audio".into(),
                 AudioSourceKind::Microphone => "clippy-mic".into(),
+                AudioSourceKind::Application { .. } => "clippy-audio-app".into(),
             })
             .spawn(move || capture_loop(kind, &stop_flag, &tx))
             .context("failed to spawn audio thread")?;
         Ok((Self { stop, thread }, rx))
+    }
+
+    /// True once the capture thread has exited, normally or because the
+    /// stream could not be opened or broke. `stop` then reports why.
+    pub fn is_finished(&self) -> bool {
+        self.thread.is_finished()
     }
 
     pub fn stop(self) -> Result<()> {
@@ -282,6 +306,19 @@ mod tests {
         // not debug output.
         assert_eq!(AudioSourceKind::SystemAudio.label(), "system audio");
         assert_eq!(AudioSourceKind::Microphone.label(), "microphone");
+        assert_eq!(AudioSourceKind::Application { pid: 4 }.label(), "application audio");
+    }
+
+    /// Process loopback needs only a live process id. This process has one, so
+    /// the stream must open and start even with nothing playing; on a machine
+    /// too old for the feature this is where it would show.
+    #[test]
+    fn an_application_stream_opens_for_a_live_process() {
+        let kind = AudioSourceKind::Application { pid: std::process::id() };
+        let (capture, _rx) = AudioCapture::start(kind).expect("spawns");
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!capture.is_finished(), "the stream ended early");
+        capture.stop().expect("opened, ran and stopped cleanly");
     }
 
     #[test]

@@ -38,14 +38,25 @@
     type="button"
     class="arm"
     class:on={app.armed}
+    class:waiting={app.waiting && !app.armed}
+    aria-label="Replay"
+    aria-pressed={app.armed || app.waiting}
+    title={app.waiting && !app.armed
+      ? 'Le replay démarre dès qu’un jeu est au premier plan. Cliquer pour le désactiver.'
+      : app.armed
+        ? `${app.status?.game ? `Jeu détecté : ${app.status.game}. ` : ''}Cliquer pour désactiver le replay.`
+        : undefined}
     disabled={!app.connected}
     onclick={() => app.toggleArm()}>
     <span class="dot"></span>
-    {app.armed ? 'ARMED' : 'Arm'}
+    {app.armed ? 'Replay actif' : app.waiting ? 'Replay prêt · attend un jeu' : 'Activer le replay'}
+    {#if app.armed && app.status?.game}
+      <span class="game">{app.status.game}</span>
+    {/if}
     {#if app.armed}
-      <span class="meter"><i style="width: {pct}%"></i></span>
+      <span class="meter"><i style="transform: scaleX({pct / 100})"></i></span>
       <span class="n tnum">
-        {app.ringUsed.toFixed(0)}/{app.status?.ring_seconds_total.toFixed(0) ?? '0'}s
+        {app.ringUsed.toFixed(0)}/{app.status?.ring_seconds_total.toFixed(0) ?? '0'}&nbsp;s
       </span>
     {/if}
   </button>
@@ -55,14 +66,14 @@
   <div class="grab" data-tauri-drag-region></div>
 
   <div class="wc">
-    <IconButton icon="minimize" label="Minimize" size={11} onclick={() => void win.minimize()} />
+    <IconButton icon="minimize" label="Réduire" size={11} onclick={() => void win.minimize()} />
     <IconButton
       icon={maximized ? 'restore' : 'maximize'}
-      label={maximized ? 'Restore' : 'Maximize'}
+      label={maximized ? 'Restaurer' : 'Agrandir'}
       size={11}
       onclick={() => void win.toggleMaximize()} />
     <span class="close">
-      <IconButton icon="close" label="Close" size={11} onclick={() => void win.close()} />
+      <IconButton icon="close" label="Fermer" size={11} onclick={() => void win.close()} />
     </span>
   </div>
 </header>
@@ -93,7 +104,6 @@
     font: inherit;
     font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.04em;
     cursor: pointer;
     transition: color var(--t) var(--ease), background var(--t) var(--ease), border-color var(--t) var(--ease);
   }
@@ -114,10 +124,22 @@
   }
   .arm.on .dot { background: var(--live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 20%, transparent); }
   .arm.on:hover:not(:disabled) { background: color-mix(in srgb, var(--live) 20%, transparent); }
+  /* On, but not recording: the dot keeps the live colour as an outline only, so
+     it reads as "ready" and not as the green of a buffer that is filling. */
+  .arm.waiting { color: var(--text); border-color: color-mix(in srgb, var(--live) 40%, var(--line-strong)); }
+  .arm.waiting .dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--live); }
   .arm:disabled { opacity: 0.4; cursor: default; }
   .meter { width: 44px; height: 3px; border-radius: 2px; background: var(--line-strong); overflow: hidden; }
-  .meter i { display: block; height: 100%; background: var(--live); transition: width 200ms linear; }
+  .meter i { display: block; width: 100%; height: 100%; background: var(--live); transform-origin: left; transition: transform 200ms linear; }
   .n { opacity: 0.85; }
+  .game {
+    max-width: 16ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+    opacity: 0.85;
+  }
 
   .wc { display: flex; align-self: stretch; }
   /* Windows-standard 44px, and square to the bar rather than the 30px

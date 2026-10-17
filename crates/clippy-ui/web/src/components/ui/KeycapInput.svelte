@@ -6,6 +6,7 @@
     capturing = false,
     label,
     oncapture,
+    oncancel,
     onstart,
   }: {
     /** The combination to show, e.g. `alt+f10`. */
@@ -13,8 +14,27 @@
     capturing?: boolean;
     label: string;
     oncapture: (e: KeyboardEvent) => void;
+    /** Escape while capturing: drop the pending combination and show the saved one again. */
+    oncancel: () => void;
     onstart: () => void;
   } = $props();
+
+  // Capturing swallows every key, so two of them have to be left alone or the
+  // keyboard is trapped here: Escape, which cancels, and a bare Tab, which
+  // moves on to "Enregistrer". Blur is deliberately not a cancel -- pressing
+  // that button blurs this one first and would discard the combination before
+  // the click lands.
+  function onkey(e: KeyboardEvent) {
+    if (!capturing) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      oncancel();
+      return;
+    }
+    if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) return;
+    oncapture(e);
+  }
 
   const caps = $derived(formatCombo(combo));
 </script>
@@ -32,15 +52,16 @@
   class:capturing
   aria-label={label}
   onclick={onstart}
-  onkeydown={(e) => { if (capturing) oncapture(e); }}>
+  onkeydown={onkey}>
   {#if caps.length === 0}
-    <span class="ask">click, then press a combination</span>
+    <span class="ask">Cliquer, puis appuyer sur les touches</span>
   {:else}
     {#each caps as cap, i (i)}
       {#if i > 0}<span class="plus">+</span>{/if}
       <kbd>{cap}</kbd>
     {/each}
   {/if}
+  {#if capturing}<span class="esc">Échap pour annuler</span>{/if}
 </button>
 
 <style>
@@ -51,7 +72,7 @@
     min-width: 172px;
     padding: 6px 10px;
     background: var(--bg);
-    border: 1px solid var(--line-strong);
+    border: 1px solid var(--field-line);
     border-radius: var(--r);
     color: var(--text);
     font: inherit;
@@ -70,4 +91,5 @@
   }
   .plus { color: var(--faint); font-size: 11px; }
   .ask { color: var(--faint); font-size: 12px; }
+  .esc { margin-left: 6px; color: var(--dim); font-size: 10.5px; white-space: nowrap; }
 </style>

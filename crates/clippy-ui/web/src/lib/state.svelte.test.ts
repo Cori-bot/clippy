@@ -336,6 +336,27 @@ describe('bulk clip deletion', () => {
     expect(app.totalBytes).toBe(0);
     expect(app.view).toBe('grid');
   });
+
+  it('announces a single deletion in the singular and several in the plural', async () => {
+    callMock.mockResolvedValue({});
+    app.clips = [clip('a'), clip('b'), clip('c')];
+    app.total = 3;
+    await app.removeMany(['a']);
+    expect(app.toasts.at(-1)?.text).toBe('1 clip supprimé.');
+    await app.removeMany(['b', 'c']);
+    expect(app.toasts.at(-1)?.text).toBe('2 clips supprimés.');
+  });
+
+  it('reports the partial failure with the daemon message left as it came', async () => {
+    app.clips = [clip('a'), clip('b'), clip('c')];
+    app.total = 3;
+    callMock.mockImplementation(async (_cmd, { clip_id }) => {
+      if (clip_id !== 'a') throw new Error('file in use');
+      return {};
+    });
+    await app.removeMany(['a', 'b', 'c']);
+    expect(app.toasts.at(-1)?.text).toBe('1 supprimé ; 2 non supprimés. Error: file in use');
+  });
 });
 
 describe('AppState.deleteShot', () => {
@@ -538,7 +559,7 @@ describe('AppState.exportTrim', () => {
     await app.exportTrim('20260822_101500', 4000, 9000);
 
     expect(app.toasts.at(-1)?.kind).toBe('error');
-    expect(app.toasts.at(-1)?.text).toContain('without sound');
+    expect(app.toasts.at(-1)?.text).toContain('sans son');
   });
 
   // The other half of the same rule: a source with no audio track produces an
@@ -594,8 +615,8 @@ describe('trimRangeError', () => {
   it('names the in/out order when the range is empty or inverted', () => {
     // Crossing is what `i` at 12s after `o` at 8s produces, and what either
     // slider dragged past the other produces.
-    expect(trimRangeError(12000, 8000)).toBe('Set the out point after the in point.');
-    expect(trimRangeError(4000, 4000)).toBe('Set the out point after the in point.');
+    expect(trimRangeError(12000, 8000)).toBe('Le point de sortie doit être après le point d’entrée.');
+    expect(trimRangeError(4000, 4000)).toBe('Le point de sortie doit être après le point d’entrée.');
   });
 
   it('names the floor when the range is positive but too short', () => {
@@ -863,7 +884,7 @@ describe('wireDaemon: clip_saved', () => {
 
     expect(app.clips.map((c) => c.id)).toEqual(['new', 'a', 'b']);
     expect(app.total).toBe(3);
-    expect(app.toasts.at(-1)?.text).toBe('Saved clip_new');
+    expect(app.toasts.at(-1)?.text).toBe('Clip enregistré : clip_new');
   });
 
   it('shifts the selection so it still points at the clip the user had, not the slot', () => {
@@ -945,7 +966,7 @@ describe('wireDaemon: shot_saved', () => {
 
     expect(app.shots.map((s) => s.id)).toEqual(['new', 'a', 'b']);
     expect(app.shotTotal).toBe(3);
-    expect(app.toasts.at(-1)?.text).toBe('Screenshot saved');
+    expect(app.toasts.at(-1)?.text).toBe('Capture d’écran enregistrée');
   });
 
   // The bug the comment at state.svelte.ts:503 names: a genuine prepend

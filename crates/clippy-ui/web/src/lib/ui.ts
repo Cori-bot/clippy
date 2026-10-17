@@ -125,18 +125,51 @@ export function resolveStepperInput(raw: string, current: number, min: number, m
 }
 
 /**
+ * The keycap text of the keys whose French name is not just the title-cased
+ * English one, keyed by the lower-cased token a combo carries (`comboFromEvent`
+ * in `settings.ts` lower-cases `KeyboardEvent.key`, so a spacebar arrives as
+ * a lone space). A `Map` rather than an object so a stray token can never
+ * resolve to something inherited, like `constructor`.
+ */
+const KEY_LABELS = new Map<string, string>([
+  ['shift', 'Maj'],
+  ['enter', 'Entrée'],
+  ['escape', 'Échap'],
+  ['delete', 'Suppr'],
+  [' ', 'Espace'],
+  ['space', 'Espace'],
+  ['backspace', 'Retour arrière'],
+  ['insert', 'Inser'],
+  ['home', 'Début'],
+  ['end', 'Fin'],
+  ['pageup', 'Page préc.'],
+  ['pagedown', 'Page suiv.'],
+  ['printscreen', 'Impr. écran'],
+  ['arrowleft', '←'],
+  ['arrowup', '↑'],
+  ['arrowright', '→'],
+  ['arrowdown', '↓'],
+]);
+
+/**
  * `combo` (e.g. `alt+f10`) split into the keycaps a `KeycapInput` shows.
  *
  * Empty segments -- from an empty string, a leading `+`, a trailing `+`, or a
- * doubled `+` -- are dropped rather than rendered as a blank keycap. Single
- * characters are upper-cased (`e` -> `E`); everything else is title-cased
- * (`f10` -> `F10`, `ctrl` -> `Ctrl`).
+ * doubled `+` -- are dropped rather than rendered as a blank keycap. Keys with
+ * a French name of their own (`shift` -> `Maj`, `enter` -> `Entrée`, the arrows)
+ * come from `KEY_LABELS`. Of the rest, single characters are upper-cased
+ * (`e` -> `E`) and everything else is title-cased (`f10` -> `F10`,
+ * `ctrl` -> `Ctrl`).
  */
 export function formatCombo(combo: string): string[] {
   return combo
     .split('+')
     .filter((p) => p.length > 0)
-    .map((p) => (p.length === 1 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1)));
+    .map(
+      (p) =>
+        KEY_LABELS.get(p.toLowerCase()) ??
+        (p.length === 1 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1)),
+    );
 }
 
 /**

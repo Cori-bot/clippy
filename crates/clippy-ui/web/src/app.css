@@ -17,6 +17,9 @@
      an outlined control feel like a control: a border that does not move on
      hover reads as decoration. */
   --line-hi: rgba(255, 255, 255, 0.18);
+  /* The edge of a control you type into or pick from (select, stepper, keycap
+     box). --line-strong is 1.3:1 on the panel, too faint to find a field by. */
+  --field-line: rgba(255, 255, 255, 0.22);
 
   /* Interaction. One wash for every transparent control's hover, and the
      lifted form of the two surfaces that have one. Tokens rather than
@@ -50,7 +53,7 @@
   /* Text */
   --text: #e4e8ee;
   --dim: #8b94a3;
-  --faint: #5d6675;
+  --faint: #7a8493;
 
   /* Semantics. Each of these means exactly one thing -- see the plan's
      colour contract. --accent is "you selected this", --live is "Clippy is
@@ -105,12 +108,15 @@ body {
    its own markup, so a copy in each would be these six rules maintained in
    two places. Layout, not control styling -- the controls themselves are
    still components. */
-.row { display: flex; align-items: center; gap: 20px; padding: 13px 0; }
+.row { display: flex; align-items: flex-start; gap: 20px; padding: 13px 0; }
 .row + .row { border-top: 1px solid var(--line-soft); }
 .row .lt { flex: 1; min-width: 0; }
 .row .lt b { display: block; font-weight: 500; font-size: 13px; }
-.row .lt span { display: block; color: var(--dim); font-size: 11.5px; margin-top: 2px; }
-.row .rt { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+.row .lt span { display: block; color: var(--dim); font-size: 11.5px; margin-top: 2px; max-width: 62ch; }
+/* The app is not selectable text by default, but a path or an error message is
+   something to copy. */
+.toast, .problem, .path, .checked { user-select: text; }
+.row .rt { flex: 0 0 auto; max-width: 58%; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; }
 
 /* The app had no focus styling at all before this. `:focus-visible` rather
    than `:focus`, so clicking a control does not leave a ring behind it. */

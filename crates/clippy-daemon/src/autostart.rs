@@ -51,7 +51,7 @@ fn open_key(path: &str, access: REG_SAM_FLAGS) -> Result<Key> {
     let status =
         unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(path), None, access, &mut key) };
     if status != ERROR_SUCCESS {
-        return Err(win32(status)).with_context(|| format!("opening HKCU\\{path}"));
+        return Err(win32(status)).with_context(|| format!("ouverture de HKCU\\{path}"));
     }
     Ok(Key(key))
 }
@@ -75,7 +75,7 @@ fn create_key(path: &str) -> Result<Key> {
         )
     };
     if status != ERROR_SUCCESS {
-        return Err(win32(status)).with_context(|| format!("creating HKCU\\{path}"));
+        return Err(win32(status)).with_context(|| format!("création de HKCU\\{path}"));
     }
     Ok(Key(key))
 }
@@ -93,7 +93,7 @@ fn win32(status: WIN32_ERROR) -> windows::core::Error {
 /// Quoted because a path with spaces (`C:\Program Files\...`) in an unquoted
 /// Run value is parsed as a command plus arguments.
 fn run_command() -> Result<String> {
-    let exe = std::env::current_exe().context("resolving the daemon path")?;
+    let exe = std::env::current_exe().context("résolution du chemin du démon")?;
     Ok(format!("\"{}\"", exe.display()))
 }
 
@@ -160,7 +160,7 @@ fn set_enabled_at(key_path: &str, name: &str, enabled: bool) -> Result<()> {
         let status = unsafe { RegDeleteValueW(key.0, &HSTRING::from(name)) };
         return match status {
             ERROR_SUCCESS | ERROR_FILE_NOT_FOUND => Ok(()),
-            status => Err(win32(status)).context("could not remove the Run value"),
+            status => Err(win32(status)).context("impossible de supprimer la valeur Run"),
         };
     }
 
@@ -183,7 +183,7 @@ fn write_sz(key_path: &str, name: &str, value: &str) -> Result<()> {
     let status = unsafe { RegSetValueExW(key.0, &HSTRING::from(name), None, REG_SZ, Some(bytes)) };
     match status {
         ERROR_SUCCESS => Ok(()),
-        status => Err(win32(status)).context("could not write the Run value"),
+        status => Err(win32(status)).context("impossible d’écrire la valeur Run"),
     }
 }
 

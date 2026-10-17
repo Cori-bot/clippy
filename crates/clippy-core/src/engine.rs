@@ -73,10 +73,10 @@ fn recv_bounded<T>(answer: &Receiver<Result<T>>) -> Result<T> {
     match answer.recv_timeout(REPLY_TIMEOUT) {
         Ok(result) => result,
         Err(RecvTimeoutError::Disconnected) => {
-            Err(anyhow!("capture is rebuilding — try again in a moment"))
+            Err(anyhow!("la capture est en cours de reconstruction — réessayer dans un instant"))
         }
         Err(RecvTimeoutError::Timeout) => {
-            Err(anyhow!("the engine did not answer within {} s", REPLY_TIMEOUT.as_secs()))
+            Err(anyhow!("le moteur n’a pas répondu en {} s", REPLY_TIMEOUT.as_secs()))
         }
     }
 }
@@ -102,7 +102,7 @@ impl EngineHandle {
         let join = std::thread::Builder::new()
             .name("clippy-engine".into())
             .spawn(move || replay::run_driven(&config, gains, rx, thread_status, Some(ready_tx)))
-            .context("failed to spawn the engine thread")?;
+            .context("impossible de démarrer le fil du moteur de capture")?;
 
         // A failure before the first session starts arrives here; a failure
         // after it is handled by the rebuild loop and surfaces on stop().
@@ -121,8 +121,10 @@ impl EngineHandle {
             // could report. Its own Result is the better error.
             Err(_) => match join.join() {
                 Ok(Err(e)) => Err(e),
-                Ok(Ok(())) => Err(anyhow!("engine thread ended before capture started")),
-                Err(_) => Err(anyhow!("engine thread panicked during startup")),
+                Ok(Ok(())) => {
+                    Err(anyhow!("le moteur de capture s’est arrêté avant le début de la capture"))
+                }
+                Err(_) => Err(anyhow!("le moteur de capture a planté au démarrage")),
             },
         }
     }
@@ -140,7 +142,7 @@ impl EngineHandle {
         let (reply, answer) = channel();
         self.tx
             .send(EngineCommand::Clip { reply })
-            .map_err(|_| anyhow!("engine thread is gone"))?;
+            .map_err(|_| anyhow!("le moteur de capture n’est plus actif"))?;
         // The rebuild loop drains queued commands while it waits for the
         // display to settle, so an unanswered clip means "no ring right now",
         // not a dead engine.
@@ -152,7 +154,7 @@ impl EngineHandle {
         let (reply, answer) = channel();
         self.tx
             .send(EngineCommand::Screenshot { reply })
-            .map_err(|_| anyhow!("engine thread is gone"))?;
+            .map_err(|_| anyhow!("le moteur de capture n’est plus actif"))?;
         recv_bounded(&answer)
     }
 
@@ -161,7 +163,7 @@ impl EngineHandle {
     pub fn stop(mut self) -> Result<()> {
         let _ = self.tx.send(EngineCommand::Stop);
         match self.join.take() {
-            Some(join) => join.join().map_err(|_| anyhow!("engine thread panicked"))?,
+            Some(join) => join.join().map_err(|_| anyhow!("le moteur de capture a planté"))?,
             None => Ok(()),
         }
     }

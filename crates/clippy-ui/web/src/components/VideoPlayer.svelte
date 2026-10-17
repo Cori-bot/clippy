@@ -206,7 +206,7 @@
     onclick={toggle}></video>
 
   <div class="transport">
-    <button type="button" class="play" aria-label={playing ? 'Pause' : 'Play'} onclick={toggle}>
+    <button type="button" class="play" aria-label={playing ? 'Pause' : 'Lecture'} onclick={toggle}>
       <Icon name={playing ? 'pause' : 'play'} size={13} />
     </button>
 
@@ -227,7 +227,7 @@
       onfocusout={onVolFocusOut}>
       <IconButton
         icon={volumeIcon(level, muted)}
-        label={muted || level === 0 ? 'Unmute' : 'Mute'}
+        label={muted || level === 0 ? 'Réactiver le son' : 'Couper le son'}
         onclick={toggleMute} />
       {#if volumeOpen}
         <div class="pop">
@@ -248,7 +248,7 @@
     </div>
     <IconButton
       icon={full ? 'fullscreen-exit' : 'fullscreen'}
-      label={full ? 'Leave fullscreen' : 'Fullscreen'}
+      label={full ? 'Quitter le plein écran' : 'Plein écran'}
       onclick={toggleFull} />
   </div>
 </div>

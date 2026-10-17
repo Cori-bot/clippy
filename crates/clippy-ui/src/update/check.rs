@@ -28,7 +28,10 @@ macro_rules! repo {
 /// same shape as the empty Discord `CLIENT_ID` guard).
 pub fn ensure_repo_configured() -> Result<(), String> {
     if repo!().starts_with("OWNER/") {
-        return Err("Updates are disabled: this build has no release repository configured.".into());
+        return Err(
+            "Les mises à jour sont désactivées\u{a0}: cette version n’a aucun dépôt de publication configuré."
+                .into(),
+        );
     }
     Ok(())
 }
@@ -120,10 +123,16 @@ fn version_can_name_a_file(version: &str) -> bool {
 /// silent, fully-verified downgrade. Two spellings of "is this newer" would be
 /// two chances to get the direction wrong.
 fn is_newer(candidate: &str, current: &str) -> Result<bool, String> {
-    let offered = semver::Version::parse(candidate)
-        .map_err(|e| format!("release version {candidate:?} is not a version: {e}"))?;
-    let running = semver::Version::parse(current)
-        .map_err(|e| format!("this build's own version {current:?} is not a version: {e}"))?;
+    let offered = semver::Version::parse(candidate).map_err(|e| {
+        format!(
+            "la version de la publication {candidate:?} n’est pas un numéro de version\u{a0}: {e}"
+        )
+    })?;
+    let running = semver::Version::parse(current).map_err(|e| {
+        format!(
+            "la version de ce programme, {current:?}, n’est pas un numéro de version\u{a0}: {e}"
+        )
+    })?;
     Ok(offered > running)
 }
 
@@ -161,15 +170,15 @@ impl Release {
     pub fn asset_to_install(&self, running: &str) -> Result<String, String> {
         if !version_can_name_a_file(&self.version) {
             return Err(format!(
-                "the update calls itself version {:?}, which is not a version number, so nothing \
-                 was downloaded",
+                "la mise à jour se déclare en version {:?}, qui n’est pas un numéro de version\u{a0}: \
+                 rien n’a été téléchargé",
                 self.version
             ));
         }
         if !is_newer(&self.version, running)? {
             return Err(format!(
-                "the update offers Clippy {}, which is not newer than the {running} already \
-                 installed, so nothing was downloaded",
+                "la mise à jour propose Clippy {}, qui n’est pas plus récent que la version \
+                 {running} déjà installée\u{a0}: rien n’a été téléchargé",
                 self.version
             ));
         }
@@ -194,8 +203,8 @@ impl Release {
         for (url, file) in [(&self.zip_url, zip), (&self.sums_url, SUMS_NAME)] {
             if !from_our_releases(url, file) {
                 return Err(format!(
-                    "the update points at {url}, which is not a file published on Clippy's own \
-                     releases page, so nothing was downloaded"
+                    "la mise à jour pointe vers {url}, qui n’est pas un fichier publié sur la page \
+                     de publications de Clippy\u{a0}: rien n’a été téléchargé"
                 ));
             }
         }
@@ -253,10 +262,13 @@ fn from_our_releases(url: &str, file: &str) -> bool {
 /// `Err` and the `Failed` event emitted beside it — this crate has no logger
 /// and no console, so there is nowhere else for it to go.
 pub fn newer_release(body: &str, current: &str) -> Result<Option<Release>, String> {
-    let json: Value =
-        serde_json::from_str(body).map_err(|e| format!("release feed was not JSON: {e}"))?;
+    let json: Value = serde_json::from_str(body)
+        .map_err(|e| format!("le flux des publications n’est pas du JSON\u{a0}: {e}"))?;
 
-    let tag = json.get("tag_name").and_then(Value::as_str).ok_or("release feed has no tag_name")?;
+    let tag = json
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .ok_or("le flux des publications n’a pas de tag_name")?;
     let version = tag.strip_prefix('v').unwrap_or(tag);
 
     if !is_newer(version, current)? {
@@ -455,7 +467,7 @@ mod tests {
                 panic!("{version:?} must never become part of a path");
             };
             assert!(
-                error.contains("not a version number"),
+                error.contains("n’est pas un numéro de version"),
                 "the refusal must be about the version, not about whatever failed later: {error}"
             );
         }
@@ -473,7 +485,7 @@ mod tests {
                 panic!("{version} is not newer than the running 0.4.0 and must not install");
             };
             assert!(
-                error.contains("not newer"),
+                error.contains("n’est pas plus récent"),
                 "the user has to be told why an otherwise valid release was refused: {error}"
             );
         }

@@ -81,6 +81,9 @@ pub enum Command {
     },
     MonitorsList,
     EncodersList,
+    /// The applications that have an audio session on this PC, playing or not,
+    /// for the settings page's "record only these applications" picker.
+    AudioApps,
     StatsSubscribe {
         enabled: bool,
     },
@@ -157,6 +160,7 @@ impl Command {
             "shots.copy" => Self::ShotsCopy { shot_id: str_arg(req, "shot_id")? },
             "monitors.list" => Self::MonitorsList,
             "encoders.list" => Self::EncodersList,
+            "audio.apps" => Self::AudioApps,
             "stats.subscribe" => Self::StatsSubscribe { enabled: bool_arg(req, "enabled")? },
             "folder.pick" => Self::FolderPick,
             "sound.pick" => Self::SoundPick,

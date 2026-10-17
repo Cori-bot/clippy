@@ -155,7 +155,7 @@
     min-width: 212px;
     padding: 7px 10px;
     background: var(--bg);
-    border: 1px solid var(--line-strong);
+    border: 1px solid var(--field-line);
     border-radius: var(--r);
     color: var(--text);
     font: inherit;

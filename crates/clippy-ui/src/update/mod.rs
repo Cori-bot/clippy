@@ -268,7 +268,9 @@ fn is_releases_page(url: &str) -> bool {
 pub fn update_open_releases_page(url: String) -> Result<(), String> {
     check::ensure_repo_configured()?;
     if !is_releases_page(&url) {
-        return Err(format!("{url} is not a Clippy releases page, so nothing was opened"));
+        return Err(format!(
+            "{url} n’est pas une page de publications de Clippy\u{a0}: rien n’a été ouvert"
+        ));
     }
     // `ShellExecuteW` reports failure as a value <= 32, which is the whole of
     // its error contract -- it is a HINSTANCE for historical reasons and never
@@ -285,7 +287,7 @@ pub fn update_open_releases_page(url: String) -> Result<(), String> {
         )
     };
     if result.0 as isize <= 32 {
-        return Err("Windows could not open your browser".to_string());
+        return Err("Windows n’a pas pu ouvrir votre navigateur".to_string());
     }
     Ok(())
 }
@@ -313,7 +315,7 @@ pub async fn update_check(app: AppHandle) -> Result<Option<Release>, String> {
         reported_check(&app, look_for_a_newer_release(&app))
     })
     .await
-    .map_err(|e| format!("the update check could not be scheduled: {e}"));
+    .map_err(|e| format!("la recherche de mise à jour n’a pas pu être planifiée\u{a0}: {e}"));
     // Two layers: the outer is whether the task ran at all, the inner is what
     // it decided. Only the outer is reported here -- the inner has already been
     // through `reported_check` inside the closure, and doing it twice would put
@@ -355,7 +357,7 @@ pub async fn update_install(
     // would paint a failure over a download proceeding normally: an answer
     // about the second press, told as a lie about the first.
     let Some(guard) = InstallGuard::claim() else {
-        return Err("Clippy is already installing an update.".to_string());
+        return Err("Clippy installe déjà une mise à jour.".to_string());
     };
     let supervisor = Arc::clone(&supervisor);
     // Same shape as `update_check`, and it matters more here: this command
@@ -371,7 +373,7 @@ pub async fn update_install(
         reported(&app, install(&app, &supervisor, &release))
     })
     .await
-    .map_err(|e| format!("the update could not be scheduled: {e}"));
+    .map_err(|e| format!("la mise à jour n’a pas pu être planifiée\u{a0}: {e}"));
     reported(&scheduling, joined)?
 }
 
@@ -464,7 +466,7 @@ fn install(app: &AppHandle, supervisor: &Supervisor, release: &Release) -> Resul
     if supervisor.is_connected() {
         let status = supervisor.call("status", Map::new())?;
         if status.get("armed").and_then(Value::as_bool) == Some(true) {
-            return Err("Stop recording before updating Clippy.".into());
+            return Err("Désactiver le replay avant de mettre Clippy à jour.".into());
         }
     }
 
@@ -517,7 +519,7 @@ fn install(app: &AppHandle, supervisor: &Supervisor, release: &Release) -> Resul
         if let Ok(status) = supervisor.call("status", Map::new())
             && status.get("armed").and_then(Value::as_bool) == Some(true)
         {
-            return Err("Stop recording before updating Clippy.".into());
+            return Err("Désactiver le replay avant de mettre Clippy à jour.".into());
         }
 
         // A daemon can leave between the check above and this call -- an idle
@@ -539,8 +541,8 @@ fn install(app: &AppHandle, supervisor: &Supervisor, release: &Release) -> Resul
             // just been killed. What is true in every shape this branch can be
             // produced in is that no program of Clippy's was replaced.
             return Err(format!(
-                "{e}. The Clippy recorder has to stop before its program can be replaced, so none \
-                 of Clippy's programs were replaced."
+                "{e}. L’enregistreur Clippy doit s’arrêter avant que son programme puisse être \
+                 remplacé\u{a0}: aucun programme de Clippy n’a donc été remplacé."
             ));
         }
         // Past this line a daemon was running when this block started and is
@@ -623,8 +625,8 @@ fn install(app: &AppHandle, supervisor: &Supervisor, release: &Release) -> Resul
         // left undone is the part they can do themselves.
         .map_err(|e| {
             format!(
-                "Clippy was updated but could not restart itself: {e}. Close Clippy and start it \
-                 again to use the new version."
+                "Clippy a été mis à jour mais n’a pas pu se relancer\u{a0}: {e}. Fermer Clippy puis \
+                 le relancer pour utiliser la nouvelle version."
             )
         })?;
 
@@ -645,14 +647,14 @@ fn verify_payload_version(payload: &Path, expected: &str) -> Result<(), String> 
         .arg("--version")
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-        .map_err(|e| format!("the downloaded update could not be checked: {e}"))?;
+        .map_err(|e| format!("la mise à jour téléchargée n’a pas pu être vérifiée\u{a0}: {e}"))?;
     let reported = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if reported == format!("clippy {expected}") {
         Ok(())
     } else {
         Err(format!(
-            "the downloaded update reports itself as {reported:?} rather than clippy {expected}, \
-             so it was not installed"
+            "la mise à jour téléchargée se présente comme {reported:?} au lieu de clippy \
+             {expected}\u{a0}: elle n’a pas été installée"
         ))
     }
 }

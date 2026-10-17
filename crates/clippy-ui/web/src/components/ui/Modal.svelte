@@ -141,7 +141,7 @@
 <style>
   .scrim {
     position: fixed;
-    inset: 0;
+    inset: 40px 0 0 0;
     z-index: 40;
     display: grid;
     place-items: center;

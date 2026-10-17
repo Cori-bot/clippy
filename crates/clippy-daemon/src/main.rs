@@ -21,7 +21,7 @@ use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use clippy_core::config::Config;
 use clippy_core::control;
 use clippy_daemon::stats::{STATS_POLL, spawn_stats_thread};
-use clippy_daemon::{pipe, presence, state::Daemon, window};
+use clippy_daemon::{game, pipe, presence, state::Daemon, window};
 
 /// Mirrors `clippy-cli`'s `tracing_subscriber` setup (`crates/clippy-cli/src/main.rs`):
 /// `clippy=info` by default, `clippy=debug` under `-v`/`--verbose`, `RUST_LOG`
@@ -313,6 +313,7 @@ fn main() -> anyhow::Result<()> {
         }
     })?;
 
+    game::spawn_watch(Arc::clone(&daemon));
     spawn_auto_arm(Arc::clone(&daemon))?;
 
     // `pipe::serve` logs "listening on {PIPE_NAME}" itself, once the first

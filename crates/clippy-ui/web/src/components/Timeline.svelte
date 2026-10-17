@@ -172,7 +172,7 @@
     style="left: {pct(playheadMs)}"
     role="slider"
     tabindex="0"
-    aria-label="Playhead"
+    aria-label="Position de lecture"
     aria-valuemin={0}
     aria-valuemax={durationMs}
     aria-valuenow={playheadMs}
@@ -186,7 +186,7 @@
       style="left: {pct(inMs)}"
       role="slider"
       tabindex="0"
-      aria-label="Trim start"
+      aria-label="Point d’entrée"
       aria-valuemin={0}
       aria-valuemax={durationMs}
       aria-valuenow={inMs}
@@ -202,7 +202,7 @@
       style="left: {pct(outMs)}"
       role="slider"
       tabindex="0"
-      aria-label="Trim end"
+      aria-label="Point de sortie"
       aria-valuemin={0}
       aria-valuemax={durationMs}
       aria-valuenow={outMs}

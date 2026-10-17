@@ -717,7 +717,7 @@ fn take_screenshot(capture: &CaptureHandle<ReplaySession>, clip_dir: &Path) -> R
         // Unlike a clip thumbnail, this frame *is* the product, so an empty
         // window is an error the caller has to be told about rather than a
         // debug line over a file that saved fine anyway.
-        bail!("no frame arrived within {THUMB_STAGE_WAIT:?} — is the screen frozen?");
+        bail!("aucune image reçue en {THUMB_STAGE_WAIT:?} — l’écran est-il figé\u{a0}?");
     };
 
     let meta = write_screenshot(&shot::shots_dir(clip_dir), &staged)?;
@@ -752,7 +752,7 @@ fn write_screenshot(shots: &Path, staged: &StagedFrame) -> Result<ShotMeta> {
         thumb::FULL_SIZE,
         thumb::SHOT_QUALITY,
     )
-    .context("encoding the screenshot")?;
+    .context("encodage de la capture d’écran")?;
 
     let id = shot::allocate_shot_id(shots)?;
     let image = shot::image_path(shots, &id);
@@ -760,7 +760,7 @@ fn write_screenshot(shots: &Path, staged: &StagedFrame) -> Result<ShotMeta> {
         // Take the reservation back down rather than leaving an empty file
         // sitting on a used id.
         let _ = std::fs::remove_file(&image);
-        return Err(e).with_context(|| format!("writing {}", image.display()));
+        return Err(e).with_context(|| format!("écriture de {}", image.display()));
     }
 
     // Everything from here is a nicety over a screenshot already safely on
@@ -931,7 +931,9 @@ fn run_driven_inner(
                 failures += 1;
                 tracing::warn!("rebuild attempt failed: {e:#}");
                 if failures >= MAX_REBUILD_FAILURES {
-                    return Err(e.context("capture could not be rebuilt after repeated attempts"));
+                    return Err(e.context(
+                        "la capture n’a pas pu être reconstruite après plusieurs tentatives",
+                    ));
                 }
             }
         }
@@ -990,7 +992,7 @@ fn start_session(
     let bitrate_bps = config.resolved_bitrate_bps(width, height);
     let clip_dir = config.clip_dir_path();
 
-    let mixer = AudioMixer::start_sources(Arc::clone(gains));
+    let mixer = AudioMixer::start_sources(Arc::clone(gains), &config.audio_apps);
 
     let flags = ReplayFlags {
         settings: RecorderSettings {
@@ -1012,7 +1014,12 @@ fn start_session(
     match hotkey {
         Some(hotkey) => println!(
             "replay buffer running: {}x{} at {} fps, {} kbps, last {} s kept — {} to clip, Ctrl+C to quit",
-            width, height, config.fps, bitrate_bps / 1000, config.replay_seconds, hotkey,
+            width,
+            height,
+            config.fps,
+            bitrate_bps / 1000,
+            config.replay_seconds,
+            hotkey,
         ),
         None => tracing::info!(
             width,

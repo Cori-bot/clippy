@@ -205,10 +205,11 @@ fn terminate(pid: u32) -> Result<(), String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
     unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, false, pid)
-            .map_err(|e| format!("could not open the recorder process: {e}"))?;
+        let handle = OpenProcess(PROCESS_TERMINATE, false, pid).map_err(|e| {
+            format!("impossible d’ouvrir le processus de l’enregistreur\u{a0}: {e}")
+        })?;
         let result = TerminateProcess(handle, 1)
-            .map_err(|e| format!("could not stop the recorder process: {e}"));
+            .map_err(|e| format!("impossible d’arrêter le processus de l’enregistreur\u{a0}: {e}"));
         // Closed on every path, success or failure: an error here is not worth
         // surfacing over whatever `result` already carries, and leaking the
         // handle would outlive the process it named.
@@ -382,19 +383,22 @@ impl Supervisor {
     }
 
     pub fn call(&self, cmd: &str, args: Map<String, Value>) -> Result<Value, String> {
-        let connection = self.connection().ok_or("not connected to the Clippy daemon")?;
+        let connection = self.connection().ok_or("non connecté au démon Clippy")?;
         connection.call(cmd, args, CALL_TIMEOUT)
     }
 
     /// Starts `clippy-daemon.exe`. The supervisor's own retry loop picks the
     /// socket up; this does not wait for it.
     pub fn launch(&self) -> Result<(), String> {
-        let exe =
-            std::env::current_exe().map_err(|e| format!("could not locate clippy-ui.exe: {e}"))?;
-        let daemon =
-            daemon_path_beside(&exe).ok_or("could not work out where clippy-daemon.exe is")?;
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("impossible de localiser clippy-ui.exe\u{a0}: {e}"))?;
+        let daemon = daemon_path_beside(&exe)
+            .ok_or("impossible de déterminer l’emplacement de clippy-daemon.exe")?;
         if !daemon.exists() {
-            return Err(format!("clippy-daemon.exe is not beside the app at {}", daemon.display()));
+            return Err(format!(
+                "clippy-daemon.exe n’est pas à côté de l’application, dans {}",
+                daemon.display()
+            ));
         }
 
         // CREATE_NO_WINDOW: the daemon is a console-subsystem binary, so
@@ -405,7 +409,7 @@ impl Supervisor {
         std::process::Command::new(&daemon)
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .map_err(|e| format!("could not start the Clippy daemon: {e}"))?;
+            .map_err(|e| format!("impossible de démarrer le démon Clippy\u{a0}: {e}"))?;
         Ok(())
     }
 
@@ -441,11 +445,13 @@ impl Supervisor {
                 if wait_until_gone(Duration::from_secs(2), SHUTDOWN_POLL, &gone) {
                     Ok(())
                 } else {
-                    Err("the Clippy recorder did not stop, even after being closed".into())
+                    Err("l’enregistreur Clippy ne s’est pas arrêté, même après avoir été fermé"
+                        .into())
                 }
             }
             None => {
-                Err("the Clippy recorder did not stop, and did not say which process it is".into())
+                Err("l’enregistreur Clippy ne s’est pas arrêté et n’a pas indiqué son processus"
+                    .into())
             }
         }
     }

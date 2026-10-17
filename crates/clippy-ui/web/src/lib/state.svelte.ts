@@ -36,8 +36,8 @@ const MIN_TRIM_MS = 200;
  * the suite runs on node with no DOM.
  */
 export function trimRangeError(startMs: number, endMs: number): string | null {
-  if (endMs <= startMs) return 'Set the out point after the in point.';
-  if (endMs - startMs < MIN_TRIM_MS) return `A trim has to be at least ${MIN_TRIM_MS} ms long.`;
+  if (endMs <= startMs) return 'Le point de sortie doit être après le point d’entrée.';
+  if (endMs - startMs < MIN_TRIM_MS) return `Un rognage doit durer au moins ${MIN_TRIM_MS} ms.`;
   return null;
 }
 
@@ -115,6 +115,15 @@ class AppState {
     return this.status?.armed ?? false;
   }
 
+  /**
+   * The replay is on but idle until a game is in front (capture mode "Jeux
+   * uniquement"). Not `armed`: nothing is being recorded, and the button must
+   * say so rather than show the green of a live buffer.
+   */
+  get waiting() {
+    return this.status?.waiting_for_game ?? false;
+  }
+
   get clipDir() {
     return this.status?.clip_dir ?? '';
   }
@@ -152,9 +161,12 @@ class AppState {
   toast(kind: Toast['kind'], text: string) {
     const toast = { id: nextToastId++, kind, text };
     this.toasts = [...this.toasts, toast];
-    setTimeout(() => {
-      this.toasts = this.toasts.filter((t) => t.id !== toast.id);
-    }, 6000);
+    // An error is read slowly and often has to be copied, so it stays twice as long.
+    setTimeout(() => this.dismissToast(toast.id), kind === 'error' ? 12000 : 6000);
+  }
+
+  dismissToast(id: number) {
+    this.toasts = this.toasts.filter((t) => t.id !== id);
   }
 
   async refreshStatus() {
@@ -167,7 +179,7 @@ class AppState {
   }
 
   async toggleArm() {
-    const wasArmed = this.armed;
+    const wasArmed = this.armed || this.waiting;
     try {
       const next = await call<Status>(wasArmed ? 'disarm' : 'arm');
       // `disarm` answers {} rather than a status, so re-read rather than
@@ -224,7 +236,7 @@ class AppState {
         if (version !== this.clipLoadVersion) return;
         if (mutation !== this.clipMutation || (first &&
           (page.total !== first.total || page.snapshot !== first.snapshot))) {
-          if (++restarts > 3) throw new Error('The library is changing. Retry loading the clips.');
+          if (++restarts > 3) throw new Error('La bibliothèque est en cours de modification. Relancer le chargement des clips.');
           offset = 0;
           first = null;
           loaded.clear();
@@ -246,16 +258,16 @@ class AppState {
           this.selected = Math.max(0, this.visible.findIndex(c => c.id === keep));
         }
         if (complete) {
-          if (loaded.size !== page.total) throw new Error('The library changed while loading. Retry loading the clips.');
+          if (loaded.size !== page.total) throw new Error('La bibliothèque a changé pendant le chargement. Relancer le chargement des clips.');
           this.totalBytes ??= this.clips.reduce((sum, clip) => sum + clip.bytes, 0);
           break;
         }
-        if (page.clips.length === 0) throw new Error('The clip list ended early. Retry loading the clips.');
+        if (page.clips.length === 0) throw new Error('La liste des clips s’est arrêtée trop tôt. Relancer le chargement des clips.');
       }
     } catch (e) {
       if (version === this.clipLoadVersion) {
         this.clipsLoadError = String(e);
-        this.toast('error', `Could not load all clips: ${e}`);
+        this.toast('error', `Impossible de charger tous les clips : ${e}`);
       }
     } finally {
       if (version === this.clipLoadVersion) this.clipsLoading = false;
@@ -324,7 +336,7 @@ class AppState {
       await call('shots.copy', { shot_id: id });
       // A clipboard write is otherwise entirely invisible: nothing on screen
       // changes, so without this the button looks broken when it worked.
-      this.toast('info', 'Screenshot copied');
+      this.toast('info', 'Capture d’écran copiée');
     } catch (e) {
       this.toast('error', String(e));
     }
@@ -435,7 +447,7 @@ class AppState {
       if (sourceHadAudio && !saved.has_audio) {
         this.toast(
           'error',
-          "The trim was saved without sound: this clip's audio could not be copied.",
+          'Le clip rogné a été enregistré sans son : l’audio de ce clip n’a pas pu être copié.',
         );
       }
     } catch (e) {
@@ -451,7 +463,7 @@ class AppState {
     const unique = [...new Set(ids)];
     if (this.deleteProgress || unique.length === 0) return unique;
     if (expectedContext !== this.libraryContext) {
-      this.toast('error', 'The clips folder or daemon connection changed. Select the clips again.');
+      this.toast('error', 'Le dossier des clips ou la connexion au démon a changé. Sélectionner à nouveau les clips.');
       return unique;
     }
     const context = this.libraryContext;
@@ -470,7 +482,7 @@ class AppState {
       for (const [index, id] of unique.entries()) {
         if (context !== this.libraryContext) {
           failed.push(...unique.slice(index));
-          firstError ||= 'The clips folder or daemon connection changed. Remaining clips were kept.';
+          firstError ||= 'Le dossier des clips ou la connexion au démon a changé. Les clips restants ont été conservés.';
           break;
         }
         try {
@@ -494,8 +506,12 @@ class AppState {
         this.selected = index >= 0 ? index : Math.min(oldIndex, Math.max(0, this.visible.length - 1));
         if (this.visible.length === 0) this.view = 'grid';
       }
-      if (failed.length) this.toast('error', `${removed.size} deleted; ${failed.length} not deleted. ${firstError}`);
-      else if (announce) this.toast('info', `Deleted ${removed.size} ${removed.size === 1 ? 'clip' : 'clips'}.`);
+      if (failed.length) {
+        this.toast(
+          'error',
+          `${removed.size} ${removed.size > 1 ? 'supprimés' : 'supprimé'} ; ${failed.length} non ${failed.length > 1 ? 'supprimés' : 'supprimé'}. ${firstError}`,
+        );
+      } else if (announce) this.toast('info', `${removed.size} ${removed.size > 1 ? 'clips supprimés' : 'clip supprimé'}.`);
       return failed;
     } finally {
       this.deleteProgress = null;
@@ -599,6 +615,7 @@ export function wireDaemon() {
     switch (event.event) {
       case 'armed':
       case 'disarmed':
+      case 'standby':
       // `clip_dir` changes without this app ever seeing a `config.set`
       // reply: the folder dialog belongs to the daemon, whether the tray menu
       // or this page's `folder.pick` opened it. Before this event that told an
@@ -672,7 +689,7 @@ export function wireDaemon() {
         if (app.deleteProgress) void app.loadClips();
         app.scheduleClipReload();
         if (isNew) {
-          app.toast('info', `Saved ${saved.title}`);
+          app.toast('info', `Clip enregistré : ${saved.title}`);
         }
         break;
       }
@@ -691,12 +708,12 @@ export function wireDaemon() {
           // "clipboard + toast + its own sound" on every press, matching
           // `clip_saved`'s toast above. `ShotMeta` has no title (screenshots
           // are never renamed), so this names the thing instead of quoting it.
-          app.toast('info', 'Screenshot saved');
+          app.toast('info', 'Capture d’écran enregistrée');
         }
         break;
       }
       case 'error':
-        app.toast('error', String(data['error'] ?? 'the daemon reported an error'));
+        app.toast('error', String(data['error'] ?? 'Le démon a signalé une erreur.'));
         break;
     }
   });

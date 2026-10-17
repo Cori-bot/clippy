@@ -96,8 +96,8 @@ pub fn acquire_single_instance() -> Result<SingleInstance> {
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let _ = CloseHandle(handle);
             bail!(
-                "another clippy capture session (record or replay) is already \
-                 running — stop it before starting a new one"
+                "une autre session de capture Clippy (enregistrement ou replay) est déjà \
+                 en cours — l’arrêter avant d’en démarrer une nouvelle"
             );
         }
         Ok(SingleInstance(handle))

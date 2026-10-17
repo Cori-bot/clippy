@@ -7,6 +7,14 @@
 
   async function start() {
     starting = true;
+    // The supervisor reconnects by itself and removes this panel when it does;
+    // if that has not happened by now the service is not coming, and a button
+    // stuck on "Démarrage…" would be a dead end.
+    setTimeout(() => {
+      if (!starting) return;
+      starting = false;
+      app.toast('error', 'Le service Clippy ne répond pas. Réessayer.');
+    }, 15000);
     try {
       await startDaemon();
     } catch (e) {
@@ -19,10 +27,10 @@
 </script>
 
 <div class="down">
-  <h2>Clippy isn't running</h2>
-  <p>The background service owns the replay buffer and the clip hotkey. Nothing is being captured right now.</p>
+  <h2>Clippy n’est pas lancé</h2>
+  <p>Le service en arrière-plan gère le tampon de replay et le raccourci de clip. Rien n’est capturé pour le moment.</p>
   <Button variant="primary" disabled={starting} onclick={start}>
-    {starting ? 'Starting...' : 'Start Clippy'}
+    {starting ? 'Démarrage…' : 'Démarrer Clippy'}
   </Button>
 </div>
 

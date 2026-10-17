@@ -8,6 +8,7 @@
   import { app } from '../lib/state.svelte';
   import { shouldHandleKey, moveSelection, CARD_CONTROL_SELECTOR } from '../lib/keys';
   import { formatCombo } from '../lib/ui';
+  import { formatShotDate } from '../lib/shots';
 
   /**
    * The saved combination as keycaps, through the same `formatCombo` the
@@ -105,9 +106,9 @@
 <div class="page">
   {#if app.shots.length === 0}
     <div class="empty">
-      <p>No screenshots yet.</p>
+      <p>Aucune capture d’écran pour le moment.</p>
       <p class="hint">
-        Press
+        Appuyer sur
         {#if hotkeyCaps.length > 0}
           <span class="combo">
             {#each hotkeyCaps as cap, i (i)}
@@ -116,9 +117,9 @@
             {/each}
           </span>
         {:else}
-          your screenshot hotkey
+          le raccourci de capture d’écran
         {/if}
-        while Clippy is armed.
+        tant que le replay est actif.
       </p>
     </div>
   {:else}
@@ -139,13 +140,13 @@
   {/if}
 
   {#if deleting}
-    <Modal title="Delete this screenshot?" onclose={() => (deleting = null)}>
+    <Modal title={'Supprimer cette capture d’écran ?'} onclose={() => (deleting = null)}>
       {#snippet children()}
-        <p>Deleting the screenshot from <strong>{deleting ? new Date(deleting.created).toLocaleString() : ''}</strong> removes the image and its thumbnail. This cannot be undone.</p>
+        <p>La suppression de la capture d’écran du <strong>{deleting ? formatShotDate(deleting.created) : ''}</strong> efface l’image et sa miniature. Cette action est irréversible.</p>
       {/snippet}
       {#snippet actions()}
-        <Button variant="ghost" size="sm" onclick={() => (deleting = null)}>Keep</Button>
-        <Button variant="danger" size="sm" icon="trash" onclick={confirmDelete}>Delete</Button>
+        <Button variant="ghost" size="sm" onclick={() => (deleting = null)}>Conserver</Button>
+        <Button variant="danger" size="sm" icon="trash" onclick={confirmDelete}>Supprimer</Button>
       {/snippet}
     </Modal>
   {/if}

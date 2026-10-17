@@ -46,16 +46,16 @@
              the default action here is nothing at all. -->
         <a href={RELEASES_URL}
           onclick={(e) => { e.preventDefault(); updates.openReleasesPage(RELEASES_URL); }}
-          >Download it by hand</a>
+          >Télécharger manuellement</a>
       {:else if updates.busy}
-        <span>{updates.phase === 'downloading' ? `Downloading… ${updates.percent}%` : 'Installing…'}</span>
+        <span>{updates.phase === 'downloading' ? `Téléchargement… ${updates.percent} %` : 'Installation…'}</span>
       {:else}
-        <span>Clippy {updates.banner.version} is available</span>
+        <span>Clippy {updates.banner.version} est disponible</span>
         <a href={updates.release?.notes_url}
           onclick={(e) => { e.preventDefault(); if (updates.release) updates.openReleasesPage(updates.release.notes_url); }}
-          >What's new</a>
+          >Nouveautés</a>
         <span class="spacer"></span>
-        <Button size="sm" variant="primary" onclick={() => updates.install()}>Update</Button>
+        <Button size="sm" variant="primary" onclick={() => updates.install()}>Mettre à jour</Button>
       {/if}
     </div>
   {/if}

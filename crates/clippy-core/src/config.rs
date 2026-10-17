@@ -31,6 +31,20 @@ pub enum CaptureMethod {
     Duplication,
 }
 
+/// What the replay records, mirroring the choice NVIDIA's overlay offers: games
+/// only, or games and the desktop too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureMode {
+    /// Whatever is on the chosen screen, for as long as the replay is active.
+    /// The behaviour Clippy has always had.
+    Desktop,
+    /// Only while a game is in front. Between games nothing is captured, so
+    /// the browser, the video player and the desktop never enter a clip --
+    /// which is why this is what NVIDIA does by default and what a recorder
+    /// left running all day should do.
+    Game,
+}
+
 /// How the daemon listens for the clip and screenshot combinations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyMode {
@@ -136,6 +150,25 @@ pub struct Config {
     /// holding the microphone open while its own level reads 0 is
     /// indistinguishable, from outside, from one that is lying about it.
     pub mic_volume: u32,
+    /// Executable names (`"spotify.exe"`) whose sound is the only PC sound in
+    /// clips. Empty, the default, records everything the PC plays.
+    ///
+    /// Matching is by file name, lower-cased, not by process id: ids change on
+    /// every launch, and a browser or a music player is many processes. For
+    /// each name Clippy captures the topmost matching process together with
+    /// everything it started (Windows "process loopback"), and notices when
+    /// the application starts or quits while the replay is active. Levels
+    /// still apply through [`Config::system_volume`]. See [`normalize_audio_apps`].
+    pub audio_apps: Vec<String>,
+    /// What the replay records: `"desktop"` (everything on screen, the default)
+    /// or `"game"` (only while a game is in front, then it stops by itself).
+    /// See [`CaptureMode`]. Takes effect immediately; an unknown value falls
+    /// back to `"desktop"`.
+    pub capture_mode: String,
+    /// Executable names always treated as games in `"game"` mode, even when
+    /// their window is not full screen. Same spelling rules as
+    /// [`Config::audio_apps`].
+    pub game_apps: Vec<String>,
     /// Start the daemon at login (spec §7.3). Opt-in and off by default —
     /// adding yourself to startup uninvited is the behaviour people resent most
     /// in this category.
@@ -241,6 +274,35 @@ pub struct Config {
     pub hotkey_mode: String,
 }
 
+/// How many applications [`Config::audio_apps`] can name. Each one is an
+/// audio stream the capture thread keeps open, so the list is bounded.
+pub const MAX_AUDIO_APPS: usize = 8;
+
+/// Cleans an application list into what the capture matches against: trimmed,
+/// lower-cased, bare file names only, no duplicates, at most
+/// [`MAX_AUDIO_APPS`].
+///
+/// The list is the only config value typed by hand into a file or sent by a
+/// client, and the capture compares it to process names byte for byte, so
+/// `"Spotify.exe "` or `"C:\\Apps\\Spotify.exe"` would match nothing and the
+/// user would record silence. Paths are reduced to their file name rather than
+/// rejected for the same reason: the meaning is clear and refusing it helps
+/// nobody. Anything left empty is dropped.
+pub fn normalize_audio_apps(apps: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for app in apps {
+        let name = app.rsplit(['\\', '/']).next().unwrap_or("").trim().to_lowercase();
+        if name.is_empty() || out.contains(&name) {
+            continue;
+        }
+        out.push(name);
+        if out.len() == MAX_AUDIO_APPS {
+            break;
+        }
+    }
+    out
+}
+
 /// Lowest and highest supported capture/encode frame rate.
 pub const MIN_FPS: u32 = 30;
 pub const MAX_FPS: u32 = 120;
@@ -312,6 +374,9 @@ impl Default for Config {
             max_library_gb: 0,
             system_volume: 100,
             mic_volume: 100,
+            audio_apps: Vec::new(),
+            capture_mode: "desktop".into(),
+            game_apps: Vec::new(),
             autostart: false,
             auto_arm: false,
             check_for_updates: false,
@@ -365,6 +430,19 @@ impl Config {
             other => {
                 tracing::warn!(gpu_priority = other, "unknown gpu_priority, using low");
                 true
+            }
+        }
+    }
+
+    /// What the replay records (defaults to `Desktop` on an unknown value, which
+    /// is the way that cannot lose a clip someone expected).
+    pub fn capture_mode(&self) -> CaptureMode {
+        match self.capture_mode.trim().to_ascii_lowercase().as_str() {
+            "desktop" => CaptureMode::Desktop,
+            "game" => CaptureMode::Game,
+            other => {
+                tracing::warn!(capture_mode = other, "unknown capture_mode, using desktop");
+                CaptureMode::Desktop
             }
         }
     }
@@ -482,6 +560,8 @@ impl Config {
         };
         config.clamp_volumes();
         config.clamp_fps();
+        config.audio_apps = normalize_audio_apps(&config.audio_apps);
+        config.game_apps = normalize_audio_apps(&config.game_apps);
         config
     }
 
@@ -542,10 +622,10 @@ impl Config {
     pub fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+                .with_context(|| format!("création de {}", parent.display()))?;
         }
-        let text = toml::to_string_pretty(self).context("serializing config")?;
-        std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+        let text = toml::to_string_pretty(self).context("sérialisation de la configuration")?;
+        std::fs::write(path, text).with_context(|| format!("écriture de {}", path.display()))
     }
 }
 
@@ -834,5 +914,39 @@ mod tests {
     fn the_sound_sidecar_sits_beside_the_config_file() {
         let sidecar = Config::sound_src_path(std::path::Path::new(r"C:\x\clippy\config.toml"));
         assert_eq!(sidecar, std::path::PathBuf::from(r"C:\x\clippy\clip-sound.src"));
+    }
+
+    #[test]
+    fn audio_apps_are_cleaned_into_bare_lowercase_names() {
+        let raw = [
+            " Spotify.EXE ".to_string(),
+            r"C:\Apps\Spotify.exe".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "C:/Program Files/Brave/brave.exe".to_string(),
+        ];
+        assert_eq!(normalize_audio_apps(&raw), vec!["spotify.exe", "brave.exe"]);
+    }
+
+    #[test]
+    fn the_capture_mode_defaults_to_the_desktop_and_falls_back_to_it() {
+        assert_eq!(Config::default().capture_mode(), CaptureMode::Desktop);
+        let game = Config { capture_mode: " Game ".into(), ..Config::default() };
+        assert_eq!(game.capture_mode(), CaptureMode::Game);
+        let typo = Config { capture_mode: "gmae".into(), ..Config::default() };
+        assert_eq!(typo.capture_mode(), CaptureMode::Desktop);
+    }
+
+    #[test]
+    fn audio_apps_stop_at_the_documented_ceiling() {
+        let raw: Vec<String> = (0..MAX_AUDIO_APPS + 5).map(|i| format!("app{i}.exe")).collect();
+        assert_eq!(normalize_audio_apps(&raw).len(), MAX_AUDIO_APPS);
+    }
+
+    #[test]
+    fn the_default_records_every_application() {
+        assert!(Config::default().audio_apps.is_empty());
+        let parsed: Config = toml::from_str("audio_apps = [\"spotify.exe\"]\n").expect("parses");
+        assert_eq!(parsed.audio_apps, vec!["spotify.exe"]);
     }
 }

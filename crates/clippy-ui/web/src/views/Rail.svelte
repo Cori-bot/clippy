@@ -3,23 +3,23 @@
   import Icon from '../components/ui/Icon.svelte';
 </script>
 
-<nav class="rail">
-  <button type="button" class="nav" class:on={app.view === 'grid'} onclick={() => (app.view = 'grid')}>
+<nav class="rail" aria-label="Navigation">
+  <button type="button" class="nav" class:on={app.view === 'grid'} aria-current={app.view === 'grid' ? 'page' : undefined} onclick={() => (app.view = 'grid')}>
     <Icon name="clips" size={15} />Clips
   </button>
-  <button type="button" class="nav" class:on={app.view === 'shots'} onclick={() => (app.view = 'shots')}>
-    <Icon name="camera" size={15} />Screenshots
+  <button type="button" class="nav" class:on={app.view === 'shots'} aria-current={app.view === 'shots' ? 'page' : undefined} onclick={() => (app.view = 'shots')}>
+    <Icon name="camera" size={15} />Captures d’écran
   </button>
-  <button type="button" class="nav" class:on={app.view === 'settings'} onclick={() => (app.view = 'settings')}>
-    <Icon name="settings" size={15} />Settings
+  <button type="button" class="nav" class:on={app.view === 'settings'} aria-current={app.view === 'settings' ? 'page' : undefined} onclick={() => (app.view = 'settings')}>
+    <Icon name="settings" size={15} />Paramètres
   </button>
   <div class="ver tnum">{app.status?.version ?? ''}</div>
 </nav>
 
 <style>
   .rail {
-    width: 150px;
-    flex: 0 0 150px;
+    width: 188px;
+    flex: 0 0 188px;
     padding: 12px 10px;
     display: flex;
     flex-direction: column;
@@ -39,6 +39,7 @@
     font: inherit;
     font-size: 12.5px;
     text-align: left;
+    white-space: nowrap;
     cursor: pointer;
     transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
   }

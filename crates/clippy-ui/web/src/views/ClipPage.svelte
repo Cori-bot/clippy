@@ -115,7 +115,7 @@
     // Ctrl+E has no button to grey out, so the zero-duration clip is refused
     // here in plain words rather than by silently doing nothing.
     if (!canTrim) {
-      app.toast('error', 'This clip has no duration to trim.');
+      app.toast('error', 'Impossible de rogner ce clip : il n’a pas de durée.');
       return;
     }
     exporting = true;
@@ -240,9 +240,9 @@
     </Button>
     <span class="spacer"></span>
     <span class="counter tnum">{counterLabel(app.selected, app.visible.length)}</span>
-    <IconButton icon="chevron-left" label="Previous clip"
+    <IconButton icon="chevron-left" label="Clip précédent"
       disabled={app.selected === 0} onclick={() => app.step(-1)} />
-    <IconButton icon="chevron-right" label="Next clip"
+    <IconButton icon="chevron-right" label="Clip suivant"
       disabled={app.selected >= app.visible.length - 1} onclick={() => app.step(1)} />
   </header>
 
@@ -275,8 +275,8 @@
   {#if canTrim}
     <div class="trimrow">
       <span class="txt tnum" class:bad={rangeError !== null}>
-        In <b>{formatClock(inMs)}</b> &middot; Out <b>{formatClock(outMs)}</b>
-        &middot; <b>{formatClock(outMs - inMs)}</b> selected{#if rangeError}
+        Point d’entrée <b>{formatClock(inMs)}</b> &middot; Point de sortie <b>{formatClock(outMs)}</b>
+        &middot; Sélection <b>{formatClock(outMs - inMs)}</b>{#if rangeError}
           &middot; {rangeError}{/if}
       </span>
       <span class="spacer"></span>
@@ -290,22 +290,24 @@
         disabled={exporting || rangeError !== null}
         title={rangeError ?? ''}
         onclick={exportTrim}>
-        {exporting ? 'Exporting…' : 'Export trimmed'}
+        {exporting ? 'Exportation…' : 'Exporter le clip rogné'}
       </Button>
     </div>
   {/if}
 
   <p class="meta tnum">
-    {clip.width}x{clip.height} &middot; {clip.fps} fps &middot; {formatDuration(clip.duration_ms)} &middot;
+    {clip.width}×{clip.height} &middot; {clip.fps}&nbsp;fps &middot; {formatDuration(clip.duration_ms)} &middot;
     {formatBytes(clip.bytes)} &middot; {clip.encoder}{clip.has_audio ? ' + audio' : ''}
   </p>
+  <p class="keys">I / O&nbsp;: points d’entrée et de sortie &middot; Ctrl+E&nbsp;: exporter &middot; ↑ ↓&nbsp;: volume &middot; Suppr&nbsp;: supprimer</p>
 
   <div class="actions">
     {#if renaming}
-      <input class="rn" bind:value={draftTitle}
+      <!-- svelte-ignore a11y_autofocus -->
+      <input class="rn" autofocus aria-label="Titre du clip" bind:value={draftTitle}
         onkeydown={(e) => e.key === 'Enter' && commitRename()} />
-      <Button variant="primary" size="sm" onclick={commitRename}>Save</Button>
-      <Button variant="ghost" size="sm" onclick={() => (renaming = false)}>Cancel</Button>
+      <Button variant="primary" size="sm" onclick={commitRename}>Enregistrer</Button>
+      <Button variant="ghost" size="sm" onclick={() => (renaming = false)}>Annuler</Button>
     {:else}
       <!-- Worded buttons, not bare icons. Borderless icons at the text's own
            dim grey went unnoticed until someone pointed them out, and an icon
@@ -321,26 +323,26 @@
       <span class="fav" class:on={clip.favorite}>
         <Button size="sm" icon={clip.favorite ? 'star-filled' : 'star'}
           onclick={() => app.setFavorite(clip.id, !clip.favorite)}>
-          {clip.favorite ? 'Favourited' : 'Favourite'}
+          {clip.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
         </Button>
       </span>
-      <Button size="sm" icon="pencil" onclick={startRename}>Rename</Button>
-      <Button size="sm" icon="folder" onclick={() => app.reveal(clip.id)}>Show in folder</Button>
+      <Button size="sm" icon="pencil" onclick={startRename}>Renommer</Button>
+      <Button size="sm" icon="folder" onclick={() => app.reveal(clip.id)}>Afficher dans le dossier</Button>
       <span class="sep"></span>
       <Button variant="danger" size="sm" icon="trash"
-        onclick={askToDelete}>Delete</Button>
+        onclick={askToDelete}>Supprimer</Button>
     {/if}
   </div>
 
   {#if confirmingDelete}
-    <Modal title="Delete this clip?" onclose={() => (confirmingDelete = false)}>
+    <Modal title={'Supprimer ce clip ?'} onclose={() => (confirmingDelete = false)}>
       {#snippet children()}
-        <p>Deleting <strong>{clip.title}</strong> removes the mp4, its metadata and its thumbnail. This cannot be undone.</p>
+        <p>La suppression de <strong>{clip.title}</strong> efface le fichier mp4, ses métadonnées et sa miniature. Cette action est irréversible.</p>
       {/snippet}
       {#snippet actions()}
-        <Button variant="ghost" size="sm" onclick={() => (confirmingDelete = false)}>Keep</Button>
+        <Button variant="ghost" size="sm" onclick={() => (confirmingDelete = false)}>Conserver</Button>
         <Button variant="danger" size="sm" icon="trash"
-          onclick={async () => { confirmingDelete = false; await app.remove(clip.id); }}>Delete</Button>
+          onclick={async () => { confirmingDelete = false; await app.remove(clip.id); }}>Supprimer</Button>
       {/snippet}
     </Modal>
   {/if}
@@ -358,7 +360,8 @@
      selected" in the numbers, neither of which says what is wrong. This does. */
   .trimrow .txt.bad, .trimrow .txt.bad b { color: var(--danger); }
 
-  .meta { color: var(--faint); font-size: 11px; margin: 14px 0 12px; }
+  .meta { color: var(--faint); font-size: 11px; margin: 14px 0 4px; }
+  .keys { color: var(--faint); font-size: 11px; margin: 0 0 12px; }
 
   .actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .actions .title { margin-right: auto; min-width: 0; font-weight: 650; font-size: 13.5px; }
