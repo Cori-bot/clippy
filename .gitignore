@@ -28,3 +28,4 @@
 # the graphify knowledge graph -- generated from this repo's own sources,
 # rebuilt on demand with /graphify.
 /graphify-out
+.claude-session.tmp
