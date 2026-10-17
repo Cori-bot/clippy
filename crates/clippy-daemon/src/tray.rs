@@ -12,10 +12,11 @@ use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFY_ICON_MESSAGE,
     NOTIFYICONDATAW, Shell_NotifyIconW,
 };
+use serde_json::Value;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIcon, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, HICON,
-    MF_SEPARATOR, MF_STRING, PostMessageW, SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTALIGN,
-    TrackPopupMenu, WM_APP, WM_NULL,
+    AppendMenuW, CreateIcon, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, HICON, HMENU,
+    MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, PostMessageW,
+    SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTALIGN, TrackPopupMenu, WM_APP, WM_NULL,
 };
 use windows::core::{HSTRING, PCWSTR};
 
@@ -28,6 +29,58 @@ pub const ID_OPEN_UI: usize = 2;
 pub const ID_OPEN_FOLDER: usize = 3;
 pub const ID_QUIT: usize = 4;
 pub const ID_CHANGE_FOLDER: usize = 5;
+pub const ID_CLIP: usize = 6;
+pub const ID_SCREENSHOT: usize = 7;
+pub const ID_AUTOSTART: usize = 8;
+pub const ID_AUTO_ARM: usize = 9;
+pub const ID_CLIP_SOUND: usize = 10;
+/// Submenu items: the id is the base plus the index into the choice table, so
+/// [`choice_for_id`] can turn a click back into a config change without a
+/// lookup of its own.
+const ID_RESOLUTION_BASE: usize = 100;
+const ID_FPS_BASE: usize = 200;
+const ID_REPLAY_BASE: usize = 300;
+
+/// What the quality submenus offer: a label and the config value it writes.
+/// Short lists on purpose -- any value is still one `config.set` away in the
+/// app; these are the ones worth a right-click.
+pub const RESOLUTION_CHOICES: [(&str, &str); 5] = [
+    ("Native", "native"),
+    ("480p", "480p"),
+    ("720p", "720p"),
+    ("1080p", "1080p"),
+    ("1440p", "1440p"),
+];
+pub const FPS_CHOICES: [u32; 5] = [30, 45, 60, 90, 120];
+pub const REPLAY_CHOICES: [u32; 5] = [10, 15, 30, 60, 120];
+
+/// What the menu needs to label itself. Gathered by the pump from mirrors (the
+/// pump never takes a `Daemon` lock), so it is a plain value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MenuPrefs {
+    pub armed: bool,
+    pub autostart: bool,
+    pub auto_arm: bool,
+    pub clip_sound: bool,
+    pub resolution: String,
+    pub fps: u32,
+    pub replay_seconds: u32,
+}
+
+/// The config change a submenu item stands for, or `None` for any other id.
+pub fn choice_for_id(id: usize) -> Option<(&'static str, Value)> {
+    let index = |base: usize, len: usize| id.checked_sub(base).filter(|i| *i < len);
+    if let Some(i) = index(ID_RESOLUTION_BASE, RESOLUTION_CHOICES.len()) {
+        return Some(("resolution", Value::from(RESOLUTION_CHOICES[i].1)));
+    }
+    if let Some(i) = index(ID_FPS_BASE, FPS_CHOICES.len()) {
+        return Some(("fps", Value::from(FPS_CHOICES[i])));
+    }
+    if let Some(i) = index(ID_REPLAY_BASE, REPLAY_CHOICES.len()) {
+        return Some(("replay_seconds", Value::from(REPLAY_CHOICES[i])));
+    }
+    None
+}
 
 /// Icon edge in pixels. 32 is the large-DPI tray size; Windows downscales to
 /// 16 cleanly and asking for a 16 would look soft at 150% scaling.
@@ -169,6 +222,25 @@ unsafe fn make_icon(armed: bool) -> Result<HICON> {
     .context("CreateIcon")
 }
 
+fn item_flags(checked: bool) -> MENU_ITEM_FLAGS {
+    if checked { MF_STRING | MF_CHECKED } else { MF_STRING }
+}
+
+/// Appends a submenu of single-choice items, the current one ticked.
+///
+/// # Safety
+/// `menu` must be a live menu; the submenu is owned by it and goes with it.
+unsafe fn append_choices(menu: HMENU, title: &str, base: usize, choices: &[(String, bool)]) {
+    unsafe {
+        let Ok(sub) = CreatePopupMenu() else { return };
+        for (i, (label, current)) in choices.iter().enumerate() {
+            let _ =
+                AppendMenuW(sub, item_flags(*current), base + i, &HSTRING::from(label.as_str()));
+        }
+        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, &HSTRING::from(title));
+    }
+}
+
 /// Shows the tray menu at the cursor and returns the chosen command id.
 ///
 /// `SetForegroundWindow` before `TrackPopupMenu` is required, not decorative:
@@ -178,11 +250,18 @@ unsafe fn make_icon(armed: bool) -> Result<HICON> {
 ///
 /// # Safety
 /// Must be called on the thread that owns `hwnd`.
-pub unsafe fn show_menu(hwnd: HWND, armed: bool) -> Option<usize> {
+pub unsafe fn show_menu(hwnd: HWND, prefs: &MenuPrefs) -> Option<usize> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        let toggle = if armed { "Disarm" } else { "Arm" };
+        let toggle = if prefs.armed { "Disarm" } else { "Arm" };
         let _ = AppendMenuW(menu, MF_STRING, ID_TOGGLE, &HSTRING::from(toggle));
+        // Both need a live buffer, so they are greyed rather than hidden while
+        // disarmed: the menu keeps one shape, and the reason a click would do
+        // nothing is visible.
+        let needs_armed = if prefs.armed { MF_STRING } else { MF_STRING | MF_GRAYED };
+        let _ = AppendMenuW(menu, needs_armed, ID_CLIP, &HSTRING::from("Save clip now"));
+        let _ = AppendMenuW(menu, needs_armed, ID_SCREENSHOT, &HSTRING::from("Take screenshot"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_UI, &HSTRING::from("Open Clippy"));
         let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, &HSTRING::from("Open clips folder"));
         // Directly under "Open clips folder": the two are the same subject, and
@@ -194,6 +273,46 @@ pub unsafe fn show_menu(hwnd: HWND, armed: bool) -> Option<usize> {
             MF_STRING,
             ID_CHANGE_FOLDER,
             &HSTRING::from("Change clips folder..."),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+
+        // Changing any of these three while armed re-arms (see
+        // `window::handle_action`): the encoded size, rate and ring length are
+        // fixed when the session opens.
+        let resolutions: Vec<(String, bool)> = RESOLUTION_CHOICES
+            .iter()
+            .map(|(label, value)| {
+                (label.to_string(), prefs.resolution.eq_ignore_ascii_case(value))
+            })
+            .collect();
+        append_choices(menu, "Resolution", ID_RESOLUTION_BASE, &resolutions);
+        let rates: Vec<(String, bool)> =
+            FPS_CHOICES.iter().map(|f| (format!("{f} fps"), prefs.fps == *f)).collect();
+        append_choices(menu, "Frame rate", ID_FPS_BASE, &rates);
+        let lengths: Vec<(String, bool)> = REPLAY_CHOICES
+            .iter()
+            .map(|s| (format!("{s} seconds"), prefs.replay_seconds == *s))
+            .collect();
+        append_choices(menu, "Replay length", ID_REPLAY_BASE, &lengths);
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+
+        let _ = AppendMenuW(
+            menu,
+            item_flags(prefs.autostart),
+            ID_AUTOSTART,
+            &HSTRING::from("Start with Windows"),
+        );
+        let _ = AppendMenuW(
+            menu,
+            item_flags(prefs.auto_arm),
+            ID_AUTO_ARM,
+            &HSTRING::from("Arm when Clippy starts"),
+        );
+        let _ = AppendMenuW(
+            menu,
+            item_flags(prefs.clip_sound),
+            ID_CLIP_SOUND,
+            &HSTRING::from("Play a sound when a clip is saved"),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, &HSTRING::from("Quit"));
@@ -257,5 +376,37 @@ mod tests {
         // which shows up in the tray as a white square.
         assert_eq!(alpha(&idle, 0, 0), 0, "corners must be transparent");
         assert_eq!(alpha(&armed, 0, 0), 0, "corners must be transparent");
+    }
+
+    /// A click on a submenu item must become exactly the config change its
+    /// label names, and ids outside the tables must map to nothing -- the
+    /// plain menu ids (1..=10) sit below the bases.
+    #[test]
+    fn submenu_ids_map_to_the_config_change_they_label() {
+        assert_eq!(choice_for_id(ID_RESOLUTION_BASE), Some(("resolution", Value::from("native"))));
+        assert_eq!(
+            choice_for_id(ID_RESOLUTION_BASE + 2),
+            Some(("resolution", Value::from("720p")))
+        );
+        assert_eq!(choice_for_id(ID_FPS_BASE + 4), Some(("fps", Value::from(120))));
+        assert_eq!(choice_for_id(ID_REPLAY_BASE + 1), Some(("replay_seconds", Value::from(15))));
+        for plain in [ID_TOGGLE, ID_OPEN_UI, ID_QUIT, ID_CLIP, ID_AUTOSTART, ID_CLIP_SOUND] {
+            assert_eq!(choice_for_id(plain), None, "id {plain} is not a choice");
+        }
+        assert_eq!(choice_for_id(ID_RESOLUTION_BASE + RESOLUTION_CHOICES.len()), None);
+        assert_eq!(choice_for_id(ID_FPS_BASE + FPS_CHOICES.len()), None);
+        assert_eq!(choice_for_id(ID_REPLAY_BASE + REPLAY_CHOICES.len()), None);
+    }
+
+    /// Every fps and replay choice must be a value `config.set` accepts, or the
+    /// menu would offer an item that can only fail.
+    #[test]
+    fn every_offered_choice_is_inside_the_documented_bounds() {
+        for f in FPS_CHOICES {
+            assert!((clippy_core::config::MIN_FPS..=clippy_core::config::MAX_FPS).contains(&f));
+        }
+        for s in REPLAY_CHOICES {
+            assert!((1..=600).contains(&s));
+        }
     }
 }

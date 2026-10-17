@@ -156,7 +156,18 @@
       // `clip_hotkey` still goes with it even though step 2 may already have
       // saved it -- the common path is a user who never touched the row, and
       // for them this is the write that puts it in the file.
-      await call('config.set', { monitor_index: monitorIndex, clip_hotkey: hotkey });
+      //
+      // `auto_arm` and `autostart` go in the same call, which is what "set up
+      // Clippy" means to someone who just pressed Finish and arm: from now on
+      // the recorder starts with Windows and arms itself, so the hotkey works
+      // without opening this app first. Both stay switchable in Settings and
+      // from the tray icon.
+      await call('config.set', {
+        monitor_index: monitorIndex,
+        clip_hotkey: hotkey,
+        auto_arm: true,
+        autostart: true,
+      });
     } catch (e) {
       // Setup itself did not happen -- staying on this step, whose only
       // control retries the very call that just failed, is the correct
@@ -241,6 +252,10 @@
       <Button onclick={pickFolder}>Choose...</Button>
     </div>
     <p class="hint">You can change this any time in Settings, or from the Clippy tray icon.</p>
+    <p class="hint">
+      Clippy will start with Windows and arm itself, so your hotkey works without opening the app.
+      Turn that off in Settings or from the tray icon.
+    </p>
     <Button variant="primary" onclick={finish}>Finish and arm</Button>
   {/if}
 </div>

@@ -43,6 +43,7 @@ fn main() {
             // would have existed had these two lines been the other way round.
             update::clean_up_after_update();
             let supervisor = daemon::Supervisor::start(app.handle().clone());
+            daemon::start_recorder_unless_running(&supervisor);
             app.manage(supervisor);
             Ok(())
         })

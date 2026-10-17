@@ -125,6 +125,32 @@ pub(crate) fn pipe_exists() -> bool {
     unsafe { WaitNamedPipeW(&HSTRING::from(PIPE_PATH), 1).as_bool() }
 }
 
+/// How long [`start_recorder_unless_running`] gives a daemon that is already on
+/// its way up -- started at login, or put back by the updater just before it
+/// restarted this app -- to take the pipe before deciding there is none.
+const DAEMON_GRACE: Duration = Duration::from_millis(1500);
+
+/// Brings the recorder up when the app opens, instead of waiting for the Start
+/// button: the app exists to drive it, and a hotkey that only works after
+/// someone clicked Start is the thing this is for.
+///
+/// On a thread of its own, after a short grace period, and never when the pipe
+/// already resolves. Two daemons cannot coexist -- the second loses the pipe --
+/// but it would register hotkeys and a tray icon on its way to losing, so the
+/// cases where one is already starting (autostart, or the updater putting the
+/// old one back) have to be recognised rather than raced. A failed launch is
+/// left to the "not running" panel, whose Start button tries again and says why.
+pub(crate) fn start_recorder_unless_running(supervisor: &Arc<Supervisor>) {
+    let supervisor = Arc::clone(supervisor);
+    let _ = std::thread::Builder::new().name("clippy-daemon-autostart".into()).spawn(move || {
+        std::thread::sleep(DAEMON_GRACE);
+        if pipe_exists() || supervisor.is_connected() || crate::update::install_in_progress() {
+            return;
+        }
+        let _ = supervisor.launch();
+    });
+}
+
 /// Pulls the PID out of a `shutdown` reply, if it said one.
 ///
 /// A pure function of the reply -- present, absent, present but not a number,

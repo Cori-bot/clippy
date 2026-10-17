@@ -28,8 +28,8 @@
     first run, when the tauri CLI downloads and hash-checks NSIS.
 
 .PARAMETER OutDir
-    Where the installer and its .sha256 are written. Defaults to the directory
-    above the repo, like the zip.
+    Where the installer and its .sha256 are written. Defaults to dist\ inside
+    the repo (git-ignored), like the zip.
 
 .PARAMETER SkipTests
     Passed to ship-zip.ps1. The installer is then named with -untested.
@@ -58,7 +58,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-if (-not $OutDir) { $OutDir = Split-Path -Parent $RepoRoot }
+if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
 $UiDir = Join-Path $RepoRoot 'crates\clippy-ui'
 $StageForBundle = Join-Path $RepoRoot 'target\installer-stage'
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Clippy'

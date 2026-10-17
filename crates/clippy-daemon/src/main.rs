@@ -240,6 +240,8 @@ fn main() -> anyhow::Result<()> {
 
     let config = Config::load();
     tracing::debug!(?config, "loaded configuration");
+    // What the tray menu ticks until the first `config.set` publishes again.
+    window::publish_prefs(&config);
 
     control::install_shutdown_handler()?;
 

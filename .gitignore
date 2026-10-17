@@ -1,5 +1,8 @@
 /target
 
+# release artifacts (ship-zip.ps1, build-installer.ps1 write here)
+/dist
+
 # brainstorming mockups (superpowers visual companion)
 /.superpowers
 

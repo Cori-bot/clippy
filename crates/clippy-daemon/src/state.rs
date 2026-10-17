@@ -1343,6 +1343,8 @@ impl Daemon {
             }
         }
         *config = updated;
+        // The tray menu ticks and labels itself from this mirror.
+        crate::window::publish_prefs(&config);
 
         // After the write, like the hotkey rebind below and for the same
         // reason: a live session capturing at a level the user was told had

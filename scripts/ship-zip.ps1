@@ -96,9 +96,9 @@
     build and tests.
 
 .PARAMETER OutDir
-    Where the zip is written. Defaults to the directory above the repo, so the
-    artifact lands beside the project folder rather than inside it -- a zip
-    inside the repo is one `git add .` away from being committed.
+    Where the zip is written. Defaults to dist\ inside the repo, which is
+    git-ignored, so an artifact is never one `git add .` away from being
+    committed and nothing lands outside the project folder.
 
 .PARAMETER StageDir
     The work folder the zip's contents are staged in, holding a folder named
@@ -144,7 +144,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-if (-not $OutDir) { $OutDir = Split-Path -Parent $RepoRoot }
+if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
 
 if ($StageOnly -and $FromStage) {
     throw '-StageOnly and -FromStage are the two halves of one run. Pass one of them, or neither.'

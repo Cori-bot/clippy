@@ -35,9 +35,16 @@ GETTING STARTED
   2. Open Clippy from the Start menu (or run clippy-ui.exe from the zip's
      folder). It starts the background recorder for you.
 
-  3. Press Start in the app. The tray icon shows when Clippy is recording.
+  3. The first time, a short setup asks for your screen, your hotkey and
+     where clips go. Press "Finish and arm". From then on Clippy starts with
+     Windows and arms itself, so there is nothing to open or press first.
+     The tray icon shows when it is recording.
 
   4. Press Alt+F10 during your game to save the last 15 seconds.
+
+  5. Right-click the tray icon for quick options: save a clip or a
+     screenshot, resolution, frame rate, replay length, start with Windows,
+     arm on start, the clip sound, and Quit.
 
 Windows SmartScreen will probably warn you the first time, because these
 binaries are not code-signed. "More info" -> "Run anyway".
@@ -48,7 +55,8 @@ WHAT IS IN THIS FOLDER
 
   clippy-ui.exe      The app: your clips, playback and settings.
   clippy-daemon.exe  The background recorder that lives in the tray. The app
-                   starts it, so you do not normally run this yourself.
+                   (and Windows, at login) starts it, so you do not
+                   normally run this yourself.
   clippy.exe         A command-line interface, for scripting and diagnostics.
   README.txt       This file.
 

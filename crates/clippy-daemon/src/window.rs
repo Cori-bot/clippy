@@ -50,6 +50,47 @@ use crate::tray::{self, Tray};
 /// pump on it is exactly what this module's comment forbids.
 static ARMED_MIRROR: AtomicBool = AtomicBool::new(false);
 
+/// What the tray menu's ticks and labels read, next to [`ARMED_MIRROR`] and for
+/// the same reason: the pump must not take a `Daemon` lock. Held only long
+/// enough to copy a handful of fields, by the daemon on every accepted
+/// `config.set` and by the pump when the menu opens.
+static PREFS: Mutex<tray::MenuPrefs> = Mutex::new(tray::MenuPrefs {
+    armed: false,
+    autostart: false,
+    auto_arm: false,
+    clip_sound: false,
+    resolution: String::new(),
+    fps: 0,
+    replay_seconds: 0,
+});
+
+/// Records the settings the tray menu shows. Called at startup and from
+/// `Daemon::set_config`, the one place every accepted change passes through.
+pub fn publish_prefs(config: &clippy_core::config::Config) {
+    if let Ok(mut prefs) = PREFS.lock() {
+        prefs.auto_arm = config.auto_arm;
+        prefs.clip_sound = config.clip_sound;
+        prefs.resolution = config.resolution.clone();
+        prefs.fps = config.fps;
+        prefs.replay_seconds = config.replay_seconds;
+    }
+}
+
+/// The menu's view of the world for one right click.
+fn menu_prefs(armed: bool) -> tray::MenuPrefs {
+    let mut prefs = PREFS.lock().map(|p| p.clone()).unwrap_or_default();
+    prefs.armed = armed;
+    // The registry, not the config file, is the truth for autostart --
+    // `config.get` reads it the same way, and a user can remove the Run entry
+    // behind Clippy's back.
+    prefs.autostart = crate::autostart::is_enabled();
+    prefs
+}
+
+fn set_bool(key: &'static str, value: bool) -> Action {
+    Action::SetConfig { key, value: Value::Bool(value) }
+}
+
 /// The pump's window, for code that is not on the pump thread. Zero until the
 /// window exists, which is what makes [`publish_armed`] a no-op in unit tests
 /// and in `clippy.exe`, neither of which has a tray.
@@ -122,12 +163,10 @@ fn decode_hotkey_state(raw: u8) -> Option<bool> {
 /// that can block belongs on the worker side of this channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// The clip hotkey was pressed (`WM_HOTKEY`). The tray menu has no "save
-    /// clip" item of its own — see its match arms below for what it does map
-    /// to — so this is never reached any other way.
+    /// The clip hotkey was pressed (`WM_HOTKEY`), or the tray menu's "Save clip
+    /// now" item, which stands for the same thing.
     Clip,
-    /// The screenshot hotkey was pressed. Like [`Self::Clip`] this has no tray
-    /// menu item, so `WM_HOTKEY` is the only thing that produces it.
+    /// The screenshot hotkey was pressed, or the tray menu's "Take screenshot".
     Screenshot,
     /// Tray menu's arm/disarm item. Which of the two it produces is decided
     /// where the menu is built, from the same `ARMED_MIRROR` read that chose
@@ -136,6 +175,11 @@ pub enum Action {
     /// then act on a state the user never saw.
     Arm,
     Disarm,
+    /// A tray menu item that changes one setting: a toggle or a submenu choice.
+    /// Applied on the worker through the `config.set` path, so open clients hear
+    /// `config_changed`; a setting that only takes effect on a new session
+    /// re-arms an armed daemon.
+    SetConfig { key: &'static str, value: Value },
     /// Tray menu's "Open Clippy" and a left click on the icon: launch the
     /// desktop app, or fall back to the clips folder if it is not installed.
     OpenApp,
@@ -724,8 +768,9 @@ unsafe extern "system" fn wnd_proc(
                     // The menu is modal and pumps its own messages, but it is
                     // driven by the user and returns promptly, so it is the
                     // one thing this thread is allowed to do inline.
-                    let armed = ARMED_MIRROR.load(Ordering::Relaxed);
-                    match unsafe { tray::show_menu(hwnd, armed) } {
+                    let prefs = menu_prefs(ARMED_MIRROR.load(Ordering::Relaxed));
+                    let armed = prefs.armed;
+                    match unsafe { tray::show_menu(hwnd, &prefs) } {
                         // Decided here, from the same read that labelled the
                         // item, rather than re-read on the worker thread: an
                         // `arm` from the socket or the UI takes seconds and
@@ -735,11 +780,20 @@ unsafe extern "system" fn wnd_proc(
                         Some(tray::ID_TOGGLE) => {
                             Some(if armed { Action::Disarm } else { Action::Arm })
                         }
+                        Some(tray::ID_CLIP) => Some(Action::Clip),
+                        Some(tray::ID_SCREENSHOT) => Some(Action::Screenshot),
                         Some(tray::ID_OPEN_UI) => Some(Action::OpenApp),
                         Some(tray::ID_OPEN_FOLDER) => Some(Action::OpenClipsFolder),
                         Some(tray::ID_CHANGE_FOLDER) => Some(Action::ChangeClipsFolder),
+                        Some(tray::ID_AUTOSTART) => Some(set_bool("autostart", !prefs.autostart)),
+                        Some(tray::ID_AUTO_ARM) => Some(set_bool("auto_arm", !prefs.auto_arm)),
+                        Some(tray::ID_CLIP_SOUND) => {
+                            Some(set_bool("clip_sound", !prefs.clip_sound))
+                        }
                         Some(tray::ID_QUIT) => Some(Action::Quit),
-                        _ => None,
+                        Some(id) => tray::choice_for_id(id)
+                            .map(|(key, value)| Action::SetConfig { key, value }),
+                        None => None,
                     }
                 }
                 _ => None,
@@ -994,6 +1048,7 @@ pub fn handle_action(daemon: &Arc<Daemon>, action: Action) {
         }
         Action::Arm => set_armed(daemon, true),
         Action::Disarm => set_armed(daemon, false),
+        Action::SetConfig { key, value } => apply_tray_setting(daemon, key, value),
         Action::OpenApp => open_app(daemon),
         Action::OpenClipsFolder => open_clips_folder(daemon),
         Action::ChangeClipsFolder => change_clips_folder(daemon),
@@ -1211,6 +1266,35 @@ fn choose_clip_sound(daemon: &Arc<Daemon>) {
     if spawned.is_err() {
         PICKING.store(false, Ordering::SeqCst);
         tracing::warn!("could not start the sound-dialog thread");
+    }
+}
+
+/// Applies one tray setting through the same path as the socket's `config.set`,
+/// so a window that is open hears `config_changed`, and re-arms when the
+/// setting only takes effect on a new session (resolution, frame rate, replay
+/// length). The user picked it from a menu to see it happen, and a ring that
+/// quietly kept the old size would make the tick a lie.
+fn apply_tray_setting(daemon: &Arc<Daemon>, key: &'static str, value: Value) {
+    let mut values = Map::new();
+    values.insert(key.to_string(), value);
+    match crate::dispatch::apply_config_and_broadcast(daemon, &values) {
+        Ok(update) => {
+            tracing::info!(key, "setting changed from the tray");
+            if !update.requires_rearm.is_empty() && daemon.status().armed {
+                tracing::info!(keys = ?update.requires_rearm, "re-arming to apply the new setting");
+                set_armed(daemon, false);
+                set_armed(daemon, true);
+            }
+        }
+        Err(detail) => {
+            tracing::warn!(key, error = %detail, "a tray setting was refused");
+            let message = format!("That setting can't be changed:\n\n{detail}");
+            // A message box blocks until it is dismissed; on a thread of its own
+            // so the hotkey actions queued behind this one keep working.
+            let _ = std::thread::Builder::new()
+                .name("clippy-tray-error".into())
+                .spawn(move || crate::folder::report_error(&message));
+        }
     }
 }
 
@@ -1557,6 +1641,42 @@ mod tests {
             Some("not armed — arm Clippy to take a screenshot")
         );
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A setting picked from the tray must land in the daemon's config and be
+    /// announced to open clients like any other `config.set`, so a window that
+    /// is showing Settings does not go on displaying the old value. Driven
+    /// through `handle_action` on a scratch daemon that writes to a scratch
+    /// file, so it touches neither the real config nor the registry.
+    #[test]
+    fn a_tray_setting_is_applied_and_broadcast_to_clients() {
+        use clippy_core::config::Config;
+
+        let dir = std::env::temp_dir().join(format!("clippy-tray-setting-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let config = Config {
+            clip_dir: dir.join("clips").to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        let daemon = Arc::new(Daemon::new_at(config, Some(dir.join("config.toml"))));
+        let (tx, rx) = sync_channel(crate::clients::OUTBOUND_QUEUE_DEPTH);
+        daemon.clients.register(tx);
+
+        handle_action(&daemon, Action::SetConfig { key: "clip_sound", value: Value::Bool(false) });
+        handle_action(&daemon, Action::SetConfig { key: "fps", value: Value::from(90) });
+
+        let first = rx.try_recv().expect("an accepted tray setting must broadcast config_changed");
+        let event: Event = serde_json::from_str(first.trim_end()).expect("event line decodes");
+        assert_eq!(event.event, "config_changed");
+        assert_eq!(event.data.get("clip_sound"), Some(&Value::Bool(false)));
+        let second = rx.try_recv().expect("the second setting broadcasts too");
+        let event: Event = serde_json::from_str(second.trim_end()).expect("event line decodes");
+        assert_eq!(event.data.get("fps"), Some(&Value::from(90)));
+
+        let saved = std::fs::read_to_string(dir.join("config.toml")).expect("config was written");
+        assert!(saved.contains("clip_sound = false") && saved.contains("fps = 90"), "{saved}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
