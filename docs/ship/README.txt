@@ -27,10 +27,13 @@ NEW IN 1.5.0
 GETTING STARTED
 ---------------
 
-  1. Unzip everything into one folder and keep the files together.
-     The app looks for the recorder right beside itself.
+  1. Run the installer (Clippy_<version>_x64-setup.exe): it installs for
+     your user only, needs no administrator rights, and adds a Start menu
+     entry. Or, with the zip, unzip everything into one folder and keep the
+     files together: the app looks for the recorder right beside itself.
 
-  2. Run  clippy-ui.exe.  It starts the background recorder for you.
+  2. Open Clippy from the Start menu (or run clippy-ui.exe from the zip's
+     folder). It starts the background recorder for you.
 
   3. Press Start in the app. The tray icon shows when Clippy is recording.
 

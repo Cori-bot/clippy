@@ -1,0 +1,25 @@
+{
+  "mainBinaryName": "clippy-ui",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Clippy",
+    "copyright": "Copyright (c) 2026 tnhnblgl and Clippy contributors",
+    "shortDescription": "Clip it after it happens",
+    "longDescription": "Clippy keeps the last seconds of your screen in memory and turns them into a clip when you press a hotkey. The GPU does the recording.",
+    "licenseFile": "../../LICENSE",
+    "resources": {
+      "../../target/installer-stage/clippy.exe": "clippy.exe",
+      "../../target/installer-stage/clippy-daemon.exe": "clippy-daemon.exe",
+      "../../target/installer-stage/README.txt": "README.txt"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "./installer-hooks.nsh",
+        "languages": ["French", "English"],
+        "compression": "lzma"
+      }
+    }
+  }
+}
