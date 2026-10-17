@@ -1,0 +1,32 @@
+t=   30s ws=  122.4 MB private=  175.2 MB handles=628 threads=38
+t=   61s ws=  118.8 MB private=  173.6 MB handles=625 threads=35
+t=   91s ws=   89.9 MB private=  150.1 MB handles=625 threads=34
+t=  121s ws=   83.3 MB private=  136.3 MB handles=625 threads=34
+t=  151s ws=   83.1 MB private=  136.1 MB handles=627 threads=32
+t=  182s ws=   85.7 MB private=  138.7 MB handles=630 threads=34
+t=  212s ws=   83.9 MB private=  139.6 MB handles=630 threads=34
+t=  242s ws=   84.6 MB private=  137.3 MB handles=630 threads=34
+t=  272s ws=   87.4 MB private=  140.2 MB handles=624 threads=32
+t=  303s ws=  114.8 MB private=  167.7 MB handles=633 threads=36
+t=  333s ws=  133.2 MB private=  185.7 MB handles=635 threads=36
+t=  363s ws=   89.6 MB private=  154.9 MB handles=637 threads=36
+t=  394s ws=  133.2 MB private=  185.7 MB handles=631 threads=35
+t=  424s ws=   96.7 MB private=  150.0 MB handles=621 threads=32
+t=  454s ws=   94.5 MB private=  151.5 MB handles=621 threads=32
+t=  484s ws=  123.5 MB private=  176.2 MB handles=617 threads=31
+t=  515s ws=   77.6 MB private=  130.7 MB handles=617 threads=31
+t=  545s ws=   79.8 MB private=  132.5 MB handles=617 threads=31
+t=  575s ws=   88.2 MB private=  141.3 MB handles=617 threads=31
+t=  606s ws=  103.2 MB private=  156.1 MB handles=619 threads=32
+t=  636s ws=   92.1 MB private=  154.8 MB handles=623 threads=33
+t=  666s ws=   93.2 MB private=  145.8 MB handles=619 threads=32
+t=  697s ws=   90.6 MB private=  144.2 MB handles=617 threads=31
+t=  727s ws=  105.8 MB private=  158.7 MB handles=622 threads=32
+t=  757s ws=  111.8 MB private=  164.3 MB handles=618 threads=31
+t=  787s ws=  106.8 MB private=  162.7 MB handles=618 threads=31
+t=  818s ws=  119.1 MB private=  171.7 MB handles=618 threads=31
+t=  848s ws=  104.8 MB private=  162.4 MB handles=618 threads=31
+t=  878s ws=  102.8 MB private=  160.0 MB handles=618 threads=31
+mcpu_ring_mb[0m[2m=[0m9.8 [3mframes[0m[2m=[0m58327 [3mdropped[0m[2m=[0m369 [3mpaced[0m[2m=[0m6761 [3mring_packets[0m[2m=[0m486 [3mlatency[0m[2m=[0mn=58696 p50<=500us p99<=2.0ms max=11.8ms [3mpump[0m[2m=[0mn=58696 p50<=100us p99<=250us max=10.9ms [3mconvert[0m[2m=[0mn=58327 p50<=100us p99<=100us max=2.0ms [3mencode[0m[2m=[0mn=58327 p50<=500us p99<=1.0ms max=10.9ms
+working set growth middle->last third: -0.1 %, handles -5.6
+SOAK PASSED
