@@ -266,6 +266,9 @@ fn is_releases_page(url: &str) -> bool {
 
 #[tauri::command]
 pub fn update_open_releases_page(url: String) -> Result<(), String> {
+    if check::repo_is_placeholder() {
+        return Err(check::PLACEHOLDER_REPO_MESSAGE.to_string());
+    }
     if !is_releases_page(&url) {
         return Err(format!("{url} is not a Clippy releases page, so nothing was opened"));
     }
@@ -321,6 +324,9 @@ pub async fn update_check(app: AppHandle) -> Result<Option<Release>, String> {
 }
 
 fn look_for_a_newer_release(app: &AppHandle) -> Result<Option<Release>, String> {
+    if check::repo_is_placeholder() {
+        return Err(check::PLACEHOLDER_REPO_MESSAGE.to_string());
+    }
     let body = download::fetch_text(check::RELEASE_API)?;
     let found = check::newer_release(&body, env!("CARGO_PKG_VERSION"))?;
     match &found {
@@ -351,6 +357,9 @@ pub async fn update_install(
     // being driven by the install that is actually running. A `Failed` event
     // would paint a failure over a download proceeding normally: an answer
     // about the second press, told as a lie about the first.
+    if check::repo_is_placeholder() {
+        return Err(check::PLACEHOLDER_REPO_MESSAGE.to_string());
+    }
     let Some(guard) = InstallGuard::claim() else {
         return Err("Clippy is already installing an update.".to_string());
     };
@@ -656,6 +665,11 @@ fn verify_payload_version(payload: &Path, expected: &str) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_placeholder_repository_blocks_the_updater() {
+        assert!(super::check::repo_is_placeholder(), "OWNER/clippy must stay inert");
+    }
+
     use super::*;
 
     /// A release shaped like one `check::newer_release` produces.
