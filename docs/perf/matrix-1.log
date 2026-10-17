@@ -1,0 +1,16 @@
+480p@30 #1: enc_w=852, enc_h=480, frames=884.0, fps_eff=30.5, dropped=2.0, on_frame_p99_ms=2.0, cpu_pct=5.8, gpu_enc_avg=1.0, ws_mb=93.0, mp4_w=852, mp4_h=480, mp4_fps=30.0
+480p@60 #1: enc_w=852, enc_h=480, frames=1777.0, fps_eff=61.3, dropped=0.0, on_frame_p99_ms=1.0, cpu_pct=8.5, gpu_enc_avg=2.0, ws_mb=91.8, mp4_w=852, mp4_h=480, mp4_fps=60.0
+480p@90 #1: enc_w=852, enc_h=480, frames=2140.0, fps_eff=73.8, dropped=2.0, on_frame_p99_ms=2.0, cpu_pct=11.1, gpu_enc_avg=2.3, ws_mb=92.3, mp4_w=852, mp4_h=480, mp4_fps=69.4
+480p@120 #1: enc_w=852, enc_h=480, frames=3267.0, fps_eff=112.7, dropped=4.0, on_frame_p99_ms=2.0, cpu_pct=14.8, gpu_enc_avg=3.8, ws_mb=93.4, mp4_w=852, mp4_h=480, mp4_fps=111.0
+720p@30 #1: enc_w=1280, enc_h=720, frames=874.0, fps_eff=30.1, dropped=0.0, on_frame_p99_ms=2.0, cpu_pct=6.7, gpu_enc_avg=2.2, ws_mb=91.8, mp4_w=1280, mp4_h=720, mp4_fps=30.0
+720p@60 #1: enc_w=1280, enc_h=720, frames=1757.0, fps_eff=60.6, dropped=8.0, on_frame_p99_ms=2.0, cpu_pct=8.8, gpu_enc_avg=4.1, ws_mb=95.9, mp4_w=1280, mp4_h=720, mp4_fps=59.5
+720p@90 #1: enc_w=1280, enc_h=720, frames=2205.0, fps_eff=76.0, dropped=20.0, on_frame_p99_ms=2.0, cpu_pct=11.4, gpu_enc_avg=5.3, ws_mb=96.1, mp4_w=1280, mp4_h=720, mp4_fps=74.7
+720p@120 #1: enc_w=1280, enc_h=720, frames=3056.0, fps_eff=105.4, dropped=8.0, on_frame_p99_ms=2.0, cpu_pct=13.8, gpu_enc_avg=7.3, ws_mb=99.7, mp4_w=1280, mp4_h=720, mp4_fps=104.0
+1080p@30 #1: enc_w=1920, enc_h=1080, frames=882.0, fps_eff=30.4, dropped=0.0, on_frame_p99_ms=2.0, cpu_pct=6.1, gpu_enc_avg=4.9, ws_mb=98.4, mp4_w=1920, mp4_h=1080, mp4_fps=30.0
+1080p@60 #1: enc_w=1920, enc_h=1080, frames=1745.0, fps_eff=60.2, dropped=1.0, on_frame_p99_ms=2.0, cpu_pct=9.6, gpu_enc_avg=9.4, ws_mb=106.8, mp4_w=1920, mp4_h=1080, mp4_fps=59.7
+1080p@90 #1: enc_w=1920, enc_h=1080, frames=2228.0, fps_eff=76.8, dropped=4.0, on_frame_p99_ms=2.0, cpu_pct=12.4, gpu_enc_avg=11.5, ws_mb=105.2, mp4_w=1920, mp4_h=1080, mp4_fps=75.6
+1080p@120 #1: enc_w=1920, enc_h=1080, frames=3393.0, fps_eff=117.0, dropped=0.0, on_frame_p99_ms=1.0, cpu_pct=12.1, gpu_enc_avg=17.5, ws_mb=118.1, mp4_w=1920, mp4_h=1080, mp4_fps=114.9
+1440p@30 #1: enc_w=2560, enc_h=1440, frames=888.0, fps_eff=30.6, dropped=0.0, on_frame_p99_ms=2.0, cpu_pct=6.1, gpu_enc_avg=7.9, ws_mb=108.8, mp4_w=2560, mp4_h=1440, mp4_fps=30.0
+1440p@60 #1: enc_w=2560, enc_h=1440, frames=1763.0, fps_eff=60.8, dropped=0.0, on_frame_p99_ms=2.0, cpu_pct=8.4, gpu_enc_avg=15.7, ws_mb=121.5, mp4_w=2560, mp4_h=1440, mp4_fps=59.9
+1440p@90 #1: enc_w=2560, enc_h=1440, frames=2215.0, fps_eff=76.4, dropped=1.0, on_frame_p99_ms=2.0, cpu_pct=9.8, gpu_enc_avg=20.6, ws_mb=127.0, mp4_w=2560, mp4_h=1440, mp4_fps=75.9
+1440p@120 #1: enc_w=2560, enc_h=1440, frames=3316.0, fps_eff=114.3, dropped=0.0, on_frame_p99_ms=1.0, cpu_pct=12.9, gpu_enc_avg=29.8, ws_mb=141.4, mp4_w=2560, mp4_h=1440, mp4_fps=114.7
