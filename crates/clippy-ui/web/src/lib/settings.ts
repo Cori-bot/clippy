@@ -59,8 +59,8 @@ export type Field = {
  * user sees.
  */
 const BOUNDS: Record<string, [number, number]> = {
-  fps: [1, 480],
-  bitrate_kbps: [1, 200000],
+  fps: [30, 120],
+  bitrate_kbps: [0, 200000],
   max_bitrate_kbps: [0, 200000],
   replay_seconds: [1, 600],
   monitor_index: [0, 63],

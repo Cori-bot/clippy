@@ -383,10 +383,12 @@ impl FrameSink for ReplaySession {
         let manager = create_device_manager(device)?;
         let converter = VideoConverter::new(
             device,
+            flags.settings.src_width,
+            flags.settings.src_height,
             flags.settings.width,
             flags.settings.height,
             flags.settings.fps,
-            4,
+            VideoConverter::pool_size_for(flags.settings.fps),
         )?;
         let encoder = H264Encoder::new(device, &manager, &flags.settings)?;
         let stats = StatsReporter::new(device, flags.stats_seconds);
@@ -406,7 +408,7 @@ impl FrameSink for ReplaySession {
             flags.replay_100ns,
         );
         Ok(Self {
-            frame_duration_100ns: 10_000_000 / i64::from(flags.settings.fps.max(1)),
+            frame_duration_100ns: crate::config::frame_period_100ns(flags.settings.fps),
             settings: flags.settings,
             converter,
             encoder,
@@ -422,7 +424,7 @@ impl FrameSink for ReplaySession {
             frames: 0,
             frames_dropped: 0,
             frames_paced: 0,
-            input_size: (flags.settings.width, flags.settings.height),
+            input_size: (flags.settings.src_width, flags.settings.src_height),
             thumb_wanted: false,
             thumb_staged: None,
             frame_latency: LatencyHistogram::new(),
@@ -980,18 +982,29 @@ fn start_session(
     hotkey: Option<&control::Hotkey>,
 ) -> Result<LiveSession> {
     let monitor = crate::capture::source::monitor_info(config.monitor_index)?;
-    let (width, height) = (monitor.width, monitor.height);
+    let (width, height) =
+        crate::config::encode_size(monitor.width, monitor.height, config.resolution_preset());
+    if monitor.refresh_hz > 0 && config.fps > monitor.refresh_hz {
+        tracing::warn!(
+            fps = config.fps,
+            refresh_hz = monitor.refresh_hz,
+            "fps is above the monitor's refresh rate: real frame rate will be capped by the display"
+        );
+    }
+    let bitrate_bps = config.resolved_bitrate_bps(width, height);
     let clip_dir = config.clip_dir_path();
 
     let mixer = AudioMixer::start_sources(Arc::clone(gains));
 
     let flags = ReplayFlags {
         settings: RecorderSettings {
+            src_width: monitor.width,
+            src_height: monitor.height,
             width,
             height,
             fps: config.fps,
-            bitrate_bps: config.bitrate_bps(),
-            max_bitrate_bps: config.max_bitrate_bps(),
+            bitrate_bps,
+            max_bitrate_bps: config.resolved_max_bitrate_bps(width, height),
             rate_control: config.rate_control(),
             with_audio: mixer.active(),
         },
@@ -1003,13 +1016,13 @@ fn start_session(
     match hotkey {
         Some(hotkey) => println!(
             "replay buffer running: {}x{} at {} fps, {} kbps, last {} s kept — {} to clip, Ctrl+C to quit",
-            width, height, config.fps, config.bitrate_kbps, config.replay_seconds, hotkey,
+            width, height, config.fps, bitrate_bps / 1000, config.replay_seconds, hotkey,
         ),
         None => tracing::info!(
             width,
             height,
             fps = config.fps,
-            kbps = config.bitrate_kbps,
+            kbps = bitrate_bps / 1000,
             replay_secs = config.replay_seconds,
             "replay buffer running"
         ),

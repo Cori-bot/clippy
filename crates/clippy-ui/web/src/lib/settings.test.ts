@@ -206,7 +206,7 @@ describe('unknownKeys', () => {
 
 describe('validate', () => {
   it('mirrors the daemon bounds so the error arrives before the round trip', () => {
-    expect(validate('fps', 0)).toMatch(/1 to 480/);
+    expect(validate('fps', 0)).toMatch(/30 to 120/);
     expect(validate('fps', 60)).toBeNull();
     expect(validate('replay_seconds', 601)).toMatch(/1 to 600/);
     expect(validate('max_library_gb', 0)).toBeNull();

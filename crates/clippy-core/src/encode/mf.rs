@@ -54,6 +54,10 @@ pub fn ensure_mf_started() -> Result<()> {
 
 #[derive(Clone, Copy)]
 pub struct RecorderSettings {
+    /// Size of the frames fed in (the monitor).
+    pub src_width: u32,
+    pub src_height: u32,
+    /// Encoded size; the converter scales `src_*` into it.
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -237,17 +241,22 @@ impl MfRecorder {
             writer.BeginWriting().context("BeginWriting")?;
             configure_video_transform(&writer, video_stream, settings);
 
-            // 3 NV12 targets ≈ 50 ms of pipeline depth at 60 fps; measured
-            // drain is fast enough that even 2 never dropped a frame.
-            let converter =
-                VideoConverter::new(device, settings.width, settings.height, settings.fps, 3)?;
+            let converter = VideoConverter::new(
+                device,
+                settings.src_width,
+                settings.src_height,
+                settings.width,
+                settings.height,
+                settings.fps,
+                VideoConverter::pool_size_for(settings.fps),
+            )?;
 
             Ok(Self {
                 writer,
                 video_stream,
                 audio_stream,
                 converter,
-                frame_duration_100ns: 10_000_000 / i64::from(settings.fps.max(1)),
+                frame_duration_100ns: crate::config::frame_period_100ns(settings.fps),
                 video_samples_sent: 0,
                 frames_dropped: 0,
                 _dxgi_manager: manager,

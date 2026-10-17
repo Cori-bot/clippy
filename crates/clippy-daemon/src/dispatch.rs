@@ -929,9 +929,8 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
 
         for (key, bad) in [
-            ("fps", 0u64),
-            ("fps", 481),
-            ("bitrate_kbps", 0),
+            ("fps", 29u64),
+            ("fps", 121),
             ("bitrate_kbps", 200_001),
             ("max_bitrate_kbps", 200_001),
             ("replay_seconds", 0),
@@ -975,7 +974,7 @@ mod tests {
         let after = daemon.dispatch(1, &request(4, "config.get")).data.unwrap();
         assert_eq!(
             after.get("bitrate_kbps").and_then(Value::as_u64),
-            Some(8_000),
+            Some(0),
             "nor the daemon's own memory"
         );
 
@@ -991,8 +990,9 @@ mod tests {
         let (daemon, path, dir) = with_scratch_config("bounds");
 
         for (key, edge) in [
-            ("fps", 1u64),
-            ("fps", 480),
+            ("fps", 30u64),
+            ("fps", 120),
+            ("bitrate_kbps", 0),
             ("bitrate_kbps", 1),
             ("bitrate_kbps", 200_000),
             ("max_bitrate_kbps", 0),

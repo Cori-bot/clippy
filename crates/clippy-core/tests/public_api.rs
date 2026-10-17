@@ -11,7 +11,7 @@ use clippy_core::replay::ReplayOptions;
 fn config_is_publicly_constructible() {
     let config = Config::default();
     assert_eq!(config.fps, 60);
-    assert_eq!(config.bitrate_kbps, 8000);
+    assert_eq!(config.bitrate_kbps, 0, "0 = auto bitrate");
     assert_eq!(config.stats_seconds, 0, "stats must stay off by default");
     assert_eq!(config.rate_control(), RateControl::PeakVbr);
     assert!(config.gpu_priority_low(), "gpu priority must default to low");
@@ -33,8 +33,8 @@ fn session_option_structs_are_publicly_constructible() {
 #[test]
 fn bitrate_helpers_are_public() {
     let config = Config::default();
-    assert_eq!(config.bitrate_bps(), 8_000_000);
-    assert_eq!(config.max_bitrate_bps(), 12_000_000, "0 means auto = 1.5x target");
+    assert_eq!(config.resolved_bitrate_bps(1920, 1080), 8_000_000, "auto = 8 Mbps at 1080p60");
+    assert_eq!(config.resolved_max_bitrate_bps(1920, 1080), 12_000_000, "0 means auto = 1.5x target");
 }
 
 /// Guards the clip-library module the daemon (plan 3) reads and writes clips

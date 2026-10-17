@@ -36,6 +36,8 @@ pub struct RecordOptions {
 
 struct RecordFlags {
     output: PathBuf,
+    src_width: u32,
+    src_height: u32,
     width: u32,
     height: u32,
     fps: u32,
@@ -168,6 +170,8 @@ impl FrameSink for RecordSession {
             &flags.output,
             device,
             &RecorderSettings {
+                src_width: flags.src_width,
+                src_height: flags.src_height,
                 width: flags.width,
                 height: flags.height,
                 fps: flags.fps,
@@ -197,12 +201,12 @@ impl FrameSink for RecordSession {
             started: Instant::now(),
             frames: 0,
             frames_paced: 0,
-            frame_duration_100ns: 10_000_000 / i64::from(flags.fps.max(1)),
+            frame_duration_100ns: crate::config::frame_period_100ns(flags.fps),
             mixer: flags.mixer,
             t0_qpc: None,
             last_frame_qpc: 0,
             next_encode_qpc: 0,
-            input_size: (flags.width, flags.height),
+            input_size: (flags.src_width, flags.src_height),
             frame_latency: LatencyHistogram::new(),
             stats,
         })
@@ -271,7 +275,9 @@ pub fn run(config: &Config, options: RecordOptions) -> Result<()> {
         crate::capture::lower_gpu_priority();
     }
     let monitor = crate::capture::source::monitor_info(config.monitor_index)?;
-    let (width, height) = (monitor.width, monitor.height);
+    let (width, height) =
+        crate::config::encode_size(monitor.width, monitor.height, config.resolution_preset());
+    let bitrate_bps = config.resolved_bitrate_bps(width, height);
 
     // `--no-audio` means no audio at all: both sources off, and no audio
     // stream in the MP4.
@@ -288,7 +294,7 @@ pub fn run(config: &Config, options: RecordOptions) -> Result<()> {
         width,
         height,
         config.fps,
-        config.bitrate_kbps,
+        bitrate_bps / 1000,
         if audio_on { "on" } else { "off" },
         options.output.display(),
         options.duration_secs,
@@ -297,11 +303,13 @@ pub fn run(config: &Config, options: RecordOptions) -> Result<()> {
     let (done, outcome) = mpsc::channel();
     let flags = RecordFlags {
         output: options.output.clone(),
+        src_width: monitor.width,
+        src_height: monitor.height,
         width,
         height,
         fps: config.fps,
-        bitrate_bps: config.bitrate_bps(),
-        max_bitrate_bps: config.max_bitrate_bps(),
+        bitrate_bps,
+        max_bitrate_bps: config.resolved_max_bitrate_bps(width, height),
         rate_control: config.rate_control(),
         deadline: Duration::from_secs(options.duration_secs),
         done,

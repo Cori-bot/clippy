@@ -264,8 +264,10 @@ pub struct ArmOutcome {
 /// rather than requiring a re-arm. `screenshot_sound` is read fresh by
 /// `record_saved_shot` on every screenshot, the same way `clip_sound` already
 /// is for clips.
-pub(crate) const REQUIRES_REARM: [&str; 8] = [
+pub(crate) const REQUIRES_REARM: [&str; 9] = [
     "fps",
+    // The encoded size is fixed when the session opens.
+    "resolution",
     "bitrate_kbps",
     "max_bitrate_kbps",
     "rate_control",
@@ -320,11 +322,10 @@ fn crosses_zero(key: &str, before: Option<&Value>, after: Option<&Value>) -> boo
 /// bounds.
 ///
 /// Why each number:
-/// - `fps` 1..=480 — 0 persists a config nothing can arm from (`replay.rs` and
-///   `capture/mod.rs` both `.max(1)`, so it survives, but only by ignoring
-///   what the user asked for); 480 clears the fastest display anyone captures.
-/// - `bitrate_kbps` 1..=200_000 — 200 Mbit/s is far above any real capture,
-///   and 0 would ask the encoder for no bits at all.
+/// - `fps` 30..=120 — the range the engine is tuned and tested for (any
+///   integer in it, independent of the resolution).
+/// - `bitrate_kbps` 0..=200_000 — 200 Mbit/s is far above any real capture;
+///   0 is the documented "auto" (derived from resolution and fps).
 /// - `max_bitrate_kbps` 0..=200_000 — 0 stays legal because it is the
 ///   documented "auto" (1.5× target), and is the default.
 /// - `replay_seconds` 1..=600 — the ring is RAM, so ten minutes is the outer
@@ -358,8 +359,8 @@ fn crosses_zero(key: &str, before: Option<&Value>, after: Option<&Value>) -> boo
 /// `every_numeric_config_key_is_range_checked` fails the build the day a
 /// numeric key is added without a bound here.
 const NUMERIC_BOUNDS: [(&str, u64, u64); 9] = [
-    ("fps", 1, 480),
-    ("bitrate_kbps", 1, 200_000),
+    ("fps", 30, 120),
+    ("bitrate_kbps", 0, 200_000),
     ("max_bitrate_kbps", 0, 200_000),
     ("replay_seconds", 1, 600),
     ("monitor_index", 0, 63),

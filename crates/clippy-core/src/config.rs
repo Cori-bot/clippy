@@ -57,9 +57,15 @@ pub enum HotkeyMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Target capture/encode frame rate.
+    /// Target capture/encode frame rate, 30..=120 (any integer).
     pub fps: u32,
-    /// Target (average) video bitrate in kbit/s.
+    /// Output resolution, independent of `fps`: `"native"` (the monitor's own
+    /// size) or a preset height, `"480p"`, `"720p"`, `"1080p"`, `"1440p"`. The
+    /// preset is the short side; the long side follows the monitor's aspect
+    /// ratio, so nothing is stretched. See [`encode_size`].
+    pub resolution: String,
+    /// Target (average) video bitrate in kbit/s. `0` = auto: derived from the
+    /// output resolution and fps by [`auto_bitrate_kbps`].
     pub bitrate_kbps: u32,
     /// VBR peak-bitrate cap in kbit/s. `0` = auto (1.5× the target). Ignored
     /// in CBR mode. This cap is also the replay ring's worst-case RAM bound.
@@ -235,11 +241,64 @@ pub struct Config {
     pub hotkey_mode: String,
 }
 
+/// Lowest and highest supported capture/encode frame rate.
+pub const MIN_FPS: u32 = 30;
+pub const MAX_FPS: u32 = 120;
+/// The widest/tallest side NVENC H.264 accepts.
+const MAX_ENCODE_SIDE: u32 = 4096;
+
+/// Output size for a monitor of `src_w` x `src_h` and a resolution preset.
+///
+/// `preset` is the length of the *short* side; the long side keeps the
+/// monitor's aspect ratio, rounded to a multiple of 4 (NV12 needs even sizes
+/// and decoders prefer a clean crop), and the result never exceeds
+/// [`MAX_ENCODE_SIDE`]. `None` (native) returns the source untouched.
+pub fn encode_size(src_w: u32, src_h: u32, preset: Option<u32>) -> (u32, u32) {
+    let Some(preset) = preset else { return (src_w, src_h) };
+    if src_w == 0 || src_h == 0 {
+        return (src_w, src_h);
+    }
+    let (short, long) = if src_w <= src_h { (src_w, src_h) } else { (src_h, src_w) };
+    let round4 = |v: u64| (((v + 2) / 4) * 4).max(4) as u32;
+    let mut short_out = preset;
+    let mut long_out =
+        round4((u64::from(long) * u64::from(preset) + u64::from(short) / 2) / u64::from(short));
+    if long_out > MAX_ENCODE_SIDE {
+        short_out = round4(u64::from(preset) * u64::from(MAX_ENCODE_SIDE) / u64::from(long_out));
+        long_out = MAX_ENCODE_SIDE;
+    }
+    if src_w <= src_h { (short_out, long_out) } else { (long_out, short_out) }
+}
+
+/// Bitrate (kbit/s) used when `bitrate_kbps = 0`. Anchored on the long-standing
+/// 8 Mbit/s at 1920x1080 and 60 fps: it scales linearly with pixel count and
+/// with the 0.8 power of the frame rate (consecutive frames at a high rate are
+/// more alike, so they cost less than proportionally), within 2.5..50 Mbit/s.
+pub fn auto_bitrate_kbps(width: u32, height: u32, fps: u32) -> u32 {
+    const REFERENCE_KBPS: f64 = 8000.0;
+    const REFERENCE_PIXELS: f64 = 1920.0 * 1080.0;
+    const REFERENCE_FPS: f64 = 60.0;
+    let pixels = f64::from(width) * f64::from(height);
+    let kbps = REFERENCE_KBPS
+        * (pixels / REFERENCE_PIXELS)
+        * (f64::from(fps.max(1)) / REFERENCE_FPS).powf(0.8);
+    (kbps.round() as u32).clamp(2_500, 50_000)
+}
+
+/// One frame period in 100 ns units, rounded to nearest. Truncating (what the
+/// engine did before) is up to 1 unit short, which for fps that do not divide
+/// 10^7 (31, 33, 112...) biases the pacer slightly early.
+pub fn frame_period_100ns(fps: u32) -> i64 {
+    let fps = i64::from(fps.max(1));
+    (10_000_000 + fps / 2) / fps
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             fps: 60,
-            bitrate_kbps: 8000,
+            resolution: "native".into(),
+            bitrate_kbps: 0,
             max_bitrate_kbps: 0,
             rate_control: "vbr".into(),
             replay_seconds: 15,
@@ -338,6 +397,44 @@ impl Config {
         }
     }
 
+    /// Preset height requested by `resolution`, `None` for native (or an
+    /// unknown value, which falls back to native with a warning).
+    pub fn resolution_preset(&self) -> Option<u32> {
+        match self.resolution.trim().to_ascii_lowercase().as_str() {
+            "native" | "" => None,
+            "480p" => Some(480),
+            "720p" => Some(720),
+            "1080p" => Some(1080),
+            "1440p" | "2k" => Some(1440),
+            other => {
+                tracing::warn!(resolution = other, "unknown resolution, using native");
+                None
+            }
+        }
+    }
+
+    /// Target bitrate in bit/s for an output of `width` x `height`: the
+    /// explicit `bitrate_kbps`, or the auto value when it is `0`.
+    pub fn resolved_bitrate_bps(&self, width: u32, height: u32) -> u32 {
+        let kbps = if self.bitrate_kbps == 0 {
+            auto_bitrate_kbps(width, height, self.fps)
+        } else {
+            self.bitrate_kbps
+        };
+        kbps.saturating_mul(1000)
+    }
+
+    /// Peak cap in bit/s for an output of `width` x `height`; same rules as
+    /// [`Config::max_bitrate_bps`] on top of the resolved target.
+    pub fn resolved_max_bitrate_bps(&self, width: u32, height: u32) -> u32 {
+        let target = self.resolved_bitrate_bps(width, height);
+        if self.max_bitrate_kbps == 0 {
+            target.saturating_add(target / 2)
+        } else {
+            self.max_bitrate_kbps.saturating_mul(1000).max(target)
+        }
+    }
+
     /// Target (average) video bitrate in bit/s.
     pub fn bitrate_bps(&self) -> u32 {
         self.bitrate_kbps.saturating_mul(1000)
@@ -398,6 +495,7 @@ impl Config {
             Err(_) => Self::default(),
         };
         config.clamp_volumes();
+        config.clamp_fps();
         config
     }
 
@@ -416,6 +514,14 @@ impl Config {
     /// The ceiling is [`MAX_VOLUME_PERCENT`], imported rather than written out,
     /// so this and the gain curve can never be raised independently of each
     /// other.
+    fn clamp_fps(&mut self) {
+        let clamped = self.fps.clamp(MIN_FPS, MAX_FPS);
+        if clamped != self.fps {
+            tracing::warn!(fps = self.fps, clamped, "fps outside the supported range, clamped");
+            self.fps = clamped;
+        }
+    }
+
     fn clamp_volumes(&mut self) {
         self.system_volume = self.system_volume.min(MAX_VOLUME_PERCENT);
         self.mic_volume = self.mic_volume.min(MAX_VOLUME_PERCENT);
@@ -459,6 +565,89 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encode_size_keeps_the_monitor_aspect_ratio() {
+        assert_eq!(encode_size(1920, 1080, None), (1920, 1080));
+        assert_eq!(encode_size(1920, 1080, Some(480)), (852, 480));
+        assert_eq!(encode_size(1920, 1080, Some(720)), (1280, 720));
+        assert_eq!(encode_size(1920, 1080, Some(1080)), (1920, 1080));
+        assert_eq!(encode_size(1920, 1080, Some(1440)), (2560, 1440));
+        assert_eq!(encode_size(1920, 1200, Some(720)), (1152, 720), "16:10");
+        assert_eq!(encode_size(3440, 1440, Some(1080)), (2580, 1080), "21:9");
+        assert_eq!(encode_size(1080, 1920, Some(720)), (720, 1280), "portrait");
+    }
+
+    #[test]
+    fn encode_size_is_always_even_capped_and_non_empty() {
+        for (w, h) in [(1920, 1080), (2560, 1440), (3840, 2160), (5120, 1440), (1366, 768)] {
+            for preset in [480, 720, 1080, 1440] {
+                let (ow, oh) = encode_size(w, h, Some(preset));
+                assert!(ow >= 4 && oh >= 4, "{w}x{h}@{preset} gave {ow}x{oh}");
+                assert!(ow % 2 == 0 && oh % 2 == 0, "{w}x{h}@{preset} gave {ow}x{oh}");
+                assert!(ow <= MAX_ENCODE_SIDE && oh <= MAX_ENCODE_SIDE, "{ow}x{oh}");
+            }
+        }
+        assert_eq!(encode_size(0, 0, Some(720)), (0, 0));
+    }
+
+    #[test]
+    fn resolution_presets_parse_and_unknown_means_native() {
+        let mut config = Config::default();
+        assert_eq!(config.resolution_preset(), None);
+        for (text, preset) in
+            [("480p", 480), ("720P", 720), ("1080p", 1080), ("1440p", 1440), ("2k", 1440)]
+        {
+            config.resolution = text.into();
+            assert_eq!(config.resolution_preset(), Some(preset), "{text}");
+        }
+        config.resolution = "4k".into();
+        assert_eq!(config.resolution_preset(), None);
+    }
+
+    #[test]
+    fn auto_bitrate_matches_the_reference_and_scales_sensibly() {
+        assert_eq!(auto_bitrate_kbps(1920, 1080, 60), 8000);
+        assert_eq!(auto_bitrate_kbps(852, 480, 30), 2500, "floor");
+        let high = auto_bitrate_kbps(2560, 1440, 120);
+        assert!((20_000..=30_000).contains(&high), "1440p120 got {high}");
+        assert!(auto_bitrate_kbps(1920, 1080, 120) > auto_bitrate_kbps(1920, 1080, 60));
+        assert!(auto_bitrate_kbps(7680, 4320, 120) <= 50_000, "cap");
+    }
+
+    #[test]
+    fn explicit_bitrate_wins_over_auto() {
+        let mut config = Config::default();
+        assert_eq!(config.resolved_bitrate_bps(1920, 1080), 8_000_000);
+        assert_eq!(config.resolved_max_bitrate_bps(1920, 1080), 12_000_000);
+        config.bitrate_kbps = 5000;
+        assert_eq!(config.resolved_bitrate_bps(2560, 1440), 5_000_000);
+    }
+
+    #[test]
+    fn frame_period_rounds_to_nearest() {
+        assert_eq!(frame_period_100ns(60), 166_667);
+        assert_eq!(frame_period_100ns(120), 83_333);
+        assert_eq!(frame_period_100ns(31), 322_581);
+        assert_eq!(frame_period_100ns(33), 303_030);
+        assert_eq!(frame_period_100ns(112), 89_286);
+        assert_eq!(frame_period_100ns(0), 10_000_000, "never divides by zero");
+    }
+
+    #[test]
+    fn fps_is_clamped_to_the_supported_range() {
+        let mut config = Config { fps: 500, ..Config::default() };
+        config.clamp_fps();
+        assert_eq!(config.fps, MAX_FPS);
+        config.fps = 5;
+        config.clamp_fps();
+        assert_eq!(config.fps, MIN_FPS);
+        for fps in MIN_FPS..=MAX_FPS {
+            config.fps = fps;
+            config.clamp_fps();
+            assert_eq!(config.fps, fps);
+        }
+    }
 
     /// The default must be `Auto`, and `Auto` must be WGC. Desktop Duplication
     /// has no mouse cursor, so a release that made it anybody's default without

@@ -36,6 +36,8 @@ unsafe impl Send for VideoConverter {}
 impl VideoConverter {
     pub fn new(
         device: &ID3D11Device,
+        src_width: u32,
+        src_height: u32,
         width: u32,
         height: u32,
         fps: u32,
@@ -50,8 +52,8 @@ impl VideoConverter {
         let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: Default::default(), // progressive
             InputFrameRate: DXGI_RATIONAL { Numerator: fps, Denominator: 1 },
-            InputWidth: width,
-            InputHeight: height,
+            InputWidth: src_width,
+            InputHeight: src_height,
             OutputFrameRate: DXGI_RATIONAL { Numerator: fps, Denominator: 1 },
             OutputWidth: width,
             OutputHeight: height,
@@ -97,6 +99,20 @@ impl VideoConverter {
         }
 
         Ok(Self { video_context, processor, enumerator, video_device, pool, next: 0 })
+    }
+
+    /// NV12 targets to keep for a frame rate. Pipeline depth is
+    /// `pool - 1` frames, so the pool grows with fps to keep roughly the same
+    /// wall-clock slack for the encoder (4 covers 60 fps; 120 fps gets 6).
+    pub const fn pool_size_for(fps: u32) -> usize {
+        let wanted = (fps / 30 + 2) as usize;
+        if wanted < 4 {
+            4
+        } else if wanted > 8 {
+            8
+        } else {
+            wanted
+        }
     }
 
     pub const fn pool_size(&self) -> usize {
