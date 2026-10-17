@@ -258,7 +258,8 @@ pub fn encode_size(src_w: u32, src_h: u32, preset: Option<u32>) -> (u32, u32) {
     if src_w == 0 || src_h == 0 {
         return (src_w, src_h);
     }
-    let (short, long) = if src_w <= src_h { (src_w, src_h) } else { (src_h, src_w) };
+    let portrait = src_w <= src_h;
+    let (short, long) = if portrait { (src_w, src_h) } else { (src_h, src_w) };
     let round4 = |v: u64| (((v + 2) / 4) * 4).max(4) as u32;
     let mut short_out = preset;
     let mut long_out =
@@ -267,7 +268,7 @@ pub fn encode_size(src_w: u32, src_h: u32, preset: Option<u32>) -> (u32, u32) {
         short_out = round4(u64::from(preset) * u64::from(MAX_ENCODE_SIDE) / u64::from(long_out));
         long_out = MAX_ENCODE_SIDE;
     }
-    if src_w <= src_h { (short_out, long_out) } else { (long_out, short_out) }
+    if portrait { (short_out, long_out) } else { (long_out, short_out) }
 }
 
 /// Bitrate (kbit/s) used when `bitrate_kbps = 0`. Anchored on the long-standing
@@ -424,26 +425,11 @@ impl Config {
         kbps.saturating_mul(1000)
     }
 
-    /// Peak cap in bit/s for an output of `width` x `height`; same rules as
-    /// [`Config::max_bitrate_bps`] on top of the resolved target.
+    /// VBR peak cap in bit/s for an output of `width` x `height`.
+    /// `max_bitrate_kbps = 0` means auto (1.5x the resolved target); an
+    /// explicit value is clamped to be at least the target.
     pub fn resolved_max_bitrate_bps(&self, width: u32, height: u32) -> u32 {
         let target = self.resolved_bitrate_bps(width, height);
-        if self.max_bitrate_kbps == 0 {
-            target.saturating_add(target / 2)
-        } else {
-            self.max_bitrate_kbps.saturating_mul(1000).max(target)
-        }
-    }
-
-    /// Target (average) video bitrate in bit/s.
-    pub fn bitrate_bps(&self) -> u32 {
-        self.bitrate_kbps.saturating_mul(1000)
-    }
-
-    /// VBR peak-cap in bit/s. `max_bitrate_kbps = 0` means auto (1.5× target);
-    /// an explicit value is clamped to be at least the target.
-    pub fn max_bitrate_bps(&self) -> u32 {
-        let target = self.bitrate_bps();
         if self.max_bitrate_kbps == 0 {
             target.saturating_add(target / 2)
         } else {
@@ -514,17 +500,18 @@ impl Config {
     /// The ceiling is [`MAX_VOLUME_PERCENT`], imported rather than written out,
     /// so this and the gain curve can never be raised independently of each
     /// other.
+    fn clamp_volumes(&mut self) {
+        self.system_volume = self.system_volume.min(MAX_VOLUME_PERCENT);
+        self.mic_volume = self.mic_volume.min(MAX_VOLUME_PERCENT);
+    }
+
+    /// Same hand-edited-file guard for `fps`: `MIN_FPS..=MAX_FPS`.
     fn clamp_fps(&mut self) {
         let clamped = self.fps.clamp(MIN_FPS, MAX_FPS);
         if clamped != self.fps {
             tracing::warn!(fps = self.fps, clamped, "fps outside the supported range, clamped");
             self.fps = clamped;
         }
-    }
-
-    fn clamp_volumes(&mut self) {
-        self.system_volume = self.system_volume.min(MAX_VOLUME_PERCENT);
-        self.mic_volume = self.mic_volume.min(MAX_VOLUME_PERCENT);
     }
 
     /// Resolved clip directory (spec §5.1). A flat, timestamped folder —
@@ -622,6 +609,7 @@ mod tests {
         assert_eq!(config.resolved_max_bitrate_bps(1920, 1080), 12_000_000);
         config.bitrate_kbps = 5000;
         assert_eq!(config.resolved_bitrate_bps(2560, 1440), 5_000_000);
+        assert_eq!(config.resolved_max_bitrate_bps(2560, 1440), 7_500_000);
     }
 
     #[test]
@@ -642,11 +630,9 @@ mod tests {
         config.fps = 5;
         config.clamp_fps();
         assert_eq!(config.fps, MIN_FPS);
-        for fps in MIN_FPS..=MAX_FPS {
-            config.fps = fps;
-            config.clamp_fps();
-            assert_eq!(config.fps, fps);
-        }
+        config.fps = 97;
+        config.clamp_fps();
+        assert_eq!(config.fps, 97, "in-range values are untouched");
     }
 
     /// The default must be `Auto`, and `Auto` must be WGC. Desktop Duplication

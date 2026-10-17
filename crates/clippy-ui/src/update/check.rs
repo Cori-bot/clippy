@@ -22,29 +22,16 @@ macro_rules! repo {
     };
 }
 
-/// True while [`repo!`] still names the `OWNER/` placeholder. An account that
+/// Refuses while [`repo!`] still names the `OWNER/` placeholder. An account that
 /// the project does not control must never be a source of binaries that get
-/// downloaded and run, so every network-facing updater command refuses while
-/// this holds (the same shape as the empty Discord `CLIENT_ID` guard).
-pub const fn repo_is_placeholder() -> bool {
-    let repo = repo!().as_bytes();
-    let marker = b"OWNER/";
-    if repo.len() < marker.len() {
-        return false;
+/// downloaded and run, so every network-facing updater command starts here (the
+/// same shape as the empty Discord `CLIENT_ID` guard).
+pub fn ensure_repo_configured() -> Result<(), String> {
+    if repo!().starts_with("OWNER/") {
+        return Err("Updates are disabled: this build has no release repository configured.".into());
     }
-    let mut i = 0;
-    while i < marker.len() {
-        if repo[i] != marker[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
+    Ok(())
 }
-
-/// Shown instead of reaching the network while the repository is a placeholder.
-pub const PLACEHOLDER_REPO_MESSAGE: &str =
-    "Updates are disabled: this build has no release repository configured.";
 
 /// `/releases/latest` rather than `/releases`: GitHub already excludes drafts
 /// and prereleases from it, so a prerelease cannot reach users by accident.
@@ -311,6 +298,15 @@ fn find_asset(assets: &[Value], name: &str) -> Option<(String, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tripwire, not a feature test: while the repository is the `OWNER/`
+    /// placeholder no updater command may reach the network. Replacing the
+    /// placeholder with a real repository is meant to fail this test, so the
+    /// updater is switched on deliberately.
+    #[test]
+    fn the_placeholder_repository_blocks_the_updater() {
+        assert!(ensure_repo_configured().is_err());
+    }
 
     /// A minimal `releases/latest` body. Real ones carry ~40 more fields; the
     /// parser must ignore all of them, so the fixture carries only what is read.

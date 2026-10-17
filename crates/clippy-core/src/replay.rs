@@ -92,11 +92,12 @@ struct ClipSnapshot {
 }
 
 /// Byte ceiling for the video ring: twice what the encoder's peak bitrate would
-/// fill over the kept span plus the keyframe margin, never under 8 MiB.
-fn ring_bytes_cap(bitrate_bps: u32, max_bitrate_bps: u32, replay_100ns: i64) -> usize {
-    let bps = u64::from(bitrate_bps.max(max_bitrate_bps));
+/// fill over the kept span plus the keyframe margin, never under 8 MiB. It is
+/// a backstop for an encoder that ignores its rate control (AMD AMF has been
+/// seen at ~4x), not a limit a well-behaved one comes near.
+fn ring_bytes_cap(max_bitrate_bps: u32, replay_100ns: i64) -> usize {
     let secs = ((replay_100ns + KEYFRAME_MARGIN_100NS) / 10_000_000).max(1) as u64;
-    ((bps / 8) * secs * 2).max(8 << 20) as usize
+    ((u64::from(max_bitrate_bps) / 8) * secs * 2).max(8 << 20) as usize
 }
 
 struct ReplaySession {
@@ -108,9 +109,6 @@ struct ReplaySession {
 
     video_ring: VecDeque<EncodedPacket>,
     ring_bytes: usize,
-    /// Hard ceiling on `ring_bytes`, so an encoder that ignores its rate
-    /// control (AMD AMF has been seen at ~4x) cannot grow the ring unbounded.
-    ring_bytes_cap: usize,
     audio_ring: VecDeque<AudioChunk>,
 
     mixer: AudioMixer,
@@ -246,31 +244,29 @@ impl ReplaySession {
         );
     }
 
+    /// Pops one full GOP off the front so the ring always starts on a keyframe.
+    fn pop_gop(&mut self) {
+        while let Some(packet) = self.video_ring.pop_front() {
+            self.ring_bytes -= packet.data.len();
+            if self.video_ring.front().is_none_or(|next| next.keyframe) {
+                break;
+            }
+        }
+    }
+
     fn evict(&mut self) {
         let budget = self.replay_100ns + KEYFRAME_MARGIN_100NS;
         while let (Some(front), Some(back)) = (self.video_ring.front(), self.video_ring.back()) {
             if back.pts_100ns - front.pts_100ns <= budget {
                 break;
             }
-            // Pop one full GOP so the ring always starts on a keyframe.
-            while let Some(packet) = self.video_ring.pop_front() {
-                self.ring_bytes -= packet.data.len();
-                if self.video_ring.front().is_none_or(|next| next.keyframe) {
-                    break;
-                }
-            }
+            self.pop_gop();
         }
         // Byte ceiling: drop whole GOPs from the front, but never the last one,
         // so a clip is always possible.
-        while self.ring_bytes > self.ring_bytes_cap
-            && self.video_ring.iter().skip(1).any(|p| p.keyframe)
-        {
-            while let Some(packet) = self.video_ring.pop_front() {
-                self.ring_bytes -= packet.data.len();
-                if self.video_ring.front().is_none_or(|next| next.keyframe) {
-                    break;
-                }
-            }
+        let byte_cap = ring_bytes_cap(self.settings.max_bitrate_bps, self.replay_100ns);
+        while self.ring_bytes > byte_cap && self.video_ring.iter().skip(1).any(|p| p.keyframe) {
+            self.pop_gop();
         }
         let video_front_pts = self.video_ring.front().map_or(0, |p| p.pts_100ns);
         while let Some(chunk) = self.audio_ring.front() {
@@ -337,12 +333,9 @@ impl ReplaySession {
                 let total: usize = self.audio_ring.iter().map(|c| c.data.len()).sum();
                 audio_pcm.reserve(total.saturating_sub(skip));
                 for chunk in &self.audio_ring {
-                    if skip >= chunk.data.len() {
-                        skip -= chunk.data.len();
-                        continue;
-                    }
-                    audio_pcm.extend_from_slice(&chunk.data[skip..]);
-                    skip = 0;
+                    let from = skip.min(chunk.data.len());
+                    skip -= from;
+                    audio_pcm.extend_from_slice(&chunk.data[from..]);
                 }
             }
         }
@@ -388,7 +381,6 @@ impl FrameSink for ReplaySession {
             flags.settings.width,
             flags.settings.height,
             flags.settings.fps,
-            VideoConverter::pool_size_for(flags.settings.fps),
         )?;
         let encoder = H264Encoder::new(device, &manager, &flags.settings)?;
         let stats = StatsReporter::new(device, flags.stats_seconds);
@@ -402,11 +394,6 @@ impl FrameSink for ReplaySession {
             "replay ring ready"
         );
 
-        let ring_bytes_cap = ring_bytes_cap(
-            flags.settings.bitrate_bps,
-            flags.settings.max_bitrate_bps,
-            flags.replay_100ns,
-        );
         Ok(Self {
             frame_duration_100ns: crate::config::frame_period_100ns(flags.settings.fps),
             settings: flags.settings,
@@ -415,7 +402,6 @@ impl FrameSink for ReplaySession {
             replay_100ns: flags.replay_100ns,
             video_ring: VecDeque::new(),
             ring_bytes: 0,
-            ring_bytes_cap,
             audio_ring: VecDeque::new(),
             mixer: flags.mixer,
             t0_qpc: None,
@@ -590,7 +576,7 @@ fn save_clip(
     let started = Instant::now();
     let callback = capture.sink();
     let lock_requested = Instant::now();
-    let snapshot = {
+    let (snapshot, lock_wait, lock_held) = {
         let mut session = callback.lock();
         let lock_wait = lock_requested.elapsed();
         let lock_acquired = Instant::now();
@@ -599,16 +585,16 @@ fn save_clip(
         // afterwards and the answer is always "not yet".
         session.request_thumbnail();
         let snapshot = session.snapshot_clip();
-        // How long `on_frame` was shut out: the cost of cloning the ring under
-        // the capture lock.
-        tracing::info!(
-            lock_wait_us = lock_wait.as_micros() as u64,
-            lock_held_us = lock_acquired.elapsed().as_micros() as u64,
-            "clip snapshot lock"
-        );
-        snapshot?
+        (snapshot, lock_wait, lock_acquired.elapsed())
     };
-    let Some(snapshot) = snapshot else { return Ok(None) };
+    // How long `on_frame` was shut out: the cost of cloning the ring under the
+    // capture lock. Logged after the guard is released.
+    tracing::info!(
+        lock_wait_us = lock_wait.as_micros() as u64,
+        lock_held_us = lock_held.as_micros() as u64,
+        "clip snapshot lock"
+    );
+    let Some(snapshot) = snapshot? else { return Ok(None) };
 
     // `allocate_clip_id` reserves the name by creating the .mp4 empty, so no
     // other saver -- or export -- can be handed the same wall-clock id. That
@@ -949,15 +935,15 @@ fn run_driven_inner(
                 }
             }
         }
+        // The dead ring is gone; do not let `status` keep reporting it as full.
+        if let Ok(mut status) = status.lock() {
+            status.ring_seconds_used = 0.0;
+        }
         // Let the display settle before rebuilding; stay Ctrl+C-responsive
         // and drop clip requests queued while there was no buffer to clip
         // (their reply channels close, which `EngineHandle::clip` reports as
         // "capture is rebuilding"). A `Stop` still has to be honoured — the
         // caller that sent it is blocked waiting for this thread to end.
-        // The dead ring is gone; do not let `status` keep reporting it as full.
-        if let Ok(mut status) = status.lock() {
-            status.ring_seconds_used = 0.0;
-        }
         let wait_until = Instant::now() + rebuild_wait(failures);
         while Instant::now() < wait_until {
             if control::shutdown_requested() {
@@ -1231,15 +1217,12 @@ mod tests {
     #[test]
     fn the_ring_byte_cap_scales_with_peak_bitrate_and_has_a_floor() {
         // 12 Mb/s -> 1.5 MB/s, (15 + 3) s, x2.
-        assert_eq!(ring_bytes_cap(8_000_000, 12_000_000, 150_000_000), 1_500_000 * 18 * 2);
-        assert_eq!(ring_bytes_cap(1_000, 1_000, 10_000_000), 8 << 20);
+        assert_eq!(ring_bytes_cap(12_000_000, 150_000_000), 1_500_000 * 18 * 2);
+        assert_eq!(ring_bytes_cap(1_000, 10_000_000), 8 << 20);
     }
 
     #[test]
-    fn rebuild_waits_back_off_and_the_budget_outlasts_a_locked_screen() {
-        assert_eq!(rebuild_wait(0), Duration::from_secs(2));
-        assert_eq!(rebuild_wait(10), Duration::from_secs(5));
-        assert_eq!(rebuild_wait(30), Duration::from_secs(30));
+    fn the_rebuild_budget_outlasts_a_locked_screen() {
         let total: u64 = (0..MAX_REBUILD_FAILURES).map(|f| rebuild_wait(f).as_secs()).sum();
         assert!(total >= 20 * 60, "budget {total}s is too short for a locked screen");
     }

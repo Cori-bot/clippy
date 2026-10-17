@@ -248,7 +248,6 @@ impl MfRecorder {
                 settings.width,
                 settings.height,
                 settings.fps,
-                VideoConverter::pool_size_for(settings.fps),
             )?;
 
             Ok(Self {

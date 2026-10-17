@@ -29,6 +29,7 @@ def main():
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--minutes", type=float, default=15)
     ap.add_argument("--every", type=int, default=30)
+    ap.add_argument("--exe", default=EXE, help="clippy.exe to run (for A/B comparisons)")
     ap.add_argument("--out", default=os.path.join(ROOT, "docs", "perf", "soak.csv"))
     args = ap.parse_args()
     secs = int(args.minutes * 60)
@@ -40,7 +41,7 @@ def main():
     open(os.path.join(appdata, "clippy", "config.toml"), "w").write(
         f'fps = {args.fps}\nresolution = "{args.res}"\nclip_dir = {clips!r}\nclip_sound = false\ndiscord_presence = false\n')
     log = open(os.path.join(tmp, "run.log"), "w")
-    p = subprocess.Popen([EXE, "replay", "-v", "--auto-clip", str(secs - 10), "--exit-after", str(secs)],
+    p = subprocess.Popen([args.exe, "replay", "-v", "--auto-clip", str(secs - 10), "--exit-after", str(secs)],
                          env=dict(os.environ, APPDATA=appdata), stdout=log, stderr=subprocess.STDOUT)
     rows = []
     t0 = time.time()

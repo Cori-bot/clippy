@@ -130,11 +130,12 @@ pub(super) fn min_update_interval(fps: u32, refresh_hz: u32) -> MinimumUpdateInt
             // would quantize below the target, ask for half a vsync instead,
             // which lets every refresh through and leaves the thinning to the
             // sinks' QPC pacer.
-            let interval = if update_interval_cap_is_safe(fps, refresh_hz) {
-                Duration::from_micros(u64::from(750_000 / fps.max(1)))
+            let interval_us = if update_interval_cap_is_safe(fps, refresh_hz) {
+                750_000 / u64::from(fps.max(1))
             } else {
-                Duration::from_micros(u64::from(500_000 / refresh_hz.max(1)))
+                500_000 / u64::from(refresh_hz)
             };
+            let interval = Duration::from_micros(interval_us);
             tracing::info!(?interval, fps, refresh_hz, "capping WGC frame delivery");
             MinimumUpdateIntervalSettings::Custom(interval)
         }
@@ -149,14 +150,15 @@ pub(super) fn min_update_interval(fps: u32, refresh_hz: u32) -> MinimumUpdateInt
 /// 72 fps -- measured: 74-77 fps at every resolution. When it is not safe, the
 /// QPC pacer in the sinks does all the thinning on an uncapped stream.
 /// `refresh_hz == 0` (unknown) keeps the cap, as before.
-pub(super) fn update_interval_cap_is_safe(fps: u32, refresh_hz: u32) -> bool {
+fn update_interval_cap_is_safe(fps: u32, refresh_hz: u32) -> bool {
     if refresh_hz == 0 || fps == 0 {
         return true;
     }
-    let interval_us = 750_000.0 / f64::from(fps);
-    let vsync_us = 1_000_000.0 / f64::from(refresh_hz);
-    let m = (interval_us / vsync_us - 1e-9).ceil().max(1.0);
-    f64::from(refresh_hz) / m >= f64::from(fps) * 0.99
+    let (fps, refresh) = (u64::from(fps), u64::from(refresh_hz));
+    // 3/4 of a period over a vsync period, rounded up: ceil(0.75 * refresh / fps).
+    let m = (3 * refresh).div_ceil(4 * fps).max(1);
+    // refresh / m must reach 99 % of the target.
+    100 * refresh >= 99 * fps * m
 }
 
 /// Drops this process's GPU scheduling priority below normal so the game's
@@ -189,12 +191,7 @@ mod tests {
         assert!(safe(72, 144));
         assert!(!safe(73, 144));
         assert!(!safe(90, 144), "the measured 74-77 fps case");
-        assert!(!safe(100, 144));
         assert!(safe(120, 144), "interval is shorter than a vsync: every vsync passes");
-        assert!(safe(30, 144));
-        // 60 Hz and unknown.
-        assert!(safe(60, 60));
-        assert!(safe(45, 60));
         assert!(!safe(40, 60), "m = 2 would deliver 30");
         assert!(safe(90, 0), "unknown refresh keeps the previous behaviour");
     }

@@ -19,6 +19,13 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
+/// NV12 targets to keep for a frame rate. Pipeline depth is `pool - 1` frames,
+/// so the pool grows with fps to keep roughly the same wall-clock slack for the
+/// encoder (4 covers 60 fps; 120 fps gets 6).
+fn pool_size_for(fps: u32) -> usize {
+    ((fps / 30 + 2) as usize).clamp(4, 8)
+}
+
 /// One reusable BGRA→NV12 GPU blit path plus a small pool of NV12 targets.
 pub struct VideoConverter {
     video_context: ID3D11VideoContext,
@@ -41,7 +48,6 @@ impl VideoConverter {
         width: u32,
         height: u32,
         fps: u32,
-        pool_size: usize,
     ) -> Result<Self> {
         let video_device: ID3D11VideoDevice =
             device.cast().context("device has no ID3D11VideoDevice")?;
@@ -87,6 +93,7 @@ impl VideoConverter {
             CPUAccessFlags: 0,
             MiscFlags: 0,
         };
+        let pool_size = pool_size_for(fps);
         let mut pool = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
             let mut texture: Option<ID3D11Texture2D> = None;
@@ -99,20 +106,6 @@ impl VideoConverter {
         }
 
         Ok(Self { video_context, processor, enumerator, video_device, pool, next: 0 })
-    }
-
-    /// NV12 targets to keep for a frame rate. Pipeline depth is
-    /// `pool - 1` frames, so the pool grows with fps to keep roughly the same
-    /// wall-clock slack for the encoder (4 covers 60 fps; 120 fps gets 6).
-    pub const fn pool_size_for(fps: u32) -> usize {
-        let wanted = (fps / 30 + 2) as usize;
-        if wanted < 4 {
-            4
-        } else if wanted > 8 {
-            8
-        } else {
-            wanted
-        }
     }
 
     pub const fn pool_size(&self) -> usize {
@@ -174,5 +167,18 @@ impl VideoConverter {
             result?;
         }
         Ok(target)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pool_size_for;
+
+    #[test]
+    fn the_pool_grows_with_fps_within_bounds() {
+        assert_eq!(pool_size_for(30), 4);
+        assert_eq!(pool_size_for(60), 4);
+        assert_eq!(pool_size_for(120), 6);
+        assert_eq!(pool_size_for(0), 4, "never below the floor");
     }
 }

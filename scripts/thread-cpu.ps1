@@ -5,6 +5,8 @@ param(
     [string]$ProcessName = 'clippy',
     [int]$Seconds = 10
 )
+Set-StrictMode -Version Latest
+if (-not ('ThreadInfo' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -14,7 +16,7 @@ public static class ThreadInfo {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern int GetThreadDescription(IntPtr h, out IntPtr name);
     [DllImport("kernel32.dll")] public static extern bool GetThreadTimes(IntPtr h, out long c, out long e, out long k, out long u);
     public static string Name(uint id) {
-        IntPtr h = OpenThread(0x0800 | 0x0040, false, id); // QUERY_LIMITED_INFORMATION | QUERY_INFORMATION
+        IntPtr h = OpenThread(0x0800, false, id); // THREAD_QUERY_LIMITED_INFORMATION
         if (h == IntPtr.Zero) return "?";
         try { IntPtr p; if (GetThreadDescription(h, out p) >= 0 && p != IntPtr.Zero) return Marshal.PtrToStringUni(p); return ""; }
         finally { CloseHandle(h); }
@@ -27,6 +29,7 @@ public static class ThreadInfo {
     }
 }
 '@
+}
 $p = Get-Process -Name $ProcessName -ErrorAction Stop | Select-Object -First 1
 $before = @{}
 foreach ($t in $p.Threads) { $before[$t.Id] = [ThreadInfo]::Cpu([uint32]$t.Id) }

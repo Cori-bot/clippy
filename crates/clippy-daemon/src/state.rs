@@ -25,7 +25,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value};
 use clippy_core::{
     capture::audio::{AudioGains, MAX_VOLUME_PERCENT},
-    config::Config,
+    config::{Config, MAX_FPS, MIN_FPS},
     control,
     control::SingleInstance,
     engine::EngineHandle,
@@ -359,7 +359,7 @@ fn crosses_zero(key: &str, before: Option<&Value>, after: Option<&Value>) -> boo
 /// `every_numeric_config_key_is_range_checked` fails the build the day a
 /// numeric key is added without a bound here.
 const NUMERIC_BOUNDS: [(&str, u64, u64); 9] = [
-    ("fps", 30, 120),
+    ("fps", MIN_FPS as u64, MAX_FPS as u64),
     ("bitrate_kbps", 0, 200_000),
     ("max_bitrate_kbps", 0, 200_000),
     ("replay_seconds", 1, 600),

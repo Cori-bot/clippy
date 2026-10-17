@@ -133,7 +133,7 @@ def run_one(res, fps, args, extra_cfg):
         dmon = subprocess.Popen(["nvidia-smi", "dmon", "-s", "u", "-d", "1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         t0 = time.time()
         with open(log, "w") as lf:
-            p = subprocess.Popen([EXE, "replay", "-v", "--auto-clip", str(args.clip_at), "--exit-after", str(args.seconds)], env=env, stdout=lf, stderr=subprocess.STDOUT)
+            p = subprocess.Popen([args.exe, "replay", "-v", "--auto-clip", str(args.clip_at), "--exit-after", str(args.seconds)], env=env, stdout=lf, stderr=subprocess.STDOUT)
             last_cpu = 0.0
             while p.poll() is None:
                 c = cpu_seconds(p.pid)
@@ -180,7 +180,6 @@ def main():
     ap.add_argument("--exe", default=EXE, help="clippy.exe to run (for A/B comparisons)")
     ap.add_argument("--out", default=os.path.join(ROOT, "docs", "perf", "matrix.csv"))
     args = ap.parse_args()
-    globals()["EXE"] = args.exe
     new = not os.path.exists(args.out)
     with open(args.out, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")

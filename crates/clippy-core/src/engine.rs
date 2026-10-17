@@ -11,9 +11,10 @@
 
 use std::sync::{
     Arc, Mutex,
-    mpsc::{Sender, channel},
+    mpsc::{Receiver, RecvTimeoutError, Sender, channel},
 };
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
 use clippy_proto::{ClipMeta, ShotMeta};
@@ -64,17 +65,19 @@ pub struct EngineHandle {
 
 /// How long a caller waits for the engine thread to answer a clip or
 /// screenshot. A wedged MFT `Finalize` would otherwise freeze the caller (the
-/// daemon's socket handler) forever.
-const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// daemon's socket handler) forever. Shorter than the UI's own 60 s call
+/// timeout, so the caller gets this error rather than a bare timeout.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(45);
 
-fn recv_bounded<T>(answer: &std::sync::mpsc::Receiver<Result<T>>) -> Result<T> {
-    use std::sync::mpsc::RecvTimeoutError;
+fn recv_bounded<T>(answer: &Receiver<Result<T>>) -> Result<T> {
     match answer.recv_timeout(REPLY_TIMEOUT) {
         Ok(result) => result,
         Err(RecvTimeoutError::Disconnected) => {
             Err(anyhow!("capture is rebuilding — try again in a moment"))
         }
-        Err(RecvTimeoutError::Timeout) => Err(anyhow!("the engine did not answer within 60 s")),
+        Err(RecvTimeoutError::Timeout) => {
+            Err(anyhow!("the engine did not answer within {} s", REPLY_TIMEOUT.as_secs()))
+        }
     }
 }
 
