@@ -122,15 +122,41 @@ fn request_borderless_consent() {
 /// deliberately 3/4 of a frame period — a full period would beat against the
 /// compositor's own cadence and halve the delivery rate; exact pacing to the
 /// target fps is done by the sessions' QPC pacer instead.
-pub(super) fn min_update_interval(fps: u32) -> MinimumUpdateIntervalSettings {
+pub(super) fn min_update_interval(fps: u32, refresh_hz: u32) -> MinimumUpdateIntervalSettings {
     match GraphicsCaptureApi::is_minimum_update_interval_supported() {
         Ok(true) => {
-            let interval = Duration::from_micros(u64::from(750_000 / fps.max(1)));
-            tracing::info!(?interval, "capping WGC frame delivery near the target fps");
+            // `Default` is NOT "uncapped": measured on a 144 Hz display it
+            // delivers ~48 fps (one vsync in three). So when 3/4 of a period
+            // would quantize below the target, ask for half a vsync instead,
+            // which lets every refresh through and leaves the thinning to the
+            // sinks' QPC pacer.
+            let interval = if update_interval_cap_is_safe(fps, refresh_hz) {
+                Duration::from_micros(u64::from(750_000 / fps.max(1)))
+            } else {
+                Duration::from_micros(u64::from(500_000 / refresh_hz.max(1)))
+            };
+            tracing::info!(?interval, fps, refresh_hz, "capping WGC frame delivery");
             MinimumUpdateIntervalSettings::Custom(interval)
         }
         _ => MinimumUpdateIntervalSettings::Default,
     }
+}
+
+/// WGC delivers on display refreshes, so a minimum update interval is really
+/// "every m-th vsync" with `m = ceil(interval / vsync_period)`. The cap is only
+/// safe if that still reaches the target: at 144 Hz and 90 fps the interval
+/// (8.3 ms) is longer than a vsync (6.9 ms), so m = 2 and delivery drops to
+/// 72 fps -- measured: 74-77 fps at every resolution. When it is not safe, the
+/// QPC pacer in the sinks does all the thinning on an uncapped stream.
+/// `refresh_hz == 0` (unknown) keeps the cap, as before.
+pub(super) fn update_interval_cap_is_safe(fps: u32, refresh_hz: u32) -> bool {
+    if refresh_hz == 0 || fps == 0 {
+        return true;
+    }
+    let interval_us = 750_000.0 / f64::from(fps);
+    let vsync_us = 1_000_000.0 / f64::from(refresh_hz);
+    let m = (interval_us / vsync_us - 1e-9).ceil().max(1.0);
+    f64::from(refresh_hz) / m >= f64::from(fps) * 0.99
 }
 
 /// Drops this process's GPU scheduling priority below normal so the game's
@@ -149,5 +175,27 @@ pub fn lower_gpu_priority() {
         tracing::info!("GPU scheduling priority lowered (game work preempts capture)");
     } else {
         tracing::warn!(?status, "could not lower GPU scheduling priority");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_interval_cap_is_safe as safe;
+
+    #[test]
+    fn the_wgc_cap_is_dropped_when_it_would_quantize_below_the_target() {
+        // 144 Hz: delivery steps are 144, 72, 48...
+        assert!(safe(60, 144), "60 fps is reached by every second vsync (72)");
+        assert!(safe(72, 144));
+        assert!(!safe(73, 144));
+        assert!(!safe(90, 144), "the measured 74-77 fps case");
+        assert!(!safe(100, 144));
+        assert!(safe(120, 144), "interval is shorter than a vsync: every vsync passes");
+        assert!(safe(30, 144));
+        // 60 Hz and unknown.
+        assert!(safe(60, 60));
+        assert!(safe(45, 60));
+        assert!(!safe(40, 60), "m = 2 would deliver 30");
+        assert!(safe(90, 0), "unknown refresh keeps the previous behaviour");
     }
 }

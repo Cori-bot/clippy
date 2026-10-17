@@ -126,6 +126,7 @@ pub(super) fn start<S: FrameSink>(
     flags: S::Flags,
 ) -> Result<(Session<S>, SinkRef<S>)> {
     let monitor = monitor_for(monitor_index)?;
+    let refresh_hz = monitor.refresh_rate().unwrap_or(0);
     let (publish, published) = mpsc::channel();
     let settings = Settings::new(
         monitor,
@@ -133,7 +134,7 @@ pub(super) fn start<S: FrameSink>(
         super::border_settings(),
         SecondaryWindowSettings::Default,
         match pace_to_fps {
-            Some(fps) => super::min_update_interval(fps),
+            Some(fps) => super::min_update_interval(fps, refresh_hz),
             None => MinimumUpdateIntervalSettings::Default,
         },
         DirtyRegionSettings::Default,
