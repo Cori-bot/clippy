@@ -29,3 +29,13 @@ Limite : ce run n'a pas de charge. Pas de mesure à 60 fps réels, ni de frames 
 Lecture : à 8 Mbps / 1080p60 le clip ne fait perdre aucune frame ; P1 n'est PAS confirmé à cette charge.
 `on_frame` ne mesure pas l'attente du mutex : l'attente du verrou pendant le snapshot reste invisible
 sans l'instrumentation de l'étape 1. À retester à haut débit (ex. 50 000 kbps, replay 60 s). Log : baseline-run2-video.log
+
+## Run 3 — après correctifs P2/P3/P5, vidéo 4K60 en boucle plein écran
+
+Frames 2935, dropped 0, paced 254. on_frame p50 ≤ 500 µs, p99 ≤ 2,0 ms, max 5,5 ms.
+Working set 107 Mo, ring CPU 19,4 Mo (1014 paquets). Clip 15,2 s : 13,9 Mo, mux 158 ms.
+
+Comparaison avec le run 2 : p99 et max un peu plus hauts (1,0→2,0 ms ; 3,9→5,5 ms), mais la charge
+n'est pas identique (4K60 décodé vs vidéo précédente, +127 frames). Un seul run par cas : non concluant,
+aucune régression démontrée. Les correctifs ne touchent le chemin chaud que par un test `ring_bytes > cap`
+dans `evict`. À répéter 3x par configuration pour une vraie comparaison. Log : after-safe-fixes.log
