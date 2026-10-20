@@ -1,5 +1,5 @@
 /**
- * The clip player's volume rules, pulled out of `VideoPlayer.svelte` so they
+ * The clip player's volume rules, pulled out of `VideoPlayer.tsx` so they
  * can be tested without a DOM.
  *
  * A level is a whole percent, 0..100 -- what the slider shows. The element's
@@ -7,7 +7,8 @@
  * HTML media element stops at 1.0, and the recording-side 0..200 levels in
  * Settings are a different thing that has already been applied to the file.
  */
-import type { IconName } from './icons';
+/** The speaker glyph names the player can ask for. */
+export type VolumeIcon = 'volume-mute' | 'volume-low' | 'volume';
 import { clamp, stepBy } from './ui';
 
 /** What one arrow press or one wheel notch moves the level by. */
@@ -21,7 +22,7 @@ export const VOLUME_STEP = 5;
 export const VOLUME_STORAGE_KEY = 'clippy.player.volume';
 
 /** The speaker glyph for a level: crossed out when silent, one wave when quiet. */
-export function volumeIcon(level: number, muted: boolean): IconName {
+export function volumeIcon(level: number, muted: boolean): VolumeIcon {
   if (muted || level <= 0) return 'volume-mute';
   return level < 50 ? 'volume-low' : 'volume';
 }

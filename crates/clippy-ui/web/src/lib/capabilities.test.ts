@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 // here would mean adding @types/node, and this project may not take a new
 // dependency -- dev ones included.
 import capabilitiesJson from '../../../capabilities/default.json?raw';
-import titleBarSource from '../components/TitleBar.svelte?raw';
+import titleBarSource from '../components/WindowControls.tsx?raw';
 import { calledWindowMethods, grantedButUncalled, missingWindowPermissions } from './capabilities';
 
 describe('calledWindowMethods', () => {
@@ -100,8 +100,11 @@ describe('the shipped title bar against the shipped capabilities', () => {
     // failure instead of another line nobody reads -- an over-granted
     // capability file breaks no build and no hand-check, it only widens what
     // the shell can be asked to do.
+    // `allow-start-dragging` is exercised by the `data-tauri-drag-region`
+    // attribute on the title bar, not by a call this scan can see.
     expect(grantedButUncalled(source, granted)).toEqual([
       'core:window:allow-maximize',
+      'core:window:allow-start-dragging',
       'core:window:allow-unmaximize',
     ]);
   });

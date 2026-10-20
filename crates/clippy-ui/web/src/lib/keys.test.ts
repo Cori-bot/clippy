@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 // Read through Vite's `?raw`, not `node:fs`: the filesystem would mean adding
 // @types/node, and this project takes no new dependency, dev ones included.
-import clipCardSource from '../components/ClipCard.svelte?raw';
-import shotCardSource from '../components/ShotCard.svelte?raw';
-import gridSource from '../views/Grid.svelte?raw';
-import shotsSource from '../views/Shots.svelte?raw';
+import clipCardSource from '../components/ClipCard.tsx?raw';
+import shotCardSource from '../components/ShotCard.tsx?raw';
+import gridSource from '../views/Grid.tsx?raw';
+import shotsSource from '../views/Shots.tsx?raw';
 import {
   shouldHandleKey,
   sliderOwnsKey,
