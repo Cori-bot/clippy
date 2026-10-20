@@ -9,6 +9,14 @@ pub const DEFAULT_LIST_LIMIT: usize = 50;
 /// Hard ceiling on `library.list`'s page size.
 pub const MAX_LIST_LIMIT: usize = 500;
 
+/// One audio track an export keeps: its position among the clip's audio
+/// streams and its level (0..=200, 100 unchanged).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportTrack {
+    pub index: usize,
+    pub gain: u32,
+}
+
 /// Every command the daemon answers.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -54,7 +62,31 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
         mode: String,
+        /// The audio tracks to keep and how loud, when the export rebuilds the
+        /// sound; `None` is the fast stream copy of the clip as it is.
+        tracks: Option<Vec<ExportTrack>>,
     },
+    /// The clip's audio tracks as separate files the editor can play next to
+    /// each other: `{tracks: [{index, name, file}]}`.
+    LibraryTracks {
+        clip_id: String,
+    },
+    /// The games the daemon knows: detected ones, added ones, and their audio
+    /// profiles.
+    GamesList,
+    /// Edits one game, creating a manual entry when the program is unknown.
+    /// `profile` is passed through as JSON and validated by the daemon.
+    GamesSet {
+        exe: String,
+        enabled: Option<bool>,
+        name: Option<String>,
+        profile: Option<Value>,
+    },
+    GamesRemove {
+        exe: String,
+    },
+    /// The windows open on this PC, for the "add a game" picker.
+    WindowsList,
     /// Writes a screenshot from the live capture session.
     ///
     /// A command rather than hotkey-only wiring, so the tray, the desktop app and
@@ -149,7 +181,26 @@ impl Command {
                 start_ms: u64_arg(req, "start_ms")?,
                 end_ms: u64_arg(req, "end_ms")?,
                 mode: req.args.get("mode").and_then(Value::as_str).unwrap_or("fast").to_string(),
+                tracks: tracks_arg(req)?,
             },
+            "library.tracks" => Self::LibraryTracks { clip_id: str_arg(req, "clip_id")? },
+            "games.list" => Self::GamesList,
+            "games.set" => Self::GamesSet {
+                exe: str_arg(req, "exe")?,
+                enabled: match req.args.get("enabled") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_bool().ok_or("games.set requires \"enabled\" to be a boolean")?),
+                },
+                name: match req.args.get("name") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        v.as_str().ok_or("games.set requires \"name\" to be a string")?.to_owned(),
+                    ),
+                },
+                profile: req.args.get("profile").filter(|v| !v.is_null()).cloned(),
+            },
+            "games.remove" => Self::GamesRemove { exe: str_arg(req, "exe")? },
+            "windows.list" => Self::WindowsList,
             "screenshot" => Self::Screenshot,
             "shots.list" => Self::ShotsList {
                 offset: usize_arg(req, "offset", 0)?,
@@ -169,6 +220,29 @@ impl Command {
             other => return Err(format!("unknown command {other:?}")),
         })
     }
+}
+
+/// `tracks: [{index, gain}]`, absent or null meaning "keep the clip's audio
+/// as it is". A listed entry with a bad shape is an error: dropping it would
+/// silently export a clip without a track the user kept.
+fn tracks_arg(req: &Request) -> Result<Option<Vec<ExportTrack>>, String> {
+    let Some(value) = req.args.get("tracks").filter(|v| !v.is_null()) else { return Ok(None) };
+    let bad = || format!("{} requires \"tracks\" to be a list of {{index, gain}}", req.cmd);
+    let list = value.as_array().ok_or_else(bad)?;
+    list.iter()
+        .map(|entry| {
+            let index = entry.get("index").and_then(Value::as_u64).ok_or_else(bad)?;
+            let gain = match entry.get("gain") {
+                None => 100,
+                Some(g) => g.as_u64().ok_or_else(bad)?,
+            };
+            Ok(ExportTrack {
+                index: usize::try_from(index).map_err(|_| bad())?,
+                gain: u32::try_from(gain.min(200)).unwrap_or(200),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map(Some)
 }
 
 fn str_arg(req: &Request, key: &str) -> Result<String, String> {
@@ -344,6 +418,7 @@ mod tests {
                 start_ms: 1000,
                 end_ms: 4000,
                 mode: "fast".into(),
+                tracks: None,
             }),
             "an omitted mode is fast -- the only mode that exists"
         );
@@ -398,5 +473,43 @@ mod tests {
             assert!(err.contains(cmd), "{err:?} should name the command");
             assert!(err.contains("shot_id"), "{err:?} should name the argument");
         }
+    }
+
+    #[test]
+    fn export_tracks_and_game_commands_parse() {
+        let parsed = Command::parse(&req(
+            "library.export",
+            json!({"clip_id":"20260822_101500","start_ms":0,"end_ms":1000,
+                   "tracks":[{"index":1,"gain":50},{"index":2},{"index":3,"gain":900}]}),
+        ))
+        .unwrap();
+        let Command::LibraryExport { tracks: Some(tracks), .. } = parsed else { panic!("tracks") };
+        assert_eq!(
+            tracks,
+            [
+                ExportTrack { index: 1, gain: 50 },
+                ExportTrack { index: 2, gain: 100 },
+                ExportTrack { index: 3, gain: 200 },
+            ]
+        );
+        assert!(
+            Command::parse(&req(
+                "library.export",
+                json!({"clip_id":"20260822_101500","start_ms":0,"end_ms":1,"tracks":[{"gain":5}]})
+            ))
+            .is_err()
+        );
+        assert_eq!(Command::parse(&req("games.list", json!({}))).unwrap(), Command::GamesList);
+        assert_eq!(Command::parse(&req("windows.list", json!({}))).unwrap(), Command::WindowsList);
+        assert_eq!(
+            Command::parse(&req("games.set", json!({"exe":"a.exe","enabled":false}))).unwrap(),
+            Command::GamesSet { exe: "a.exe".into(), enabled: Some(false), name: None, profile: None }
+        );
+        assert!(Command::parse(&req("games.set", json!({"exe":"a.exe","enabled":"no"}))).is_err());
+        assert!(Command::parse(&req("games.remove", json!({}))).is_err());
+        assert_eq!(
+            Command::parse(&req("library.tracks", json!({"clip_id":"x"}))).unwrap(),
+            Command::LibraryTracks { clip_id: "x".into() }
+        );
     }
 }

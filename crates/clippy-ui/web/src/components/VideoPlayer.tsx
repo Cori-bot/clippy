@@ -11,6 +11,8 @@ import {
   type Ref,
 } from 'react';
 import { formatClock } from '../lib/timeline';
+import { trackVolume, type TrackState } from '../lib/tracks';
+import { useTrackSync } from '../lib/useTrackSync';
 import { clamp, pointerRatio, ratioToValue, stepBy, valueToRatio } from '../lib/ui';
 import {
   VOLUME_STEP,
@@ -121,9 +123,18 @@ export function VideoPlayer({
   src,
   onTime,
   timeline,
+  trackUrls = [],
+  trackStates = [],
   ref,
 }: {
   src: string;
+  /**
+   * Separate audio files, one per editable track. When given, the `<video>`
+   * is muted and these play in sync instead; absent or empty keeps the
+   * video's own audio (old clips, single-stream clips, tracks still loading).
+   */
+  trackUrls?: string[];
+  trackStates?: TrackState[];
   onTime: (ms: number) => void;
   /**
    * The unified band, rendered inside the transport row. Handed the duration
@@ -163,12 +174,19 @@ export function VideoPlayer({
   // `volume` and `muted` belong to the element and survive `src` changing, but
   // they are set from state all the same, so the speaker icon and what comes
   // out of the speakers cannot disagree.
+  const { active: tracksActive } = useTrackSync(
+    video,
+    trackUrls,
+    trackUrls.map((_, i) => trackVolume(trackStates[i] ?? { muted: false, gain: 100 }, level, muted)),
+  );
+
   useEffect(() => {
     const v = video.current;
     if (!v) return;
     v.volume = level / 100;
-    v.muted = muted;
-  }, [level, muted, src]);
+    // The picture only, once the separate tracks carry the sound.
+    v.muted = muted || tracksActive;
+  }, [level, muted, src, tracksActive]);
 
   useEffect(() => {
     try {

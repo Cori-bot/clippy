@@ -396,7 +396,7 @@ export function Grid() {
                 {previewing === clip.id && (
                   <video
                     className="pointer-events-none absolute top-0 left-0 aspect-[16/10] w-full rounded-xl bg-black object-cover"
-                    src={clipUrl(a.clipDir, clip.id)}
+                    src={clipUrl(a.clipDir, clip)}
                     autoPlay
                     loop
                     muted

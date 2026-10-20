@@ -1,10 +1,11 @@
-import { Camera, Clips, Settings } from '../components/icons';
+import { Camera, Clips, Gamepad, Settings } from '../components/icons';
 import { app, useApp } from '../lib/app';
 import type { View } from '../lib/state';
 
 const ITEMS: { view: View; label: string; Icon: typeof Clips }[] = [
   { view: 'grid', label: 'Clips', Icon: Clips },
   { view: 'shots', label: 'Captures d’écran', Icon: Camera },
+  { view: 'games', label: 'Jeux', Icon: Gamepad },
   { view: 'settings', label: 'Paramètres', Icon: Settings },
 ];
 

@@ -153,7 +153,7 @@ export function ClipCard({
         onDoubleClick={onopen}>
         <img
           className="block size-full object-cover"
-          src={thumbUrl(clipDir, clip.id)}
+          src={thumbUrl(clipDir, clip)}
           alt=""
           loading="lazy"
           decoding="async"

@@ -11,6 +11,7 @@ import { FirstRun } from './views/FirstRun';
 import { Grid } from './views/Grid';
 import { Rail } from './views/Rail';
 import { Settings } from './views/Settings';
+import { Games } from './views/Games';
 import { Shots } from './views/Shots';
 
 // The same page the Rust side checks every opened URL against.
@@ -100,6 +101,7 @@ export function App() {
               {a.view === 'grid' && <Grid />}
               {a.view === 'clip' && <ClipPage />}
               {a.view === 'shots' && <Shots />}
+              {a.view === 'games' && <Games />}
               {a.view === 'settings' && <Settings />}
             </main>
           </div>

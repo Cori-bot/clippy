@@ -2,7 +2,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import type { ClipMeta } from './types';
 
 /**
- * The library is flat (spec §5.1), so every sidecar is the id plus a suffix.
+ * Every sidecar is the id plus a suffix, in the clip's folder.
  *
  * The trailing separator is stripped first because `clip_dir` is a config key
  * a person types. A drive root (`D:\`) has one by necessity and a hand-typed
@@ -13,8 +13,18 @@ import type { ClipMeta } from './types';
  * `D:\<id>.jpg`, so the drive root stays correct rather than becoming a special
  * case.
  */
-function clipFile(clipDir: string, id: string, ext: string): string {
-  return `${clipDir.replace(/[\\/]+$/, '')}\\${id}.${ext}`;
+function clipFile(clipDir: string, clip: ClipRef, ext: string): string {
+  return siblingFile(clipDir, clip, `${clip.id}.${ext}`);
+}
+
+/** What locates a clip's files: its id and the sub-folder it lives in. */
+export type ClipRef = Pick<ClipMeta, 'id' | 'folder'>;
+
+/** `name` inside the clip's folder (the clips folder itself when it has none). */
+function siblingFile(clipDir: string, clip: ClipRef, name: string): string {
+  const base = clipDir.replace(/[\\/]+$/, '');
+  const folder = (clip.folder ?? '').replace(/^[\\/]+|[\\/]+$/g, '');
+  return folder ? `${base}\\${folder}\\${name}` : `${base}\\${name}`;
 }
 
 /**
@@ -25,12 +35,17 @@ function clipFile(clipDir: string, id: string, ext: string): string {
  * all. Sending the file over IPC would mean buffering the whole clip in the
  * webview before the first frame.
  */
-export function clipUrl(clipDir: string, id: string): string {
-  return convertFileSrc(clipFile(clipDir, id, 'mp4'));
+export function clipUrl(clipDir: string, clip: ClipRef): string {
+  return convertFileSrc(clipFile(clipDir, clip, 'mp4'));
 }
 
-export function thumbUrl(clipDir: string, id: string): string {
-  return convertFileSrc(clipFile(clipDir, id, 'jpg'));
+export function thumbUrl(clipDir: string, clip: ClipRef): string {
+  return convertFileSrc(clipFile(clipDir, clip, 'jpg'));
+}
+
+/** A per-track audio file the daemon remuxed next to the clip. */
+export function trackUrl(clipDir: string, clip: ClipRef, file: string): string {
+  return convertFileSrc(siblingFile(clipDir, clip, file));
 }
 
 export function formatDuration(ms: number): string {

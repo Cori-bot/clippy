@@ -24,6 +24,7 @@ pub mod com;
 pub mod dispatch;
 pub mod folder;
 pub mod game;
+pub mod games;
 pub mod hook;
 pub mod pipe;
 pub mod presence;

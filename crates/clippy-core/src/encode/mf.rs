@@ -396,7 +396,6 @@ impl ClipMuxer {
     /// there and the individual sources after it.
     pub fn new(
         output: &Path,
-        _settings: &RecorderSettings,
         video_input_type: &IMFMediaType,
         audio_tracks: usize,
     ) -> Result<Self> {
@@ -456,6 +455,13 @@ impl ClipMuxer {
         }
     }
 
+    /// The sink writer and the video stream's index in it, for a caller that
+    /// feeds the video as whole samples (the export's stream copy) rather than
+    /// through [`Self::write_video_packet`].
+    pub(crate) fn video_sink(&self) -> (&IMFSinkWriter, u32) {
+        (&self.writer, self.video_stream)
+    }
+
     /// Writes PCM to audio track `track` (0-based). A track the muxer was not
     /// built with is ignored, so callers need not special-case silent clips.
     pub fn write_audio(&self, track: usize, timestamp_100ns: i64, pcm: &[u8]) -> Result<()> {
@@ -466,6 +472,12 @@ impl ClipMuxer {
     pub fn finish(self) -> Result<()> {
         unsafe { self.writer.Finalize().context("clip Finalize") }
     }
+}
+
+/// The engine's PCM format as a media type, for asking a source reader to
+/// decode an audio stream to it.
+pub(crate) fn pcm_audio_type() -> Result<IMFMediaType> {
+    audio_type(&MFAudioFormat_PCM)
 }
 
 fn audio_type(subtype: &GUID) -> Result<IMFMediaType> {
@@ -562,9 +574,19 @@ mod tests {
             writer.Finalize().expect("finalize");
         }
         let bytes = std::fs::read(&path).expect("read back");
-        let _ = std::fs::remove_file(&path);
         let count = |needle: &[u8]| bytes.windows(needle.len()).filter(|w| *w == needle).count();
         assert_eq!(count(b"trak"), tracks, "one trak box per AAC stream");
         assert_eq!(count(b"soun"), tracks, "every trak is an audio track");
+
+        // The export side must see them as separate streams too, and be able to
+        // copy one out on its own.
+        assert_eq!(crate::export::audio_track_count(&path).expect("count"), tracks);
+        let one = path.with_extension("t1.m4a");
+        crate::export::extract_audio_track(&path, 1, &one).expect("extract track 1");
+        let extracted = std::fs::read(&one).expect("read extracted");
+        let _ = std::fs::remove_file(&one);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(extracted.windows(4).filter(|w| *w == b"trak").count(), 1, "one track out");
+        assert!(crate::export::extract_audio_track(&path, 9, &one).is_err(), "no such track");
     }
 }

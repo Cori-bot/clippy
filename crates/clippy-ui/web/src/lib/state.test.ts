@@ -118,6 +118,7 @@ beforeEach(() => {
   app.shots = [];
   app.shotTotal = 0;
   app.shotSelected = 0;
+  app.games = [];
   app.view = 'clip';
   app.toasts = [];
   app.rearmNeeded = [];
@@ -1345,5 +1346,63 @@ describe('UpdateStore.swapping', () => {
     state.apply({ state: 'verifying' });
     expect(state.swapping).toBe(false);
     expect(state.busy).toBe(true);
+  });
+});
+
+const gameEntry = (exe: string, over: Record<string, unknown> = {}) => ({
+  exe, name: exe.replace('.exe', ''), enabled: true, manual: false, last_played: null,
+  profile: { apps: [], mic: false }, ...over,
+});
+
+describe('games slice', () => {
+  it('loadGames stores the list, most recent first', async () => {
+    callMock.mockResolvedValue({ games: [gameEntry('a.exe'), gameEntry('b.exe', { last_played: '2026-10-01T10:00:00Z' })] });
+    await app.loadGames();
+    expect(callMock).toHaveBeenCalledWith('games.list');
+    expect(app.games.map((g) => g.exe)).toEqual(['b.exe', 'a.exe']);
+  });
+
+  it('setGame sends only the given fields and merges the reply', async () => {
+    app.games = [gameEntry('a.exe')] as never;
+    callMock.mockResolvedValue({ game: gameEntry('a.exe', { enabled: false }) });
+    const got = await app.setGame('a.exe', { enabled: false });
+    expect(callMock).toHaveBeenCalledWith('games.set', { exe: 'a.exe', enabled: false });
+    expect(got?.enabled).toBe(false);
+    expect(app.games).toHaveLength(1);
+    expect(app.games[0].enabled).toBe(false);
+  });
+
+  it('setGame adds an unknown exe and toasts a refusal', async () => {
+    callMock.mockResolvedValueOnce({ game: gameEntry('new.exe', { manual: true }) });
+    await app.setGame('new.exe', { name: 'New' });
+    expect(app.games.map((g) => g.exe)).toEqual(['new.exe']);
+    callMock.mockRejectedValueOnce('refusé');
+    expect(await app.setGame('x.exe', {})).toBeNull();
+    expect(app.toasts.at(-1)?.kind).toBe('error');
+  });
+
+  it('removeGame drops the entry only after the daemon agreed', async () => {
+    app.games = [gameEntry('a.exe'), gameEntry('b.exe')] as never;
+    callMock.mockRejectedValueOnce('non');
+    await app.removeGame('a.exe');
+    expect(app.games).toHaveLength(2);
+    callMock.mockResolvedValueOnce({});
+    await app.removeGame('a.exe');
+    expect(callMock).toHaveBeenLastCalledWith('games.remove', { exe: 'a.exe' });
+    expect(app.games.map((g) => g.exe)).toEqual(['b.exe']);
+  });
+
+  it('listWindows returns the windows, or nothing on failure', async () => {
+    callMock.mockResolvedValueOnce({ windows: [{ exe: 'a.exe', name: 'A', title: 't' }] });
+    expect(await app.listWindows()).toHaveLength(1);
+    callMock.mockRejectedValueOnce('boom');
+    expect(await app.listWindows()).toEqual([]);
+  });
+
+  it('games_changed replaces the list', async () => {
+    callMock.mockResolvedValue(statusPayload());
+    const handle = registerDaemonEventHandler();
+    handle({ event: 'games_changed', data: { games: [gameEntry('z.exe')] } });
+    expect(app.games.map((g) => g.exe)).toEqual(['z.exe']);
   });
 });

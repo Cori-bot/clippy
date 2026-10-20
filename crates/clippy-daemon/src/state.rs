@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 use clippy_core::{
-    capture::audio::{AudioGains, MAX_VOLUME_PERCENT},
-    config::{CaptureMode, Config, MAX_FPS, MIN_FPS},
+    capture::audio::{AudioGains, MAX_VOLUME_PERCENT, TrackKind, TrackSpec},
+    config::{CaptureMode, Config, GameContext, MAX_FPS, MIN_FPS, SessionContext},
     control,
     control::SingleInstance,
     engine::EngineHandle,
@@ -35,7 +35,8 @@ use clippy_proto::{ClipMeta, Event, ShotMeta};
 use serde_json::{Map, Value};
 
 use crate::clients::Clients;
-use crate::game::Sighting;
+use crate::game::{Lists, Sighting};
+use crate::games::{Edit, GameEntry, GameProfile, Registry};
 
 /// The engine plus the single-instance slot it holds. Armed as a unit,
 /// disarmed as a unit — dropping this releases the encoder *and* the slot, so
@@ -67,7 +68,13 @@ struct GameWatch {
     sighting: Option<Sighting>,
     last_seen: Option<Instant>,
     last_attempt: Option<Instant>,
+    /// When the registry was last told the game in front is running, so
+    /// `last_played` is refreshed about once a minute and not every second.
+    last_noted: Option<(String, Instant)>,
 }
+
+/// How often a running game's `last_played` is rewritten.
+const GAME_NOTE_EVERY: Duration = Duration::from_secs(60);
 
 /// What `status` answers with, and the payload of the `armed` event.
 ///
@@ -117,6 +124,8 @@ pub struct DaemonStatus {
     pub waiting_for_game: bool,
     /// The program of the game in front or still running, when there is one.
     pub game: Option<String>,
+    /// The name to show for that game.
+    pub game_name: Option<String>,
 }
 
 impl DaemonStatus {
@@ -160,13 +169,15 @@ impl DaemonStatus {
             );
         }
         fields.insert("waiting_for_game".to_string(), Value::Bool(self.waiting_for_game));
-        fields.insert(
-            "game".to_string(),
-            match &self.game {
-                Some(name) => Value::from(name.as_str()),
-                None => Value::Null,
-            },
-        );
+        for (key, value) in [("game", &self.game), ("game_name", &self.game_name)] {
+            fields.insert(
+                key.to_string(),
+                match value {
+                    Some(name) => Value::from(name.as_str()),
+                    None => Value::Null,
+                },
+            );
+        }
         Value::Object(fields)
     }
 }
@@ -273,6 +284,18 @@ mod clip_paths {
         pub(super) fn thumb(&self) -> &Path {
             &self.thumb
         }
+
+        /// Where audio track `ordinal` is extracted for the editor, next to
+        /// the clip: `<id>.t<n>.m4a`.
+        pub(super) fn track(&self, ordinal: usize) -> PathBuf {
+            self.mp4.with_extension(format!("t{ordinal}.m4a"))
+        }
+
+        /// The same file while it is being written, so a reader never finds a
+        /// half track under the real name.
+        pub(super) fn track_partial(&self, ordinal: usize) -> PathBuf {
+            self.mp4.with_extension(format!("t{ordinal}.part.m4a"))
+        }
     }
 }
 use clip_paths::ClipPaths;
@@ -303,7 +326,7 @@ pub struct ArmOutcome {
 /// rather than requiring a re-arm. `screenshot_sound` is read fresh by
 /// `record_saved_shot` on every screenshot, the same way `clip_sound` already
 /// is for clips.
-pub(crate) const REQUIRES_REARM: [&str; 10] = [
+pub(crate) const REQUIRES_REARM: [&str; 11] = [
     "fps",
     // The encoded size is fixed when the session opens.
     "resolution",
@@ -318,6 +341,8 @@ pub(crate) const REQUIRES_REARM: [&str; 10] = [
     "capture_method",
     // Which applications are captured is decided when the audio streams open.
     "audio_apps",
+    // The folder a session files its clips in is fixed when it starts.
+    "group_by_game",
 ];
 
 /// The two capture levels, which follow a different re-arm rule from every
@@ -515,6 +540,12 @@ pub struct Daemon {
     pub(crate) gains: Arc<AudioGains>,
     /// See [`GameWatch`].
     game: Mutex<GameWatch>,
+    /// The games list. A leaf lock like `game`: nothing is taken while it is
+    /// held, and events are broadcast after it is released.
+    games: Mutex<Registry>,
+    /// Serialises the per-track audio extraction, so two editors opening the
+    /// same clip do not write the same files at once.
+    track_files: Mutex<()>,
 }
 
 // Lock ordering, and the one rule that matters: `armed` is never held while
@@ -544,7 +575,7 @@ pub struct Daemon {
 /// `Duration` so the answer can be grepped straight out of the daemon log.
 fn scan_and_log(dir: &Path) -> Result<Vec<ClipMeta>> {
     let started = std::time::Instant::now();
-    let clips = library::scan(dir)?;
+    let clips = library::scan_all(dir)?;
     tracing::info!(
         clips = clips.len(),
         elapsed_ms = started.elapsed().as_millis() as u64,
@@ -552,6 +583,40 @@ fn scan_and_log(dir: &Path) -> Result<Vec<ClipMeta>> {
         "scanned the clip library"
     );
     Ok(clips)
+}
+
+/// What a game's session records and where its clips go.
+///
+/// The game's own sound, alone: playing with Discord open does not put the
+/// call in the clip unless the game's profile says so. The profile adds each
+/// program as a track of its own and, when asked, the microphone.
+fn game_session(seen: &Sighting, entry: Option<&GameEntry>) -> SessionContext {
+    let name = entry.map(|e| e.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| seen.name.clone());
+    let profile = entry.map(|e| e.profile.clone()).unwrap_or_else(GameProfile::default);
+    let mut tracks = vec![TrackSpec { name: name.clone(), kind: TrackKind::Apps(vec![seen.exe.clone()]) }];
+    for app in &profile.apps {
+        tracks.push(TrackSpec { name: app.name.clone(), kind: TrackKind::Apps(vec![app.exe.clone()]) });
+    }
+    if profile.mic {
+        tracks.push(TrackSpec { name: "Micro".to_string(), kind: TrackKind::Mic });
+    }
+    let folder = library::sanitize_folder(&name)
+        .or_else(|| library::sanitize_folder(&crate::games::name_from_exe(&seen.exe)))
+        .unwrap_or_else(|| library::DESKTOP_FOLDER.to_string());
+    SessionContext { tracks: Some(tracks), game: Some(GameContext { name, folder }) }
+}
+
+/// The track list of a remixed export: the sum first when several tracks were
+/// kept, as a recording lays them out, then each by its name in the source.
+fn exported_track_names(source_names: &[String], kept: &[export::TrackChoice]) -> Vec<String> {
+    let mut names: Vec<String> = kept
+        .iter()
+        .map(|k| source_names.get(k.ordinal).cloned().unwrap_or_else(|| format!("Piste {}", k.ordinal + 1)))
+        .collect();
+    if names.len() > 1 {
+        names.insert(0, "Mix".to_string());
+    }
+    names
 }
 
 /// A config as a JSON object.
@@ -611,6 +676,13 @@ impl Daemon {
             }
         };
         let gains = AudioGains::new(config.system_volume, config.mic_volume);
+        let mut registry = Registry::load(config_path.as_ref().map(|p| p.with_file_name("games.json")));
+        // The old hand-kept list becomes entries of the games list, once.
+        for exe in &config.game_apps {
+            if crate::games::normalize_exe(exe).is_some_and(|exe| registry.find(&exe).is_none()) {
+                let _ = registry.set(exe, Edit::default(), "");
+            }
+        }
         Self {
             config: Mutex::new(config),
             config_path,
@@ -619,6 +691,8 @@ impl Daemon {
             library: Mutex::new(library),
             gains,
             game: Mutex::new(GameWatch::default()),
+            games: Mutex::new(registry),
+            track_files: Mutex::new(()),
         }
     }
 
@@ -628,7 +702,7 @@ impl Daemon {
     /// at once. Idempotent either way.
     pub fn arm(&self) -> Result<ArmOutcome> {
         if self.lock_config().capture_mode() != CaptureMode::Game {
-            return self.arm_now(None);
+            return self.arm_now(None, SessionContext::default());
         }
         {
             let armed = self.lock_armed();
@@ -658,7 +732,8 @@ impl Daemon {
         let screen = clippy_core::probe::monitors_true_pixels().ok().and_then(|found| {
             found.iter().find(|m| m.left == seen.left && m.top == seen.top).map(|m| m.index)
         });
-        let outcome = self.arm_now(screen)?;
+        let entry = self.lock_games().find(&seen.exe).cloned();
+        let outcome = self.arm_now(screen, game_session(seen, entry.as_ref()))?;
         self.lock_game().started_by_game = true;
         tracing::info!(game = %seen.exe, "a game is in front: the replay is recording");
         Ok(outcome)
@@ -706,6 +781,75 @@ impl Daemon {
         }
     }
 
+    pub fn capture_mode(&self) -> CaptureMode {
+        self.lock_config().capture_mode()
+    }
+
+    /// What the detector must know about the user's own choices.
+    pub fn game_lists(&self) -> Lists {
+        let games = self.lock_games();
+        Lists { games: games.manual_exes(), never: games.disabled_exes() }
+    }
+
+    /// The watcher saw a game running: adds it to the list on first sight and
+    /// keeps its "last played" fresh. Tells clients when the list changed.
+    pub fn game_seen(&self, seen: &Sighting) {
+        let now = Instant::now();
+        {
+            let mut watch = self.lock_game();
+            let recent = watch
+                .last_noted
+                .as_ref()
+                .is_some_and(|(exe, at)| *exe == seen.exe && now.duration_since(*at) < GAME_NOTE_EVERY);
+            if recent {
+                return;
+            }
+            watch.last_noted = Some((seen.exe.clone(), now));
+        }
+        let changed = self.lock_games().observe(&seen.exe, &seen.name, &library::now_rfc3339_local());
+        if changed {
+            self.broadcast_games();
+        }
+    }
+
+    /// `games.list`.
+    pub fn games_list(&self) -> Vec<GameEntry> {
+        self.lock_games().list()
+    }
+
+    /// `games.set`: edits a game, or adds the program by hand.
+    pub fn games_set(&self, exe: &str, edit: Edit) -> Result<GameEntry> {
+        let fallback = crate::game::list_windows()
+            .into_iter()
+            .find(|w| w.exe.eq_ignore_ascii_case(exe.trim()))
+            .map(|w| w.name)
+            .unwrap_or_default();
+        let entry = self.lock_games().set(exe, edit, &fallback).map_err(anyhow::Error::msg)?;
+        self.broadcast_games();
+        Ok(entry)
+    }
+
+    /// `games.remove`.
+    pub fn games_remove(&self, exe: &str) -> Result<()> {
+        if !self.lock_games().remove(exe) {
+            bail!("« {exe} » n’est pas dans la liste des jeux");
+        }
+        self.broadcast_games();
+        Ok(())
+    }
+
+    fn broadcast_games(&self) {
+        let games = self.games_list();
+        let list = serde_json::to_value(&games).unwrap_or_else(|_| Value::Array(Vec::new()));
+        let mut payload = Map::new();
+        payload.insert("games".to_string(), list);
+        self.clients.broadcast(&Event::new("games_changed", Value::Object(payload)));
+    }
+
+    fn lock_games(&self) -> MutexGuard<'_, Registry> {
+        self.games.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Reconciles a running or waiting replay with a `capture_mode` that just
     /// changed, so the setting takes effect now and not at the next arm.
     fn capture_mode_changed(&self, mode: CaptureMode) {
@@ -717,7 +861,7 @@ impl Daemon {
                     game.started_by_game = false;
                     game.wanted && !armed
                 };
-                if waiting && let Err(e) = self.arm_now(None) {
+                if waiting && let Err(e) = self.arm_now(None, SessionContext::default()) {
                     tracing::warn!(error = %format!("{e:#}"), "could not start the replay for the desktop");
                 }
             }
@@ -761,7 +905,7 @@ impl Daemon {
     /// current state rather than erroring, because a UI reconnecting after its
     /// own restart has no way to know whether the daemon it just found is
     /// already armed.
-    fn arm_now(&self, monitor: Option<u32>) -> Result<ArmOutcome> {
+    fn arm_now(&self, monitor: Option<u32>, session: SessionContext) -> Result<ArmOutcome> {
         let mut armed = self.lock_armed();
         if armed.is_some() {
             return Ok(ArmOutcome { status: self.status_of(armed.as_ref()) });
@@ -796,6 +940,10 @@ impl Daemon {
         if let Some(monitor) = monitor {
             config.monitor_index = monitor;
         }
+        // What this session records and where it files its clips; see
+        // `SessionContext`. Built by the caller (a game's profile) and never
+        // saved.
+        config.session = session;
         // `spawn` returns only once the first capture session is live, so a
         // hardware failure ("no hardware encoder on the capture adapter")
         // arrives here verbatim instead of being lost on the engine thread.
@@ -1161,9 +1309,13 @@ impl Daemon {
         let clip_hotkey_bound = crate::window::hotkey_bound(crate::window::HotkeyKind::Clip);
         let screenshot_hotkey_bound =
             crate::window::hotkey_bound(crate::window::HotkeyKind::Screenshot);
-        let (wanted, game) = {
+        let (wanted, game, game_name) = {
             let watch = self.lock_game();
-            (watch.wanted, watch.sighting.as_ref().map(|s| s.exe.clone()))
+            (
+                watch.wanted,
+                watch.sighting.as_ref().map(|s| s.exe.clone()),
+                watch.sighting.as_ref().map(|s| s.name.clone()),
+            )
         };
         match armed {
             // Armed: every field comes from the engine, so a `monitor_index`
@@ -1185,6 +1337,7 @@ impl Daemon {
                     screenshot_hotkey_bound,
                     waiting_for_game: false,
                     game,
+                    game_name,
                 }
             }
             // Idle: the config is the only truth there is.
@@ -1203,6 +1356,7 @@ impl Daemon {
                 screenshot_hotkey_bound,
                 waiting_for_game: wanted,
                 game,
+                game_name,
             },
         }
     }
@@ -1875,6 +2029,8 @@ impl Daemon {
             }
         }
 
+        library::remove_track_files(paths.dir(), id);
+
         // The cache can be stale — the user may have deleted this clip in
         // Explorer while the daemon kept running. `library.list` still shows it
         // (cache-only reads are by design, spec §5.2), so without evicting here
@@ -1976,6 +2132,7 @@ impl Daemon {
         start_ms: u64,
         end_ms: u64,
         mode: &str,
+        tracks: Option<&[clippy_proto::command::ExportTrack]>,
     ) -> Result<ClipMeta> {
         // Named rather than "invalid mode": `precise` is already on the wire
         // (see `Command::LibraryExport`) so it can arrive without a protocol
@@ -1999,7 +2156,16 @@ impl Daemon {
             .map_err(anyhow::Error::msg)?;
 
         let dir = paths.dir();
-        let new_id = library::allocate_clip_id(dir)?;
+        // Same folder as the source, found from the directory the source was
+        // resolved to, so the new clip sits next to the one it was cut from.
+        let root = self.lock_config().clip_dir_path();
+        let folder = dir
+            .strip_prefix(&root)
+            .ok()
+            .and_then(|rel| rel.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let new_id = library::allocate_clip_id_in(&root, &folder)?;
         // The destination goes through the same sealed constructor as the
         // source, over the *same* directory. `allocate_clip_id` returns an id
         // `is_valid_id` accepts, so this cannot fail in practice — but routing
@@ -2023,12 +2189,26 @@ impl Daemon {
         // that file itself, one statement ago, for this export. So the two
         // halves stay honest: `export.rs` never touches a `dest` it did not
         // create, and `state.rs` cleans up the file it did.
-        let outcome = match export::export_fast(export::FastExport {
-            source: paths.mp4(),
-            dest: new_paths.mp4(),
-            start_ms,
-            end_ms,
-        }) {
+        let kept = match tracks {
+            Some(tracks) => Some(self.validate_export_tracks(paths.mp4(), tracks)?),
+            None => None,
+        };
+        let exported = match &kept {
+            None => export::export_fast(export::FastExport {
+                source: paths.mp4(),
+                dest: new_paths.mp4(),
+                start_ms,
+                end_ms,
+            }),
+            Some(kept) => export::export_remix(export::RemixExport {
+                source: paths.mp4(),
+                dest: new_paths.mp4(),
+                start_ms,
+                end_ms,
+                tracks: kept,
+            }),
+        };
+        let outcome = match exported {
             Ok(outcome) => outcome,
             Err(e) => {
                 // `NotFound` is the ordinary case, not a problem: an attempt
@@ -2073,7 +2253,11 @@ impl Daemon {
             encoder: source_meta.encoder.clone(),
             has_audio: outcome.has_audio,
             favorite: false,
-            audio_tracks: if outcome.has_audio { source_meta.audio_tracks.clone() } else { Vec::new() },
+            audio_tracks: match &kept {
+                _ if !outcome.has_audio => Vec::new(),
+                None => source_meta.audio_tracks.clone(),
+                Some(kept) => exported_track_names(&source_meta.audio_tracks, kept),
+            },
             game: source_meta.game.clone(),
             folder: source_meta.folder.clone(),
         };
@@ -2098,6 +2282,77 @@ impl Daemon {
         // they did not take.
         self.record_saved_clip(&meta, PlaySound::No);
         Ok(meta)
+    }
+
+    /// Checks the tracks an export asked to keep against the clip's own audio
+    /// streams. An index the clip does not have is an error, not a skipped
+    /// track: the user would get a clip without a sound they chose.
+    fn validate_export_tracks(
+        &self,
+        source: &Path,
+        tracks: &[clippy_proto::command::ExportTrack],
+    ) -> Result<Vec<export::TrackChoice>> {
+        const MAX_TRACKS: usize = 16;
+        let available = export::audio_track_count(source)?;
+        if tracks.len() > MAX_TRACKS {
+            bail!("au plus {MAX_TRACKS} pistes audio par export");
+        }
+        let mut kept: Vec<export::TrackChoice> = Vec::new();
+        for track in tracks {
+            if track.index >= available {
+                bail!("ce clip n’a pas de piste audio {} (il en a {available})", track.index);
+            }
+            if kept.iter().any(|k| k.ordinal == track.index) {
+                bail!("la piste audio {} est demandée deux fois", track.index);
+            }
+            kept.push(export::TrackChoice { ordinal: track.index, gain_percent: track.gain });
+        }
+        Ok(kept)
+    }
+
+    /// `library.tracks`: each audio track of a clip as a file of its own, for
+    /// the editor to play side by side. Extracted on first request and kept
+    /// next to the clip (`delete` and the ceiling remove them with it).
+    pub(crate) fn clip_tracks(&self, clip_id: &str) -> Result<Value> {
+        let paths = self.paths_for(clip_id)?;
+        if !paths.mp4().is_file() {
+            bail!("clip {clip_id} introuvable");
+        }
+        let names = self
+            .lock_library()
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| clip.audio_tracks.clone())
+            .unwrap_or_default();
+        let count = export::audio_track_count(paths.mp4())?;
+        let _one_at_a_time = self.track_files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut out = Vec::new();
+        for ordinal in 0..count {
+            let file = paths.track(ordinal);
+            let ready = std::fs::metadata(&file).is_ok_and(|m| m.len() > 0);
+            if !ready {
+                let partial = paths.track_partial(ordinal);
+                export::extract_audio_track(paths.mp4(), ordinal, &partial)
+                    .with_context(|| format!("impossible d’extraire la piste {ordinal} de {clip_id}"))?;
+                std::fs::rename(&partial, &file)
+                    .with_context(|| format!("impossible d’enregistrer la piste {ordinal}"))?;
+            }
+            let mut entry = Map::new();
+            entry.insert("index".to_string(), Value::from(ordinal));
+            entry.insert(
+                "name".to_string(),
+                Value::from(names.get(ordinal).cloned().unwrap_or_else(|| format!("Piste {}", ordinal + 1))),
+            );
+            entry.insert(
+                "file".to_string(),
+                Value::from(file.file_name().and_then(|n| n.to_str()).unwrap_or_default()),
+            );
+            out.push(Value::Object(entry));
+        }
+        let mut reply = Map::new();
+        reply.insert("clip_id".to_string(), Value::from(clip_id));
+        reply.insert("tracks".to_string(), Value::Array(out));
+        Ok(Value::Object(reply))
     }
 
     /// The choke point every id-taking command goes through, and — because
@@ -2130,7 +2385,18 @@ impl Daemon {
     /// drive letter, or a UNC prefix — and nothing here touches the disk, so
     /// a rejected id has caused no I/O at all.
     fn paths_for(&self, id: &str) -> Result<ClipPaths> {
-        let dir = self.lock_config().clip_dir_path();
+        let root = self.lock_config().clip_dir_path();
+        // The folder comes from the cache -- our own scan of the disk, which
+        // only ever lists valid folder names -- never from the request. An
+        // unknown id looks in the clips folder itself, as it always did.
+        let folder = self
+            .lock_library()
+            .iter()
+            .find(|clip| clip.id == id)
+            .map(|clip| clip.folder.clone())
+            .unwrap_or_default();
+        let dir = library::folder_dir(&root, &folder)
+            .with_context(|| format!("le dossier {folder:?} du clip {id} n’est pas valide"))?;
         ClipPaths::for_id(dir, id)
     }
 
@@ -2736,6 +3002,7 @@ mod tests {
                 "clip_hotkey_bound",
                 "encoder",
                 "game",
+                "game_name",
                 "monitor_index",
                 "ring_seconds_total",
                 "ring_seconds_used",
@@ -2759,7 +3026,7 @@ mod tests {
     }
 
     fn sighting(exe: &str) -> Sighting {
-        Sighting { exe: exe.to_string(), left: 0, top: 0 }
+        Sighting { exe: exe.to_string(), name: exe.to_string(), left: 0, top: 0 }
     }
 
     /// In `game` mode, turning the replay on with no game in front must not
@@ -2836,6 +3103,7 @@ mod tests {
             screenshot_hotkey_bound: shot,
             waiting_for_game: false,
             game: None,
+            game_name: None,
         };
         let at = |clip, shot, key: &str| status(clip, shot).to_json()[key].clone();
         let null = serde_json::Value::Null;

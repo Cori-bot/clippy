@@ -45,7 +45,7 @@ pub const MAX_VOLUME_PERCENT: u32 = 200;
 /// Boost can clip, and the doc on [`MAX_VOLUME_PERCENT`] says why that trade
 /// was taken. `apply_gain` and `mix_into` both clamp to the `i16` range, so a
 /// clipped sample saturates — it never wraps into noise.
-fn percent_to_gain(percent: u32) -> f32 {
+pub fn percent_to_gain(percent: u32) -> f32 {
     let percent = percent.min(MAX_VOLUME_PERCENT);
     if percent <= 100 {
         let fraction = percent as f32 / 100.0;
@@ -60,6 +60,11 @@ fn percent_to_gain(percent: u32) -> f32 {
 /// Unity returns untouched rather than multiplying by 1.0, which keeps the
 /// default single-source path bit-for-bit identical to what Clippy recorded
 /// before mixing existed.
+/// [`apply_gain`] for callers outside the mixer (the editor's remix export).
+pub fn apply_pcm_gain(pcm: &mut [u8], gain: f32) {
+    apply_gain(pcm, gain);
+}
+
 fn apply_gain(pcm: &mut [u8], gain: f32) {
     if gain == 1.0 {
         return;

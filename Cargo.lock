@@ -602,6 +602,7 @@ dependencies = [
  "anyhow",
  "clippy-core",
  "clippy-proto",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",

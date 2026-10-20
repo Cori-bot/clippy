@@ -65,6 +65,24 @@ pub enum HotkeyMode {
     LowLevel,
 }
 
+/// The game a replay session is recording, as the engine needs to know it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GameContext {
+    /// Display name, stored in each clip's metadata.
+    pub name: String,
+    /// The sub-folder its clips go in; already a valid single path component.
+    pub folder: String,
+}
+
+/// Per-session overrides of the saved configuration. See [`Config::session`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SessionContext {
+    /// The audio tracks to record instead of the defaults from
+    /// [`Config::track_specs`]; a game's profile sets this.
+    pub tracks: Option<Vec<crate::capture::audio::TrackSpec>>,
+    pub game: Option<GameContext>,
+}
+
 /// Engine configuration, loaded from `%APPDATA%\clippy\config.toml`.
 /// Missing file or missing keys fall back to defaults; a malformed file is
 /// reported and ignored rather than aborting the daemon.
@@ -169,6 +187,17 @@ pub struct Config {
     /// their window is not full screen. Same spelling rules as
     /// [`Config::audio_apps`].
     pub game_apps: Vec<String>,
+    /// File clips in a sub-folder per game (`Bureau` for the desktop), the way
+    /// NVIDIA's overlay does, instead of all in the clips folder. Read when the
+    /// replay starts.
+    pub group_by_game: bool,
+    /// What the daemon decided for the session about to start (the game in
+    /// front and its audio profile). Never read from or written to
+    /// `config.toml` and never sent to clients: it is built by the daemon on a
+    /// clone of the config at arm time, the same seam `monitor_index` already
+    /// uses.
+    #[serde(skip)]
+    pub session: SessionContext,
     /// Start the daemon at login (spec §7.3). Opt-in and off by default —
     /// adding yourself to startup uninvited is the behaviour people resent most
     /// in this category.
@@ -377,6 +406,8 @@ impl Default for Config {
             audio_apps: Vec::new(),
             capture_mode: "desktop".into(),
             game_apps: Vec::new(),
+            group_by_game: true,
+            session: SessionContext::default(),
             autostart: false,
             auto_arm: false,
             check_for_updates: false,
@@ -497,12 +528,27 @@ impl Config {
     /// editor can turn one down; a track whose level is 0 is simply absent.
     pub fn track_specs(&self) -> Vec<crate::capture::audio::TrackSpec> {
         use crate::capture::audio::{TrackKind, TrackSpec};
+        if let Some(tracks) = &self.session.tracks {
+            return tracks.clone();
+        }
         let sound = if self.audio_apps.is_empty() {
             TrackSpec { name: "Son du PC".into(), kind: TrackKind::System }
         } else {
             TrackSpec { name: "Applications".into(), kind: TrackKind::Apps(self.audio_apps.clone()) }
         };
         vec![sound, TrackSpec { name: "Micro".into(), kind: TrackKind::Mic }]
+    }
+
+    /// The sub-folder this session's clips go in: the game's, `Bureau` on the
+    /// desktop, or none at all (`""`) when grouping is switched off.
+    pub fn clip_folder(&self) -> String {
+        if !self.group_by_game {
+            return String::new();
+        }
+        match &self.session.game {
+            Some(game) if crate::library::is_valid_folder(&game.folder) => game.folder.clone(),
+            _ => crate::library::DESKTOP_FOLDER.to_string(),
+        }
     }
 
     /// Target bitrate in bit/s for an output of `width` x `height`: the

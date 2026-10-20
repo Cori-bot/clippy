@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string) => path,
 }));
 
-const { clipUrl, thumbUrl, formatBytes, formatDuration, mergeSaved, counterLabel } =
+const { clipUrl, thumbUrl, trackUrl, formatBytes, formatDuration, mergeSaved, counterLabel } =
   await import('./clips');
 
 const clip = (id: string, favorite = false): ClipMeta => ({
@@ -28,12 +28,13 @@ const clip = (id: string, favorite = false): ClipMeta => ({
 
 describe('clipUrl and thumbUrl', () => {
   const id = '20260726_143012';
+  const ref = { id };
 
   it('put the sidecar beside its clip, flat', () => {
-    expect(clipUrl('C:\\Users\\me\\Videos\\Clippy', id)).toBe(
+    expect(clipUrl('C:\\Users\\me\\Videos\\Clippy', ref)).toBe(
       `C:\\Users\\me\\Videos\\Clippy\\${id}.mp4`,
     );
-    expect(thumbUrl('C:\\Users\\me\\Videos\\Clippy', id)).toBe(
+    expect(thumbUrl('C:\\Users\\me\\Videos\\Clippy', ref)).toBe(
       `C:\\Users\\me\\Videos\\Clippy\\${id}.jpg`,
     );
   });
@@ -42,14 +43,22 @@ describe('clipUrl and thumbUrl', () => {
     // `clip_dir` is typed into settings, and a doubled separator can miss the
     // asset-scope glob -- which shows up as every thumbnail in the grid being
     // broken, with no error anywhere.
-    expect(thumbUrl('D:\\clips\\', id)).toBe(`D:\\clips\\${id}.jpg`);
-    expect(thumbUrl('D:/clips/', id)).toBe(`D:/clips\\${id}.jpg`);
-    expect(clipUrl('D:\\clips\\', id)).toBe(`D:\\clips\\${id}.mp4`);
+    expect(thumbUrl('D:\\clips\\', ref)).toBe(`D:\\clips\\${id}.jpg`);
+    expect(thumbUrl('D:/clips/', ref)).toBe(`D:/clips\\${id}.jpg`);
+    expect(clipUrl('D:\\clips\\', ref)).toBe(`D:\\clips\\${id}.mp4`);
+  });
+
+  it('looks inside the clip folder when there is one', () => {
+    expect(clipUrl('D:\\clips\\', { id, folder: 'Valorant' })).toBe(`D:\\clips\\Valorant\\${id}.mp4`);
+    expect(thumbUrl('D:\\clips', { id, folder: '' })).toBe(`D:\\clips\\${id}.jpg`);
+    expect(trackUrl('D:\\clips', { id, folder: 'Valorant' }, `${id}.t1.m4a`)).toBe(
+      `D:\\clips\\Valorant\\${id}.t1.m4a`,
+    );
   });
 
   it('handles a drive root, whose trailing separator is not optional', () => {
-    expect(thumbUrl('D:\\', id)).toBe(`D:\\${id}.jpg`);
-    expect(clipUrl('D:\\', id)).toBe(`D:\\${id}.mp4`);
+    expect(thumbUrl('D:\\', ref)).toBe(`D:\\${id}.jpg`);
+    expect(clipUrl('D:\\', ref)).toBe(`D:\\${id}.mp4`);
   });
 });
 

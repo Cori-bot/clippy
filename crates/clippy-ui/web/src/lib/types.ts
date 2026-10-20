@@ -15,6 +15,11 @@ export type ClipMeta = {
   encoder: string;
   has_audio: boolean;
   favorite: boolean;
+  /** Stream names in file order; with more than one, index 0 is the pre-mixed "Mix". */
+  audio_tracks?: string[];
+  game?: string;
+  /** Sub-folder of the clips folder; ''/undefined = the clips folder itself. */
+  folder?: string;
 };
 
 export type LibraryPage = {
@@ -52,6 +57,8 @@ export type Status = {
   waiting_for_game?: boolean;
   /** The program of the game in front or still running, if any. */
   game?: string | null;
+  /** Display name of `game`. Absent from an older daemon. */
+  game_name?: string;
   /**
    * Whether each hotkey is actually listening. `null` means the daemon has
    * not tried to bind it yet -- a real answer, and not the same as `false`.
@@ -81,3 +88,17 @@ export type AudioApp = { exe: string; name: string; playing: boolean };
 export type Encoder = { name: string; codec: string; hardware: boolean };
 
 export type DaemonEvent = { event: string; data: Record<string, unknown> };
+
+/** An extra audio source of a game profile: becomes its own track in the clip. */
+export type ProfileApp = { exe: string; name: string };
+export type GameProfile = { apps: ProfileApp[]; mic: boolean };
+export type GameEntry = {
+  exe: string;
+  name: string;
+  enabled: boolean;
+  manual: boolean;
+  last_played: string | null;
+  profile: GameProfile;
+};
+/** One row of `windows.list`: a visible top-level app window. */
+export type RunningWindow = { exe: string; name: string; title: string };

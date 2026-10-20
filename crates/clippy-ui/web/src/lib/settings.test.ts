@@ -9,7 +9,7 @@ describe('FIELDS', () => {
       'max_library_gb', 'autostart', 'system_volume', 'mic_volume', 'check_for_updates',
       'clip_sound', 'clip_sound_path', 'discord_presence',
       'screenshot_hotkey', 'screenshot_sound',
-      'hotkey_mode', 'audio_apps', 'capture_mode', 'game_apps',
+      'hotkey_mode', 'audio_apps', 'capture_mode',
     ];
     const covered = FIELDS.map((f) => f.key);
     for (const key of shipped) expect(covered).toContain(key);
@@ -539,11 +539,9 @@ describe('the settings page stays scannable', () => {
     expect(fullHelp(plain)).toBe(plain.help);
   });
 
-  it('dims the game list outside game mode, and the screen choice inside it', () => {
-    const games = FIELDS.find((f) => f.key === 'game_apps')!;
+  it('dims the screen choice in game mode only, and no longer lists game_apps', () => {
     const screen = FIELDS.find((f) => f.key === 'monitor_index')!;
-    expect(inactiveReason(games, { capture_mode: 'desktop' })).toMatch(/Jeux uniquement/);
-    expect(inactiveReason(games, { capture_mode: 'game' })).toBeNull();
+    expect(FIELDS.some((f) => f.key === 'game_apps')).toBe(false);
     expect(inactiveReason(screen, { capture_mode: 'game' })).not.toBeNull();
     expect(inactiveReason(screen, { capture_mode: 'desktop' })).toBeNull();
   });

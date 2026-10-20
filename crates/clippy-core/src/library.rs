@@ -1,6 +1,8 @@
 //! The clip library's on-disk format.
 //!
-//! One `.mp4` and one `.json` sidecar sharing a stem, flat in one directory.
+//! One `.mp4` and one `.json` sidecar sharing a stem, in one directory; the
+//! directories are the clips folder and one sub-folder per game (see the
+//! per-game folder helpers below).
 //! Not a database: a crash mid-write costs one clip's metadata instead of the
 //! library, deleting an `.mp4` in Explorer leaves an orphan that the next scan
 //! prunes rather than a phantom row, and SQLite would be a C dependency and a
@@ -256,6 +258,162 @@ pub fn scan(dir: &Path) -> Result<Vec<ClipMeta>> {
     Ok(clips)
 }
 
+// ---------------------------------------------------------------------------
+// Per-game folders
+//
+// Clips live in `<clips folder>\<folder>\<id>.mp4`, one sub-folder per game and
+// one for the desktop, the way NVIDIA's overlay files them. The folder is part
+// of a clip's identity (`ClipMeta::folder`), and the single-directory functions
+// above keep working on whichever directory they are handed: the helpers here
+// only decide *which* directories exist and walk them.
+// ---------------------------------------------------------------------------
+
+/// The sub-folder desktop clips go in. Screenshots keep their own folder.
+pub const DESKTOP_FOLDER: &str = "Bureau";
+
+/// A folder name no game may take: the screenshots' own folder.
+const RESERVED_FOLDERS: &[&str] = &["screenshots"];
+
+/// Longest folder name used; Windows allows far more, but a game's name is not
+/// worth a path that approaches MAX_PATH once an id is added.
+const MAX_FOLDER_LEN: usize = 60;
+
+/// Turns a game's display name into a single, safe path component, or `None`
+/// when nothing usable is left (all punctuation, or a reserved name).
+///
+/// Windows' forbidden characters and control characters become nothing,
+/// runs of whitespace collapse, and trailing dots and spaces -- which Windows
+/// silently strips, making two names one folder -- are removed. The result
+/// passes [`is_valid_folder`] by construction.
+pub fn sanitize_folder(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        .collect();
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed: String = collapsed.trim_matches(|c| c == '.' || c == ' ').chars().take(MAX_FOLDER_LEN).collect();
+    let trimmed = trimmed.trim_end_matches(|c| c == '.' || c == ' ').to_string();
+    is_valid_folder(&trimmed).then_some(trimmed)
+}
+
+/// Whether `folder` is one safe path component to put under the clips folder.
+///
+/// Like [`is_valid_id`], this guards a string that ends up in a path -- the
+/// folder comes out of a sidecar or the game registry, both plain files a
+/// person can edit -- so it is a whitelist-by-rejection of everything that can
+/// escape: separators, drive colons, `..`, device names, reserved names.
+pub fn is_valid_folder(folder: &str) -> bool {
+    if folder.is_empty() || folder.chars().count() > MAX_FOLDER_LEN {
+        return false;
+    }
+    if folder == "." || folder == ".." || folder.starts_with(' ') || folder.ends_with([' ', '.']) {
+        return false;
+    }
+    if folder.chars().any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')) {
+        return false;
+    }
+    let lower = folder.to_lowercase();
+    if RESERVED_FOLDERS.contains(&lower.as_str()) {
+        return false;
+    }
+    // DOS device names are files, not folders, whatever the extension.
+    let stem = lower.split('.').next().unwrap_or("");
+    const DEVICES: &[&str] = &["con", "prn", "aux", "nul"];
+    let numbered = |p: &str| stem.strip_prefix(p).is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit() && n != "0");
+    !(DEVICES.contains(&stem) || numbered("com") || numbered("lpt"))
+}
+
+/// The directory a folder name denotes under the clips folder; the clips folder
+/// itself for the empty name. Returns `None` for a name that is not
+/// [`is_valid_folder`], so a hostile sidecar cannot point outside it.
+pub fn folder_dir(clip_dir: &Path, folder: &str) -> Option<PathBuf> {
+    if folder.is_empty() {
+        Some(clip_dir.to_path_buf())
+    } else if is_valid_folder(folder) {
+        Some(clip_dir.join(folder))
+    } else {
+        None
+    }
+}
+
+/// The clips folder and each valid sub-folder directly under it, as
+/// `(folder, directory)`; the clips folder itself comes first with `""`.
+/// Does not descend further: clips are exactly one level deep.
+pub fn folder_dirs(clip_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut found = vec![(String::new(), clip_dir.to_path_buf())];
+    let Ok(entries) = std::fs::read_dir(clip_dir) else { return found };
+    let mut subs: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            is_valid_folder(&name).then(|| (name, e.path()))
+        })
+        .collect();
+    subs.sort();
+    found.extend(subs);
+    found
+}
+
+/// Every clip under the clips folder: the folder itself and each sub-folder,
+/// newest first, each carrying the folder it was found in (whatever its sidecar
+/// says -- a clip moved by hand belongs where it is).
+pub fn scan_all(clip_dir: &Path) -> Result<Vec<ClipMeta>> {
+    let mut all = Vec::new();
+    for (folder, dir) in folder_dirs(clip_dir) {
+        // The clips folder itself must exist-or-not like `scan` says; a broken
+        // sub-folder is skipped with a warning rather than hiding the others.
+        match scan(&dir) {
+            Ok(mut clips) => {
+                for clip in &mut clips {
+                    clip.folder = folder.clone();
+                }
+                all.append(&mut clips);
+            }
+            Err(e) if folder.is_empty() => return Err(e),
+            Err(e) => tracing::warn!(folder = %folder, error = %format!("{e:#}"), "skipping an unreadable clips sub-folder"),
+        }
+    }
+    all.sort_by(|a, b| b.id.cmp(&a.id));
+    Ok(all)
+}
+
+/// Like [`allocate_clip_id`], but in `clip_dir\folder` and unique across every
+/// folder: the library is keyed by bare id, so two games' clips made in the
+/// same second must not share one.
+pub fn allocate_clip_id_in(clip_dir: &Path, folder: &str) -> Result<String> {
+    let dir = folder_dir(clip_dir, folder)
+        .with_context(|| format!("nom de dossier de clips invalide : {folder:?}"))?;
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("impossible de créer le dossier des clips {}", dir.display()))?;
+    let others: Vec<PathBuf> = folder_dirs(clip_dir).into_iter().map(|(_, d)| d).collect();
+    let taken = |id: &str| others.iter().any(|d| mp4_path(d, id).exists());
+    let stamp = now_id_stamp();
+    let mut candidate = stamp.clone();
+    for n in 2u32..=u32::MAX {
+        if !taken(&candidate) && reserve(&dir, &candidate)? {
+            return Ok(candidate);
+        }
+        candidate = format!("{stamp}_{n}");
+    }
+    bail!("aucun identifiant de clip libre pour {stamp}")
+}
+
+/// Removes the per-track audio files the editor asked for next to a clip
+/// (`<id>.t<n>.m4a`, and a half-written `<id>.t<n>.part.m4a`). Best effort:
+/// they are rebuilt from the clip on demand, so a stuck one is only litter.
+pub fn remove_track_files(dir: &Path, id: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let prefix = format!("{id}.t");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with(&prefix) && name.ends_with(".m4a") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Best-effort metadata for an `.mp4` with no usable sidecar. The fields that
 /// need a demuxer to recover are left at zero rather than guessed.
 fn adopt(dir: &Path, id: &str) -> ClipMeta {
@@ -313,8 +471,9 @@ pub fn prune_to_ceiling(dir: &Path, max_gb: u32) -> Result<Vec<String>> {
     }
     let ceiling = u64::from(max_gb).saturating_mul(1_000_000_000);
 
-    // `scan` returns newest first; the ceiling deletes oldest first.
-    let mut clips = scan(dir)?;
+    // `scan_all` returns newest first; the ceiling deletes oldest first. `dir`
+    // is the clips folder: the ceiling counts every game's folder together.
+    let mut clips = scan_all(dir)?;
     clips.reverse();
 
     let mut held: u64 = clips.iter().map(|c| c.bytes).sum();
@@ -328,7 +487,8 @@ pub fn prune_to_ceiling(dir: &Path, max_gb: u32) -> Result<Vec<String>> {
             continue;
         }
 
-        match std::fs::remove_file(mp4_path(dir, &clip.id)) {
+        let Some(clip_folder) = folder_dir(dir, &clip.folder) else { continue };
+        match std::fs::remove_file(mp4_path(&clip_folder, &clip.id)) {
             Ok(()) => {}
             // Already gone: it is not holding those bytes either, and its
             // companions are litter `scan` would never surface again.
@@ -343,7 +503,7 @@ pub fn prune_to_ceiling(dir: &Path, max_gb: u32) -> Result<Vec<String>> {
             }
         }
 
-        for path in [sidecar_path(dir, &clip.id), thumb_path(dir, &clip.id)] {
+        for path in [sidecar_path(&clip_folder, &clip.id), thumb_path(&clip_folder, &clip.id)] {
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -355,6 +515,7 @@ pub fn prune_to_ceiling(dir: &Path, max_gb: u32) -> Result<Vec<String>> {
             }
         }
 
+        remove_track_files(&clip_folder, &clip.id);
         held = held.saturating_sub(clip.bytes);
         deleted.push(clip.id.clone());
     }
@@ -626,6 +787,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A fresh, empty scratch directory for one test.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("clippy-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     fn sample_meta(id: &str) -> clippy_proto::ClipMeta {
         clippy_proto::ClipMeta {
             id: id.to_string(),
@@ -643,5 +812,73 @@ mod tests {
             game: String::new(),
             folder: String::new(),
         }
+    }
+    #[test]
+    fn folder_names_are_cleaned_into_one_safe_component() {
+        assert_eq!(sanitize_folder("VALORANT").as_deref(), Some("VALORANT"));
+        assert_eq!(sanitize_folder("Counter-Strike 2").as_deref(), Some("Counter-Strike 2"));
+        assert_eq!(sanitize_folder("Tom Clancy's: R6 / Siege?").as_deref(), Some("Tom Clancy's R6 Siege"));
+        assert_eq!(sanitize_folder("  Game...  ").as_deref(), Some("Game"));
+        assert_eq!(sanitize_folder("..\\..\\Windows").as_deref(), Some("Windows"));
+        assert_eq!(sanitize_folder("???"), None);
+        assert_eq!(sanitize_folder("Screenshots"), None, "that name is the screenshots' own folder");
+        assert_eq!(sanitize_folder("CON"), None);
+        let long = "x".repeat(200);
+        assert_eq!(sanitize_folder(&long).map(|f| f.len()), Some(MAX_FOLDER_LEN));
+    }
+
+    #[test]
+    fn a_folder_that_could_leave_the_clips_folder_is_never_valid() {
+        for bad in ["", ".", "..", "a/b", "a\\b", "C:", "..\\x", "x.", " x", "nul", "COM1", "lpt3.txt", "Screenshots", "a|b"] {
+            assert!(!is_valid_folder(bad), "{bad:?} must be rejected");
+            assert!(folder_dir(Path::new("C:\\clips"), bad).is_none() || bad.is_empty());
+        }
+        for good in ["Bureau", "VALORANT", "Rocket League", "Chained Together", "Counter-strike 2", "COM0"] {
+            assert!(is_valid_folder(good), "{good:?} must be accepted");
+        }
+        assert_eq!(folder_dir(Path::new("C:\\clips"), ""), Some(PathBuf::from("C:\\clips")));
+    }
+
+    #[test]
+    fn scan_all_walks_the_clips_folder_and_one_level_of_game_folders() {
+        let dir = scratch("scan-all");
+        let valorant = dir.join("VALORANT");
+        std::fs::create_dir_all(&valorant).unwrap();
+        std::fs::create_dir_all(dir.join("Screenshots")).unwrap();
+        std::fs::create_dir_all(valorant.join("deeper")).unwrap();
+        for (d, id) in [(&dir, "20260101_100000"), (&valorant, "20260102_100000"), (&valorant.join("deeper"), "20260103_100000")] {
+            std::fs::write(mp4_path(d, id), b"x").unwrap();
+        }
+        std::fs::write(mp4_path(&dir.join("Screenshots"), "20260104_100000"), b"x").unwrap();
+        let all = scan_all(&dir).unwrap();
+        let found: Vec<(&str, &str)> = all.iter().map(|c| (c.id.as_str(), c.folder.as_str())).collect();
+        assert_eq!(found, [("20260102_100000", "VALORANT"), ("20260101_100000", "")]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_id_is_unique_across_folders() {
+        let dir = scratch("alloc-in");
+        let first = allocate_clip_id_in(&dir, "VALORANT").unwrap();
+        let second = allocate_clip_id_in(&dir, "Bureau").unwrap();
+        assert_ne!(first, second, "same-second clips in two folders must not share an id");
+        assert!(mp4_path(&dir.join("VALORANT"), &first).exists());
+        assert!(mp4_path(&dir.join("Bureau"), &second).exists());
+        assert!(allocate_clip_id_in(&dir, "..").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_ceiling_counts_and_prunes_across_game_folders() {
+        let dir = scratch("ceiling-folders");
+        let game = dir.join("Rocket League");
+        std::fs::create_dir_all(&game).unwrap();
+        let old = "20260101_100000";
+        std::fs::write(mp4_path(&game, old), vec![0u8; 3]).unwrap();
+        std::fs::write(sidecar_path(&game, old), b"{").unwrap();
+        std::fs::write(mp4_path(&dir, "20260102_100000"), vec![0u8; 3]).unwrap();
+        // 1 GB ceiling cannot be exceeded by 6 bytes: nothing is deleted.
+        assert!(prune_to_ceiling(&dir, 1).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

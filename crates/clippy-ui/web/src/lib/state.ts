@@ -3,9 +3,10 @@ import { listen } from '@tauri-apps/api/event';
 import { call, daemonConnected, onConnected, onDaemonEvent, onDisconnected } from './ipc';
 import { mergeSaved } from './clips';
 import { reactive } from './reactive';
-import type { ClipMeta, LibraryPage, ShotMeta, Status } from './types';
+import { mergeGame, sortGames } from './games';
+import type { ClipMeta, GameEntry, LibraryPage, RunningWindow, ShotMeta, Status } from './types';
 
-export type View = 'grid' | 'clip' | 'shots' | 'settings' | 'firstrun';
+export type View = 'grid' | 'clip' | 'shots' | 'games' | 'settings' | 'firstrun';
 export type Toast = { id: number; kind: 'error' | 'info'; text: string };
 
 let nextToastId = 1;
@@ -310,6 +311,51 @@ class AppState {
     }
   }
 
+  /** The games the daemon knows (auto-detected and manual), most recently played first. */
+  games: GameEntry[] = [];
+
+  async loadGames() {
+    try {
+      const data = await call<{ games: GameEntry[] }>('games.list');
+      this.games = sortGames(data.games);
+    } catch (e) {
+      this.toast('error', String(e));
+    }
+  }
+
+  /** Creates the game when `exe` is unknown; only the provided fields change. */
+  async setGame(
+    exe: string,
+    fields: { enabled?: boolean; name?: string; profile?: GameEntry['profile'] },
+  ): Promise<GameEntry | null> {
+    try {
+      const data = await call<{ game: GameEntry }>('games.set', { exe, ...fields });
+      this.games = mergeGame(this.games, data.game);
+      return data.game;
+    } catch (e) {
+      this.toast('error', String(e));
+      return null;
+    }
+  }
+
+  async removeGame(exe: string) {
+    try {
+      await call('games.remove', { exe });
+      this.games = this.games.filter((g) => g.exe.toLowerCase() !== exe.toLowerCase());
+    } catch (e) {
+      this.toast('error', String(e));
+    }
+  }
+
+  async listWindows(): Promise<RunningWindow[]> {
+    try {
+      return (await call<{ windows: RunningWindow[] }>('windows.list')).windows;
+    } catch (e) {
+      this.toast('error', String(e));
+      return [];
+    }
+  }
+
   async deleteShot(id: string) {
     try {
       await call('shots.delete', { shot_id: id });
@@ -401,7 +447,7 @@ class AppState {
    * actually makes with two sliders, and they deserve a sentence that says
    * what to do about it.
    */
-  async exportTrim(id: string, startMs: number, endMs: number) {
+  async exportTrim(id: string, startMs: number, endMs: number, tracks?: { index: number; gain: number }[]) {
     // Kept here even though the clip page now disables the button for these
     // two: Ctrl+E has no button to grey out, and this is also the entry point
     // any future caller reaches.
@@ -427,6 +473,9 @@ class AppState {
         start_ms: Math.round(startMs),
         end_ms: Math.round(endMs),
         mode: 'fast',
+        // Only present when the user changed a track: absent means "keep
+        // every stream untouched", exactly what was sent before.
+        ...(tracks ? { tracks } : {}),
       });
       // No success toast here. `clip_saved` arrives from the same daemon call
       // and the handler in `wireDaemon` already toasts "Saved <title>" --
@@ -445,7 +494,8 @@ class AppState {
       // machine where it does not, *every* export is silent, and without this
       // the only record is a warning in the daemon's log and the only way to
       // find out is to play the clip back.
-      if (sourceHadAudio && !saved.has_audio) {
+      // (Muting every track on purpose is not that fallback.)
+      if (sourceHadAudio && !saved.has_audio && tracks?.length !== 0) {
         this.toast(
           'error',
           'Le clip rogné a été enregistré sans son : l’audio de ce clip n’a pas pu être copié.',
@@ -571,6 +621,7 @@ async function onDaemonUp() {
   // without this a reconnect would leave the grid showing whatever it had
   // before the daemon went away.
   await app.loadShots();
+  await app.loadGames();
   // Stats drive the ring meter; per spec §4.4 the daemon measures nothing
   // until a client asks, so nobody pays for this while no UI is open.
   try {
@@ -589,6 +640,7 @@ export function wireDaemon() {
     app.invalidateClips();
     app.connected = false;
     app.status = null;
+    app.games = [];
   });
 
   // The supervisor connects from Tauri's setup hook and usually wins the race
@@ -662,6 +714,11 @@ export function wireDaemon() {
         }
         break;
       }
+      case 'games_changed':
+        if (Array.isArray(data['games'])) app.games = sortGames(data['games'] as GameEntry[]);
+        // The detected game shown on the Jeux page rides on `status`.
+        void app.refreshStatus();
+        break;
       case 'stats':
         app.ringUsed = Number(data['ring_seconds_used'] ?? 0);
         break;

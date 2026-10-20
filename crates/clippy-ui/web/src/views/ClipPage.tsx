@@ -1,15 +1,18 @@
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog } from '../components/ui/Dialog';
 import { ChevronLeft, ChevronRight, Folder, Pencil, Scissors, Star, StarFilled, Trash } from '../components/icons';
 import { Timeline } from '../components/Timeline';
+import { TrackRows } from '../components/TrackRows';
 import { VideoPlayer, type VideoPlayerHandle } from '../components/VideoPlayer';
 import { app, useApp } from '../lib/app';
-import { clipUrl, counterLabel, formatBytes, formatDuration } from '../lib/clips';
+import { clipUrl, counterLabel, trackUrl, formatBytes, formatDuration } from '../lib/clips';
+import { call } from '../lib/ipc';
 import { shouldHandleKey, sliderOwnsKey } from '../lib/keys';
 import { trimRangeError } from '../lib/state';
 import { formatClock } from '../lib/timeline';
+import { buildExportTracks, defaultStates, editableTracks, type TrackState } from '../lib/tracks';
 
 const PRESS = 'transition-transform duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-[0.97]';
 
@@ -24,8 +27,16 @@ export function ClipPage() {
   const [outMs, setOutMs] = useState(0);
   const [playheadMs, setPlayheadMs] = useState(0);
   const [exporting, setExporting] = useState(false);
+  // Per-track audio: levels chosen by the user, and the per-track files the
+  // daemon prepared for playback (`library.tracks`).
+  const [trackStates, setTrackStates] = useState<TrackState[]>([]);
+  const [trackFiles, setTrackFiles] = useState<Record<number, string>>({});
+  const [tracksLoading, setTracksLoading] = useState(false);
+  const [tracksError, setTracksError] = useState(false);
 
   const clip = a.current;
+  const tracks = useMemo(() => editableTracks(clip?.audio_tracks), [clip?.audio_tracks]);
+  const tracksKey = tracks.map((t) => t.index).join(',');
 
   // Read off `clip` as primitives rather than tracking the object: `rename` and
   // `setFavorite` both replace the ClipMeta in `app.clips` with a fresh object,
@@ -66,6 +77,38 @@ export function ClipPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipId, clipDurationMs]);
 
+  // Fresh levels and a fresh file list for every clip. Fetched once per clip;
+  // the daemon caches the remux, so only the first visit waits.
+  useEffect(() => {
+    setTrackStates(defaultStates(tracks.length));
+    setTrackFiles({});
+    setTracksError(false);
+    if (!clipId || tracks.length === 0) {
+      setTracksLoading(false);
+      return;
+    }
+    let stale = false;
+    setTracksLoading(true);
+    call<{ tracks: { index: number; name: string; file: string }[] }>('library.tracks', { clip_id: clipId })
+      .then((res) => {
+        if (stale) return;
+        const files: Record<number, string> = {};
+        for (const t of res.tracks) files[t.index] = t.file;
+        setTrackFiles(files);
+        setTracksError(!tracks.every((t) => files[t.index]));
+      })
+      .catch(() => {
+        if (!stale) setTracksError(true);
+      })
+      .finally(() => {
+        if (!stale) setTracksLoading(false);
+      });
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clipId, tracksKey]);
+
   /**
    * The only way this page opens the delete dialog, and it leaves fullscreen
    * first: the fullscreen element is the player's stage, and the dialog is
@@ -88,7 +131,7 @@ export function ClipPage() {
     }
     setExporting(true);
     try {
-      await app.exportTrim(clip.id, inMs, outMs);
+      await app.exportTrim(clip.id, inMs, outMs, buildExportTracks(tracks, trackStates));
     } finally {
       setExporting(false);
     }
@@ -176,6 +219,11 @@ export function ClipPage() {
     return () => window.removeEventListener('keydown', fn);
   }, []);
 
+  // Separate playback only once every track file is known; until then (and on
+  // failure) the video plays its own mixed audio.
+  const separateTracks =
+    tracks.length > 0 && !tracksLoading && !tracksError && tracks.every((t) => trackFiles[t.index]);
+
   if (!clip) return null;
 
   return (
@@ -213,7 +261,9 @@ export function ClipPage() {
 
       <VideoPlayer
         ref={player}
-        src={clipUrl(a.clipDir, clip.id)}
+        src={clipUrl(a.clipDir, clip)}
+        trackUrls={separateTracks ? tracks.map((t) => trackUrl(a.clipDir, clip, trackFiles[t.index])) : []}
+        trackStates={trackStates}
         onTime={setPlayheadMs}
         timeline={(playerDurationMs) => (
           // A clip with no duration still gets the band, and still cannot be
@@ -235,6 +285,14 @@ export function ClipPage() {
             onSeek={(ms) => player.current?.seekTo(ms)}
           />
         )}
+      />
+
+      <TrackRows
+        tracks={tracks}
+        states={trackStates}
+        loading={tracksLoading}
+        error={tracksError}
+        onChange={(i, next) => setTrackStates((prev) => prev.map((s, k) => (k === i ? next : s)))}
       />
 
       {canTrim && (

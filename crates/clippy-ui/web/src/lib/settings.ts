@@ -159,12 +159,8 @@ export const FIELDS: Field[] = [
   { key: 'capture_mode', label: 'Quoi enregistrer', kind: 'select', section: 'Capture', options: [
       { value: 'desktop', label: 'Jeux et bureau' },
       { value: 'game', label: 'Jeux uniquement' },
-    ], help: 'Jeux uniquement : n’enregistre que lorsqu’un jeu est au premier plan, jamais le bureau. Jeux et bureau : tout l’écran.',
-    more: 'Comme dans l’application NVIDIA. « Jeux uniquement » attend qu’un jeu soit au premier plan en plein écran (ou listé plus bas), enregistre l’écran où il se trouve et s’arrête dès qu’il se ferme : le bureau, le navigateur et les lecteurs vidéo ne sont jamais capturés. S’applique immédiatement.' },
-  { key: 'game_apps', label: 'Jeux reconnus', kind: 'apps', section: 'Capture', picker: { empty: 'Détection automatique', add: 'Ajouter un jeu' },
-    onlyWhen: { key: 'capture_mode', value: 'game', reason: 'Actif seulement avec « Jeux uniquement »' },
-    help: 'Les jeux en plein écran sont détectés tout seuls. Ajouter ici un jeu en fenêtré, ou un programme que la détection ignore.',
-    more: 'Détection automatique : tout programme en plein écran qui n’est pas un navigateur, un lecteur vidéo ou une application de bureau.' },
+    ], help: 'Jeux uniquement : n’enregistre que lorsqu’un jeu est au premier plan, jamais le bureau. Jeux et bureau : tout l’écran. La liste des jeux se gère dans la vue « Jeux ».',
+    more: 'Comme dans l’application NVIDIA. « Jeux uniquement » attend qu’un jeu soit au premier plan en plein écran (ou ajouté dans la vue « Jeux »), enregistre l’écran où il se trouve et s’arrête dès qu’il se ferme : le bureau, le navigateur et les lecteurs vidéo ne sont jamais capturés. S’applique immédiatement.' },
   { key: 'monitor_index', label: 'Écran', kind: 'select', section: 'Capture', dynamic: 'monitors',
     onlyWhen: { key: 'capture_mode', value: 'desktop', reason: 'Avec « Jeux uniquement », c’est l’écran du jeu qui est capturé' },
     help: 'Écran à capturer.' },
@@ -197,10 +193,11 @@ export const FIELDS: Field[] = [
     help: 'Volume de la voix dans le clip. 100 laisse le microphone inchangé, 0 le coupe.',
     more: 'Au-delà de 100, Clippy amplifie la voix : utile si le micro reste trop faible même au maximum dans Windows, mais peut provoquer de la distorsion. À 0, Windows cesse d’indiquer que Clippy utilise le microphone.' },
   { key: 'audio_apps', label: 'Son enregistré', kind: 'apps', section: 'Audio',
-    help: 'Par défaut, tout le son du PC. Ajouter des applications pour n’enregistrer que leur son (ex. Spotify sans YouTube). Windows 11 requis.',
+    help: 'Par défaut, tout le son du PC. Ajouter des applications pour n’enregistrer que leur son. Avec « Jeux uniquement » : le son du jeu seul (profils : vue « Jeux »).',
     more: 'Une application apparaît dans la liste dès qu’elle a produit du son. « Autre application » accepte aussi le nom de son exécutable.' },
 
   { key: 'clip_dir', label: 'Dossier des clips', kind: 'folder', section: 'Clips', help: 'Emplacement d’enregistrement des clips. Vide : Videos\\Clippy.' },
+  { key: 'group_by_game', label: 'Ranger les clips par jeu', kind: 'bool', section: 'Clips', help: 'Un sous-dossier par jeu dans le dossier des clips (Bureau pour le reste), comme l’application NVIDIA. Pris en compte au prochain démarrage du replay.' },
   { key: 'max_library_gb', label: 'Limite de la bibliothèque', kind: 'number', section: 'Clips', ...span('max_library_gb'), help: 'En Go. Au-delà de la limite, les clips non favoris les plus anciens sont supprimés. 0 désactive la limite.' },
 
   { key: 'clip_hotkey', label: 'Raccourci du clip', kind: 'hotkey', section: 'Shortcuts', liveTest: true, boundKey: 'clip_hotkey_bound',
@@ -294,7 +291,8 @@ function span(key: string): { min: number; max: number } {
  * cannot drift apart from each other, even though neither can see a key the
  * daemon grows that nobody adds here too.
  */
-export const READ_ONLY_EXTRAS = ['clip_dir_resolved', 'config_file_exists'];
+// `game_apps` is the legacy list, superseded by the Jeux view; a daemon may still report it.
+export const READ_ONLY_EXTRAS = ['clip_dir_resolved', 'config_file_exists', 'game_apps'];
 
 /** Keys `config.get` returned that this page has no field for. */
 export function unknownKeys(config: Record<string, unknown>): string[] {

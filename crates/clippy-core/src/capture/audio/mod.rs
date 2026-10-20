@@ -6,7 +6,7 @@ mod source;
 mod timeline;
 
 pub use apps::{AudioApp, list_audio_apps};
-pub use mixer::{AudioGains, AudioMixer, MAX_VOLUME_PERCENT, mix_pcm_into, TrackKind, TrackMixer, TrackSpec};
+pub use mixer::{AudioGains, AudioMixer, MAX_VOLUME_PERCENT, apply_pcm_gain, mix_pcm_into, percent_to_gain, TrackKind, TrackMixer, TrackSpec};
 pub use source::{AudioCapture, AudioSourceKind, record_wav};
 pub use timeline::AudioTimeline;
 

@@ -218,7 +218,8 @@ fn terminate(pid: u32) -> Result<(), String> {
     }
 }
 
-/// Lets the webview load `<dir>\*.mp4` and `*.jpg` through `asset:`.
+/// Lets the webview load the clips, thumbnails and per-track audio under `dir`
+/// (and its game sub-folders) through `asset:`.
 ///
 /// A free function, not a method, so the event closure in [`Supervisor::connect`]
 /// can call it too: that closure must be `'static` (the reader thread that owns
@@ -228,17 +229,13 @@ fn terminate(pid: u32) -> Result<(), String> {
 /// `on_connected`) and the event-driven one from becoming two copies of the
 /// same rule that could drift apart.
 fn grant_clip_dir(app: &AppHandle, dir: &str) {
-    let _ = app.asset_protocol_scope().allow_directory(dir, false);
-    // The screenshots subfolder needs its own grant: `allow_directory` is
-    // non-recursive, so without this every thumbnail in the Screenshots tab is
-    // a broken image with nothing logged and nothing on screen to say why.
-    //
-    // A second call rather than flipping the first to recursive: the clips
-    // folder is one the user chose, and it may well have unrelated subtrees
-    // under it that the webview has no business reading.
-    let _ = app
-        .asset_protocol_scope()
-        .allow_directory(std::path::Path::new(dir).join("Screenshots"), false);
+    // Recursive: clips are filed in one sub-folder per game (and the
+    // screenshots in `Screenshots`), and a game's folder only exists once its
+    // first clip is saved, so it cannot be granted ahead of time one by one.
+    // Without this every thumbnail under a game is a broken image with nothing
+    // logged and nothing on screen to say why. The folder is the one the user
+    // chose for Clippy's clips, so what lies under it is Clippy's own output.
+    let _ = app.asset_protocol_scope().allow_directory(dir, true);
 }
 
 /// Owns the current connection and the thread that keeps trying to make one.

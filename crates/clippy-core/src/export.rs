@@ -14,7 +14,8 @@ use windows::Win32::Media::MediaFoundation::{
     IMFAttributes, IMFMediaType, IMFSample, IMFSinkWriter, IMFSourceReader,
     MF_READWRITE_DISABLE_CONVERTERS, MF_SINK_WRITER_DISABLE_THROTTLING,
     MF_SOURCE_READER_ALL_STREAMS, MF_SOURCE_READER_FIRST_AUDIO_STREAM,
-    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM, MFCreateAttributes,
+    MF_MT_MAJOR_TYPE, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_ENDOFSTREAM,
+    MFCreateAttributes, MFMediaType_Audio,
     MFCreateSinkWriterFromURL, MFCreateSourceReaderFromURL, MFSampleExtension_CleanPoint,
 };
 use windows::core::HSTRING;
@@ -613,6 +614,270 @@ fn copy_stream(
         written_100ns = (t.pts_100ns - start_100ns) + t.duration_100ns;
     }
     Ok(CopiedStream { packets, written_100ns })
+}
+
+// ---------------------------------------------------------------------------
+// Separate audio tracks
+//
+// A multi-track clip carries one AAC stream per source (see `replay::write_clip`):
+// stream 0 is the pre-mixed "Mix" and the rest are the sources on their own.
+// "Ordinal" below is a track's position among the *file's audio streams* in
+// that order, which is the index `ClipMeta::audio_tracks` and the editor use.
+// ---------------------------------------------------------------------------
+
+/// The source reader's stream indexes of the file's audio streams, in file order.
+fn audio_stream_indices(reader: &IMFSourceReader) -> Vec<u32> {
+    let mut found = Vec::new();
+    // A file never has anywhere near this many streams; the bound only keeps a
+    // misbehaving source from looping forever.
+    for index in 0u32..64 {
+        let Ok(native) = (unsafe { reader.GetNativeMediaType(index, 0) }) else { break };
+        if unsafe { native.GetGUID(&MF_MT_MAJOR_TYPE) }.is_ok_and(|major| major == MFMediaType_Audio) {
+            found.push(index);
+        }
+    }
+    found
+}
+
+fn open_reader(source: &Path) -> Result<IMFSourceReader> {
+    if !source.is_file() {
+        anyhow::bail!("{} n’est pas un fichier", source.display());
+    }
+    ensure_mf_started()?;
+    unsafe { MFCreateSourceReaderFromURL(&HSTRING::from(source), None) }
+        .with_context(|| format!("Windows n’a pas pu ouvrir {}", source.display()))
+}
+
+/// How many audio streams the file at `source` has.
+pub fn audio_track_count(source: &Path) -> Result<usize> {
+    Ok(audio_stream_indices(&open_reader(source)?).len())
+}
+
+/// A reader that delivers only `stream`, compressed as stored or -- with
+/// `decode` -- decoded to the engine's PCM format.
+fn open_single_stream(source: &Path, stream: u32, decode: bool) -> Result<IMFSourceReader> {
+    let reader = open_reader(source)?;
+    unsafe {
+        reader
+            .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
+            .context("deselecting every stream")?;
+        reader.SetStreamSelection(stream, true).context("selecting the audio stream")?;
+        if decode {
+            let pcm = crate::encode::mf::pcm_audio_type()?;
+            reader
+                .SetCurrentMediaType(stream, None, &pcm)
+                .context("asking the reader to decode the audio to PCM")?;
+        }
+    }
+    Ok(reader)
+}
+
+/// Copies one audio track of `source` into an audio-only MP4 at `dest`, without
+/// decoding it. The editor plays these next to a muted video, one per track,
+/// because a web view cannot select between a file's audio streams itself.
+pub fn extract_audio_track(source: &Path, ordinal: usize, dest: &Path) -> Result<()> {
+    if names_the_same_file(dest, source) {
+        anyhow::bail!("la destination ne peut pas être le clip source");
+    }
+    let indices = audio_stream_indices(&open_reader(source)?);
+    let stream = *indices
+        .get(ordinal)
+        .with_context(|| format!("ce clip n’a pas de piste audio {ordinal}"))?;
+    let reader = open_single_stream(source, stream, false)?;
+    let native = unsafe { reader.GetNativeMediaType(stream, 0) }.context("reading the audio type")?;
+
+    let result = (|| -> Result<()> {
+        let (writer, out) = open_audio_only_sink(dest, &native)?;
+        let copied = copy_stream(&reader, &writer, stream, out, 0, i64::MAX, source, "audio")?;
+        if copied.packets == 0 {
+            anyhow::bail!("la piste audio {ordinal} est vide");
+        }
+        unsafe { writer.Finalize().context("Finalize(audio track)")? };
+        Ok(())
+    })();
+    if result.is_err() {
+        discard(dest);
+    }
+    result
+}
+
+fn open_audio_only_sink(dest: &Path, audio_type: &IMFMediaType) -> Result<(IMFSinkWriter, u32)> {
+    unsafe {
+        let mut attrs: Option<IMFAttributes> = None;
+        MFCreateAttributes(&mut attrs, 2)?;
+        let attrs = attrs.unwrap();
+        attrs.SetUINT32(&MF_SINK_WRITER_DISABLE_THROTTLING, 1)?;
+        attrs.SetUINT32(&MF_READWRITE_DISABLE_CONVERTERS, 1)?;
+        let writer = MFCreateSinkWriterFromURL(&HSTRING::from(dest), None, Some(&attrs))
+            .with_context(|| format!("impossible de créer {}", dest.display()))?;
+        let stream = writer.AddStream(audio_type).context("AddStream(audio track)")?;
+        writer
+            .SetInputMediaType(stream, audio_type, None)
+            .context("SetInputMediaType(audio track passthrough)")?;
+        writer.BeginWriting().context("BeginWriting(audio track)")?;
+        Ok((writer, stream))
+    }
+}
+
+/// One track an export keeps, and how loud.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackChoice {
+    /// Position among the file's audio streams (0 is the pre-mix when the file
+    /// has several).
+    pub ordinal: usize,
+    /// 0..=200, on the same taper the recorder's levels use; 100 is unchanged.
+    pub gain_percent: u32,
+}
+
+/// A trimmed export whose audio is rebuilt from the tracks the user chose.
+pub struct RemixExport<'a> {
+    pub source: &'a Path,
+    pub dest: &'a Path,
+    /// Snapped back to the previous keyframe, as in [`FastExport`].
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub tracks: &'a [TrackChoice],
+}
+
+/// Decodes one track to PCM over `start_100ns..end_100ns`, returning it with
+/// the time its first sample lands at, relative to `start_100ns`.
+fn decode_track(
+    source: &Path,
+    ordinal: usize,
+    start_100ns: i64,
+    end_100ns: i64,
+) -> Result<(Vec<u8>, i64)> {
+    let indices = audio_stream_indices(&open_reader(source)?);
+    let stream = *indices
+        .get(ordinal)
+        .with_context(|| format!("ce clip n’a pas de piste audio {ordinal}"))?;
+    let reader = open_single_stream(source, stream, true)?;
+    let mut pcm = Vec::new();
+    let mut offset_100ns = 0i64;
+    let mut empty_reads = 0u32;
+    loop {
+        let mut flags = 0u32;
+        let mut sample: Option<IMFSample> = None;
+        unsafe { reader.ReadSample(stream, 0, None, Some(&mut flags), None, Some(&mut sample)) }
+            .with_context(|| format!("la lecture de {} a échoué", source.display()))?;
+        if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
+            break;
+        }
+        let Some(sample) = sample else {
+            empty_reads = count_empty_read(empty_reads, source, "audio")?;
+            continue;
+        };
+        empty_reads = 0;
+        let t = timing(&sample);
+        if t.pts_100ns + t.duration_100ns <= start_100ns {
+            continue;
+        }
+        if t.pts_100ns >= end_100ns {
+            break;
+        }
+        if pcm.is_empty() {
+            offset_100ns = (t.pts_100ns - start_100ns).max(0);
+        }
+        unsafe {
+            let buffer = sample.ConvertToContiguousBuffer().context("reading decoded audio")?;
+            let mut data = std::ptr::null_mut();
+            let mut len = 0u32;
+            buffer.Lock(&mut data, None, Some(&mut len)).context("locking decoded audio")?;
+            pcm.extend_from_slice(std::slice::from_raw_parts(data, len as usize));
+            buffer.Unlock().context("unlocking decoded audio")?;
+        }
+    }
+    Ok((pcm, offset_100ns))
+}
+
+/// The audio streams a remix writes: the chosen tracks at their gains, preceded
+/// by their sum when there are several, which is what an ordinary player plays.
+fn remix_streams(decoded: Vec<(Vec<u8>, i64)>, tracks: &[TrackChoice]) -> Vec<(Vec<u8>, i64)> {
+    use crate::capture::audio::{apply_pcm_gain, mix_pcm_into, percent_to_gain};
+    let mut stems: Vec<(Vec<u8>, i64)> = decoded
+        .into_iter()
+        .zip(tracks)
+        .map(|((mut pcm, offset), choice)| {
+            apply_pcm_gain(&mut pcm, percent_to_gain(choice.gain_percent));
+            (pcm, offset)
+        })
+        .collect();
+    if stems.len() > 1 {
+        let block = crate::capture::audio::ENCODER_BLOCK_ALIGN;
+        let offset = stems.iter().map(|(_, o)| *o).min().unwrap_or(0);
+        let frames = |(pcm, o): &(Vec<u8>, i64)| {
+            ((o - offset) as usize * crate::capture::audio::SAMPLE_RATE / 10_000_000) * block + pcm.len()
+        };
+        let mut mix = vec![0u8; stems.iter().map(frames).max().unwrap_or(0)];
+        for stem in &stems {
+            let shift = ((stem.1 - offset) as usize * crate::capture::audio::SAMPLE_RATE / 10_000_000) * block;
+            mix_pcm_into(&mut mix[shift..shift + stem.0.len()], &stem.0, 1.0);
+        }
+        stems.insert(0, (mix, offset));
+    }
+    stems
+}
+
+/// Stream-copies the video of `start_ms..end_ms` and rebuilds the audio from
+/// `tracks`: each decoded, scaled by its gain, and re-encoded as its own
+/// stream, with their sum first when there is more than one. Muted tracks are
+/// simply not listed. The video is untouched, so the in-point still snaps back
+/// to a keyframe.
+pub fn export_remix(request: RemixExport<'_>) -> Result<ExportOutcome> {
+    if names_the_same_file(request.dest, request.source) {
+        anyhow::bail!("la destination de l’export ne peut pas être le clip source");
+    }
+    let keys = keyframes_ms(request.source)?;
+    let start_ms = snap_start(&keys, request.start_ms);
+    let start_100ns = (start_ms as i64) * 10_000;
+    let end_100ns = (request.end_ms as i64) * 10_000;
+
+    // Everything on the source side first, so a failure here leaves `dest`
+    // untouched (the same rule `Failed::BeforeCreating` states).
+    let decoded = request
+        .tracks
+        .iter()
+        .map(|t| decode_track(request.source, t.ordinal, start_100ns, end_100ns))
+        .collect::<Result<Vec<_>>>()?;
+    let streams = remix_streams(decoded, request.tracks);
+    let video_reader = open_compressed(request.source, false)?;
+    let video_type = unsafe { video_reader.GetNativeMediaType(video_stream(), 0) }
+        .context("ce clip n’a pas de piste vidéo")?;
+
+    let result = (|| -> Result<ExportOutcome> {
+        let muxer = crate::encode::mf::ClipMuxer::new(request.dest, &video_type, streams.len())?;
+        let (writer, video_out) = muxer.video_sink();
+        let video = copy_stream(
+            &video_reader,
+            writer,
+            video_stream(),
+            video_out,
+            start_100ns,
+            end_100ns,
+            request.source,
+            "video",
+        )?;
+        if video.packets == 0 {
+            anyhow::bail!("cette plage ne contient aucune vidéo");
+        }
+        let second = crate::capture::audio::SAMPLE_RATE * crate::capture::audio::ENCODER_BLOCK_ALIGN;
+        for (track, (pcm, offset)) in streams.iter().enumerate() {
+            for (i, chunk) in pcm.chunks(second).enumerate() {
+                let at = offset + (i as i64) * 10_000_000;
+                muxer.write_audio(track, at, chunk)?;
+            }
+        }
+        muxer.finish()?;
+        Ok(ExportOutcome {
+            duration_ms: (video.written_100ns / 10_000).max(0) as u64,
+            video_packets: video.packets,
+            has_audio: streams.iter().any(|(pcm, _)| !pcm.is_empty()),
+        })
+    })();
+    if result.is_err() {
+        discard(request.dest);
+    }
+    result
 }
 
 #[cfg(test)]

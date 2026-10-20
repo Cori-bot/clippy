@@ -81,8 +81,56 @@ impl ClientHandler for Daemon {
             // `library.rename` uses. The export is announced to every other
             // client by the `clip_saved` `Daemon::export_clip` broadcasts, so
             // there is no export-specific event to subscribe to.
-            Ok(Command::LibraryExport { clip_id, start_ms, end_ms, mode }) => {
-                updated_clip(request.id, self.export_clip(&clip_id, start_ms, end_ms, &mode))
+            Ok(Command::LibraryExport { clip_id, start_ms, end_ms, mode, tracks }) => {
+                updated_clip(
+                    request.id,
+                    self.export_clip(&clip_id, start_ms, end_ms, &mode, tracks.as_deref()),
+                )
+            }
+            Ok(Command::LibraryTracks { clip_id }) => match self.clip_tracks(&clip_id) {
+                Ok(data) => Response::ok(request.id, data),
+                Err(e) => Response::err(request.id, format!("{e:#}")),
+            },
+            Ok(Command::GamesList) => games_reply(request.id, "games", &self.games_list()),
+            Ok(Command::GamesSet { exe, enabled, name, profile }) => {
+                let profile = match profile {
+                    None => None,
+                    Some(value) => match serde_json::from_value::<crate::games::GameProfile>(value) {
+                        Ok(profile) => Some(profile),
+                        Err(e) => {
+                            return Response::err(request.id, format!("games.set : profil invalide ({e})"));
+                        }
+                    },
+                };
+                match self.games_set(&exe, crate::games::Edit { enabled, name, profile }) {
+                    Ok(entry) => games_reply(request.id, "game", &entry),
+                    Err(e) => Response::err(request.id, format!("{e:#}")),
+                }
+            }
+            Ok(Command::GamesRemove { exe }) => match self.games_remove(&exe) {
+                Ok(()) => {
+                    let mut fields = Map::new();
+                    fields.insert("exe".to_string(), Value::from(exe));
+                    Response::ok(request.id, Value::Object(fields))
+                }
+                Err(e) => Response::err(request.id, format!("{e:#}")),
+            },
+            // A window enumeration, a few milliseconds; not cached, since the
+            // point is to show what is open right now.
+            Ok(Command::WindowsList) => {
+                let windows: Vec<Value> = crate::game::list_windows()
+                    .into_iter()
+                    .map(|w| {
+                        let mut fields = Map::new();
+                        fields.insert("exe".to_string(), Value::from(w.exe));
+                        fields.insert("name".to_string(), Value::from(w.name));
+                        fields.insert("title".to_string(), Value::from(w.title));
+                        Value::Object(fields)
+                    })
+                    .collect();
+                let mut fields = Map::new();
+                fields.insert("windows".to_string(), Value::Array(windows));
+                Response::ok(request.id, Value::Object(fields))
             }
             Ok(Command::Screenshot) => match self.screenshot() {
                 // `shot_saved` is broadcast by `Daemon::screenshot` itself, not
@@ -379,6 +427,21 @@ fn library_list(daemon: &Daemon, id: u64, offset: usize, limit: usize) -> Respon
 /// The response for `library.rename` and `library.favorite`: the clip as it now
 /// stands, so a UI can re-render the one row it changed instead of re-listing
 /// the page it is on.
+/// `{<key>: value}`, the shape every games reply has.
+fn games_reply<T: serde::Serialize>(id: u64, key: &str, value: &T) -> Response {
+    match serde_json::to_value(value) {
+        Ok(data) => {
+            let mut fields = Map::new();
+            fields.insert(key.to_string(), data);
+            Response::ok(id, Value::Object(fields))
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "could not serialize the games list");
+            Response::err(id, "la liste des jeux n’a pas pu être sérialisée")
+        }
+    }
+}
+
 fn updated_clip(id: u64, result: anyhow::Result<ClipMeta>) -> Response {
     match result {
         Ok(meta) => match serde_json::to_value(&meta) {

@@ -563,7 +563,7 @@ pub const MIX_TRACK_NAME: &str = "Mix";
 
 fn write_clip(snapshot: &ClipSnapshot, path: &Path) -> Result<()> {
     let streams = audio_streams(snapshot);
-    let muxer = ClipMuxer::new(path, &snapshot.settings, &snapshot.video_type, streams.len())?;
+    let muxer = ClipMuxer::new(path, &snapshot.video_type, streams.len())?;
     for packet in &snapshot.video {
         muxer.write_video_packet(
             packet.pts_100ns - snapshot.base_pts,
@@ -640,6 +640,8 @@ fn rebuild_wait(failures: u32) -> Duration {
 fn save_clip(
     capture: &CaptureHandle<ReplaySession>,
     clip_dir: &Path,
+    folder: &str,
+    game: &str,
     encoder_name: &str,
 ) -> Result<Option<SavedClip>> {
     let started = Instant::now();
@@ -671,7 +673,12 @@ fn save_clip(
     // through `MFCreateSinkWriterFromURL`, which creates *and* truncates), and
     // if the mux fails we take the reservation back down with us rather than
     // leaving a zero-byte .mp4 sitting on an id.
-    let id = library::allocate_clip_id(clip_dir)?;
+    // The clip's own directory: the clips folder, or the game's sub-folder.
+    // `allocate_clip_id_in` creates it and refuses a name that is not one safe
+    // path component, so a hostile game name cannot place a clip elsewhere.
+    let id = library::allocate_clip_id_in(clip_dir, folder)?;
+    let clip_dir = &library::folder_dir(clip_dir, folder)
+        .ok_or_else(|| anyhow!("nom de dossier de clips invalide : {folder:?}"))?;
     let path = library::mp4_path(clip_dir, &id);
     if let Err(e) = write_clip(&snapshot, &path) {
         match std::fs::remove_file(&path) {
@@ -745,8 +752,8 @@ fn save_clip(
         has_audio: snapshot.settings.with_audio,
         favorite: false,
         audio_tracks: audio_track_names(&snapshot),
-        game: String::new(),
-        folder: String::new(),
+        game: game.to_string(),
+        folder: folder.to_string(),
     };
     // A clip with no sidecar is still a clip — the next scan adopts it — so a
     // sidecar failure is logged, not propagated over the freshly written MP4.
@@ -1041,6 +1048,10 @@ struct LiveSession {
     capture: CaptureHandle<ReplaySession>,
     encoder_name: String,
     clip_dir: PathBuf,
+    /// Sub-folder clips are filed in ("" = the clips folder) and the game they
+    /// belong to ("" = the desktop); fixed for the life of the session.
+    folder: String,
+    game: String,
     width: u32,
     height: u32,
 }
@@ -1112,7 +1123,9 @@ fn start_session(
     )?;
     let encoder_name = capture.sink().lock().encoder.name().to_string();
 
-    Ok(LiveSession { capture, encoder_name, clip_dir, width, height })
+    let folder = config.clip_folder();
+    let game = config.session.game.as_ref().map(|g| g.name.clone()).unwrap_or_default();
+    Ok(LiveSession { capture, encoder_name, clip_dir, folder, game, width, height })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1143,7 +1156,7 @@ fn run_session(
             return Err(e);
         }
     };
-    let LiveSession { capture, encoder_name, clip_dir, width, height } = live;
+    let LiveSession { capture, encoder_name, clip_dir, folder, game, width, height } = live;
     if let Some(tx) = ready.take() {
         // Carries the session's facts, not just "ready": `EngineHandle::spawn`
         // returns the instant this lands, and the 250 ms tick below that would
@@ -1178,7 +1191,7 @@ fn run_session(
     loop {
         match commands.recv_timeout(Duration::from_millis(250)) {
             Ok(EngineCommand::Clip { reply }) => {
-                let result = save_clip(&capture, &clip_dir, &encoder_name);
+                let result = save_clip(&capture, &clip_dir, &folder, &game, &encoder_name);
                 if options.print_clips {
                     match &result {
                         Ok(Some(saved)) => print_clip_line(saved),
@@ -1249,7 +1262,7 @@ fn run_session(
                     // --auto-clip that fires before the ring has buffered
                     // anything must say so: a verification run that
                     // silently produces no clip looks like a pass.
-                    match save_clip(&capture, &clip_dir, &encoder_name) {
+                    match save_clip(&capture, &clip_dir, &folder, &game, &encoder_name) {
                         Ok(Some(saved)) => print_clip_line(&saved),
                         Ok(None) => println!("nothing buffered yet — try again in a moment"),
                         Err(e) => {

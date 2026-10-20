@@ -224,6 +224,7 @@ $errLog = Join-Path $scratch 'daemon.err.log'
 @"
 replay_seconds = $ReplaySeconds
 clip_dir = '$clipDir'
+group_by_game = false
 max_library_gb = 0
 stats_seconds = 1
 clip_hotkey = "ctrl+alt+shift+f9"
@@ -239,6 +240,7 @@ New-Item -ItemType Directory -Force (Join-Path $cliScratch 'clips') | Out-Null
 @"
 replay_seconds = $ReplaySeconds
 clip_dir = '$(Join-Path $cliScratch 'clips')'
+group_by_game = false
 stats_seconds = 1
 clip_hotkey = "ctrl+alt+shift+f8"
 "@ | Out-File -FilePath (Join-Path $cliScratch 'clippy\config.toml') -Encoding utf8
