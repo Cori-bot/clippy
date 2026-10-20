@@ -18,7 +18,7 @@ export type Field = {
   options?: { value: string; label: string }[];
   /**
    * A `tier` field's presets, in dropdown order. Lives on the descriptor
-   * rather than in a table `Field.svelte` looks up by `field.key`, for the
+   * rather than in a table `Field.tsx` looks up by `field.key`, for the
    * same reason `liveTest` does: this page has already shipped one Critical
    * from a control keyed on a hard-coded config-key literal, and a second
    * tiered setting would repeat it.
@@ -30,7 +30,7 @@ export type Field = {
   dynamic?: 'monitors';
   /**
    * Whether a press of this hotkey reaches the daemon as `hotkey_pressed`,
-   * which is what `Field.svelte`'s "Test" button and its hint are answering.
+   * which is what `Field.tsx`'s "Test" button and its hint are answering.
    * Only `clip_hotkey`'s `WM_HOTKEY` arm broadcasts that event -- the
    * screenshot arm deliberately stays silent (`window.rs`, the arm for
    * `SHOT_HOTKEY_ID`) so a screenshot press can never make the clip row's
@@ -101,6 +101,7 @@ export const CUSTOM_TIER = 'custom';
  * nothing migrated.
  */
 export const BITRATE_TIERS: { value: number; label: string }[] = [
+  { value: 0, label: 'Automatique – selon l’écran et les fps' },
   { value: 5000, label: 'Faible – 5 000 kbps' },
   { value: 8000, label: 'Moyen – 8 000 kbps' },
   { value: 14000, label: 'Élevé – 14 000 kbps' },
@@ -247,7 +248,7 @@ export function inactiveReason(field: Field, config: Record<string, unknown>): s
 }
 
 /**
- * The sections `Settings.svelte` renders, in display order, and the single
+ * The sections `Settings.tsx` renders, in display order, and the single
  * source of truth for it: the page iterates this constant instead of its own
  * literal, so a `FIELDS` entry naming a section absent here is invisible
  * rather than silently unrendered. `Updates` sits last because it is an
@@ -315,9 +316,9 @@ export function validate(key: string, value: unknown): string | null {
  * What a `hotkey` field's Save button commits: always the field's own key,
  * paired with the combination just captured.
  *
- * Pulled out of `Field.svelte` and into this plain module so it can be
+ * Pulled out of `Field.tsx` and into this plain module so it can be
  * pinned by a test -- the web suite has no DOM (see the rest of
- * `lib/*.test.ts`), so a `<button onclick>` inside a Svelte component can
+ * `lib/*.test.ts`), so a `<button onclick>` inside a component can
  * never be driven directly from a test, but a function it calls can be. This
  * is exactly the seam that was missing when the Screenshot row's Save button
  * shipped calling `set('clip_hotkey', capture)` -- a string typed once for
@@ -366,7 +367,7 @@ export function hotkeyProblem(
  * `hotkeyProblem` for the clip hotkey, for a caller that renders that one row
  * without the settings list around it.
  *
- * Looks the descriptor up rather than taking one, so `FirstRun.svelte` gets
+ * Looks the descriptor up rather than taking one, so `FirstRun.tsx` gets
  * the warning without also getting a second opinion about which field the
  * clip hotkey is -- the mistake `liveTest` and `boundKey` exist to prevent.
  */
@@ -382,7 +383,7 @@ export function clipHotkeyProblem(
  * What a `hotkey` field's keycap recorder seeds `capture` with when the user
  * clicks in to arm it -- the field's own current value, not another field's.
  * Companion to `hotkeySaveTarget` above, extracted for the same reason: this
- * is the read-side half of the same bug (`Field.svelte` used to seed every
+ * is the read-side half of the same bug (`Field.tsx` used to seed every
  * hotkey row from `config['clip_hotkey']`).
  */
 export function hotkeySeed(field: Field, config: Record<string, unknown>): string {

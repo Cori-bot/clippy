@@ -16,3 +16,7 @@ body { margin: 0; overflow: hidden; user-select: none; background: var(--color-s
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Menus and tooltips are portalled to <body> with no z-index of their own; the
+   hovered or focused card lifts itself with z-[1], and would paint over them. */
+[data-radix-popper-content-wrapper] { z-index: 60 !important; }

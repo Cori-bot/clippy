@@ -4,7 +4,7 @@
  * Everything here is pure and DOM-free on purpose. The project has no
  * component test framework and adding one would mean a new dependency, so a
  * primitive's correctness lives in whatever part of it can be pulled out to
- * here and tested. A `.svelte` file that grows arithmetic is a file with an
+ * here and tested. A component file that grows arithmetic is a file with an
  * untested branch in it.
  */
 

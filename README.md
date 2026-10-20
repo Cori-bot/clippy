@@ -228,7 +228,7 @@ Release binaries land in `target/release/`. The release profile is hardened: `lt
 | [`clippy-core`](crates/clippy-core) | — | The engine: capture, encode, replay ring, mux. No CLI, no argument parsing. |
 | [`clippy-proto`](crates/clippy-proto) | — | Wire types only — `Request`/`Response`/`Event`, `ClipMeta`. serde only, no `windows-rs`, no `unsafe`. |
 | [`clippy-daemon`](crates/clippy-daemon) | `clippy-daemon.exe` | Control socket, arm/disarm/clip, clip library, config, hotkeys, tray. |
-| [`clippy-ui`](crates/clippy-ui) | `clippy-ui.exe` | Tauri v2 + Svelte 5 desktop app. |
+| [`clippy-ui`](crates/clippy-ui) | `clippy-ui.exe` | Tauri v2 + React 19 + Tailwind 4 desktop app (OpenAI Apps SDK UI). |
 | [`clippy-cli`](crates/clippy-cli) | `clippy.exe` | Command-line interface and the engine's verification harness. |
 
 `clippy-ui` **deliberately does not depend on `clippy-core`.** Every capability it has arrives over the
@@ -237,7 +237,7 @@ use. `scripts/ui-isolation.ps1` enforces it. For the same reason `clippy-cli` de
 *directly* rather than through the daemon — it is the ground-truth harness, and putting it behind
 the daemon would put the thing under test behind the thing under test.
 
-Roughly 25,600 lines of Rust and 7,400 of TypeScript/Svelte, against 307 crates and exactly one
+Roughly 25,600 lines of Rust and 7,400 of TypeScript/React, against 307 crates and exactly one
 runtime npm dependency (`@tauri-apps/api`). The frontend bundle is 120 KB of JS and 23 KB of CSS.
 
 ## Verification

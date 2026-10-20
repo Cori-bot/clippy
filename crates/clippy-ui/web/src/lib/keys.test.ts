@@ -99,15 +99,15 @@ describe('isActivatableTarget', () => {
 describe('shouldHandleKey', () => {
   // Calls the shipped function rather than restating its expression: a mirror
   // of the guard would keep passing after the guard itself was changed, which
-  // is the failure mode these cases exist to catch. `Grid.svelte` and
-  // `ClipPage.svelte` are both real callers of this one predicate — the grid
+  // is the failure mode these cases exist to catch. `Grid.tsx` and
+  // `ClipPage.tsx` are both real callers of this one predicate — the grid
   // passes `ownsActivation`, the clip page leaves it at its default.
   const card = target({ tagName: 'BUTTON' });
   const arm = target({ tagName: 'BUTTON' });
 
   it('still lets arrow keys through a focused clip card', () => {
     // The regression this split exists to prevent. A card is a real `<button>`
-    // (ClipCard.svelte) and WebView2 focuses it on click — the primary way a
+    // (ClipCard.tsx) and WebView2 focuses it on click — the primary way a
     // user selects a clip — so a guard keyed on the tag alone went dead on
     // every grid key the moment anyone clicked anything.
     for (const key of ['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown']) {
@@ -133,7 +133,7 @@ describe('shouldHandleKey', () => {
   });
 
   it('defaults ownsActivation to false when the caller omits it', () => {
-    // `ClipPage.svelte` calls this two-argument form — every button on that
+    // `ClipPage.tsx` calls this two-argument form — every button on that
     // page owns its own Space and Enter, so there is no exception to opt into.
     expect(shouldHandleKey(arm, ' ')).toBe(false);
     expect(shouldHandleKey(arm, 'Enter')).toBe(false);

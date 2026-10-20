@@ -86,7 +86,7 @@ export function ClipCard({
 
   /** One list for the `⋯` menu and the right-click menu, so they cannot drift apart. */
   const content = (
-    <Menu.Content align="end" minWidth={200} width="auto">
+    <Menu.Content align={menuAt ? 'start' : 'end'} minWidth={200} width="auto">
       <Menu.Item onSelect={() => pick('favorite')}>
         <span className="flex items-center gap-2">
           {clip.favorite ? <StarFilled className="size-4" /> : <Star className="size-4" />}
@@ -157,6 +157,9 @@ export function ClipCard({
           alt=""
           loading="lazy"
           decoding="async"
+          // A clip can exist before its thumbnail does (a still desktop sends no
+          // frame to stage one); show the empty tile, not a broken-image glyph.
+          onError={(e) => (e.currentTarget.style.visibility = 'hidden')}
         />
         <span className="absolute right-1.5 bottom-1.5 rounded-sm bg-black/70 px-1.5 py-px text-[10px] text-white tabular-nums">
           {formatDuration(clip.duration_ms)}

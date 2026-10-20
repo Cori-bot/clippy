@@ -101,8 +101,8 @@ class AppState {
   /**
    * Config keys accepted while armed whose new value only takes effect at
    * the next arm -- the "Re-arm to apply" banner's contents. Lives on `app`
-   * rather than as component-local state in Settings.svelte: that page is
-   * mounted only inside `{#if app.view === 'settings'}` (App.svelte), so
+   * rather than as component-local state in Settings.tsx: that page is
+   * mounted only inside the settings view (App.tsx), so
    * component-local state does not survive a trip to Clips and back. Before
    * this branch that only cost a stale frame rate; the two keys this branch
    * added are the ones whose unapplied state is a lit taskbar microphone
@@ -567,7 +567,7 @@ async function onDaemonUp() {
   }
   await app.loadClips();
   // A daemon restart while the Screenshots tab is open is the same stale-list
-  // hole `loadClips` closes above: `Shots.svelte` only loads on mount, so
+  // hole `loadClips` closes above: `Shots.tsx` only loads on mount, so
   // without this a reconnect would leave the grid showing whatever it had
   // before the daemon went away.
   await app.loadShots();
@@ -581,7 +581,7 @@ async function onDaemonUp() {
   }
 }
 
-/** Subscribes the store to the daemon. Call once, from App.svelte. */
+/** Subscribes the store to the daemon. Call once, from App.tsx. */
 export function wireDaemon() {
   onConnected(() => void onDaemonUp());
 
@@ -935,7 +935,7 @@ export class UpdateStore {
 export const updates = reactive(new UpdateStore());
 
 /**
- * Subscribes the store to install events. Call once, from App.svelte,
+ * Subscribes the store to install events. Call once, from App.tsx,
  * alongside `wireDaemon()`.
  *
  * Only the subscription lives here -- the automatic check itself fires from

@@ -22,7 +22,7 @@ describe('FIELDS', () => {
    *
    * It used to be disclosed twice -- in the option label and in the help --
    * and the label half was dropped deliberately on 2026-09-07: the labels had
-   * grown long enough to run off the side of the window. (`Select.svelte`'s
+   * grown long enough to run off the side of the window. (`Select.tsx`'s
    * popup no longer overflows either way, so if the label warning is ever
    * wanted back it can come back safely.) The help is now the only place that
    * says it, which makes this assertion the whole of the disclosure rather
@@ -147,7 +147,11 @@ describe('bitrate tiers', () => {
     }
   });
 
-  it('keeps the shipped 8000 default a preset, so no install needs migrating', () => {
+  it('shows 0 -- the shipped default, derived from screen size and fps -- as Automatic', () => {
+    expect(tierFor(field, 0)).toBe('0');
+  });
+
+  it('keeps 8000 a preset, so installs that saved it need no migration', () => {
     // The tier is derived from the number rather than stored, so an existing
     // config.toml is already correct -- but only while 8000 is on the list.
     // Drop it and every default install silently becomes `Custom`.
@@ -159,13 +163,12 @@ describe('bitrate tiers', () => {
     // dropdown that rounded it onto the nearest preset would change what the
     // user records without telling them.
     expect(tierFor(field, 9500)).toBe(CUSTOM_TIER);
-    expect(tierFor(field, 0)).toBe(CUSTOM_TIER);
     expect(tierFor(field, undefined)).toBe(CUSTOM_TIER);
   });
 
   it('lists the presets in order with Custom last', () => {
     expect(tierOptions(field).map((o) => o.value)).toEqual([
-      '5000', '8000', '14000', '20000', CUSTOM_TIER,
+      '0', '5000', '8000', '14000', '20000', CUSTOM_TIER,
     ]);
   });
 
@@ -220,7 +223,7 @@ describe('validate', () => {
 describe('settings fields', () => {
   it('renders check_for_updates, so nobody sees the unknown-settings banner', () => {
     // config.get returns every Config key. A key with no FIELDS entry lands in
-    // unknownKeys, and Settings.svelte tells the user their app is out of date
+    // unknownKeys, and Settings.tsx tells the user their app is out of date
     // with their daemon -- which would be false and unfixable.
     const fromDaemon = { check_for_updates: true, ...Object.fromEntries(READ_ONLY_EXTRAS.map((k) => [k, ''])) };
     expect(unknownKeys(fromDaemon)).toEqual([]);
@@ -228,9 +231,9 @@ describe('settings fields', () => {
   });
 
   it('has every FIELDS section rendered by SECTIONS', () => {
-    // Settings.svelte iterates SECTIONS, not FIELDS, to decide what headings
+    // Settings.tsx iterates SECTIONS, not FIELDS, to decide what headings
     // to draw. A field whose `section` is not in SECTIONS is valid TypeScript
-    // (svelte-check never checks the array literal against the union) but
+    // (tsc never checks the array literal against the union) but
     // never reaches the screen -- exactly what happened to `check_for_updates`
     // and `'Updates'` before SECTIONS existed.
     const usedSections = new Set(FIELDS.map((f) => f.section));
@@ -278,7 +281,7 @@ describe('the screenshot fields', () => {
   });
 
   it('puts both rows in a section the page actually renders', () => {
-    // Settings.svelte iterates SECTIONS, not FIELDS: a field whose section is
+    // Settings.tsx iterates SECTIONS, not FIELDS: a field whose section is
     // absent from SECTIONS is valid TypeScript that never reaches the screen.
     for (const key of ['screenshot_hotkey', 'screenshot_sound']) {
       expect(SECTIONS).toContain(FIELDS.find((f) => f.key === key)!.section);
@@ -294,7 +297,7 @@ describe('the screenshot fields', () => {
   it('does not offer a live test, because the screenshot hotkey arm never broadcasts hotkey_pressed', () => {
     // `window.rs`'s arm for SHOT_HOTKEY_ID deliberately stays silent so a
     // screenshot press can never make the clip row's "press it now" check
-    // look answered -- `Field.svelte` reads this flag to decide whether to
+    // look answered -- `Field.tsx` reads this flag to decide whether to
     // show the Test button at all.
     expect(FIELDS.find((f) => f.key === 'screenshot_hotkey')!.liveTest).toBeUndefined();
   });
@@ -302,7 +305,7 @@ describe('the screenshot fields', () => {
 
 describe('liveTest', () => {
   it('is set only for the one hotkey row the daemon actually echoes back', () => {
-    // A regression guard for the pattern this replaced: `Field.svelte` used to
+    // A regression guard for the pattern this replaced: `Field.tsx` used to
     // read `field.key === 'clip_hotkey'` directly, which is exactly the kind
     // of hard-coded key literal that shipped a real Critical earlier on this
     // branch. Asserting the flag here, rather than the string, is what makes
@@ -411,7 +414,7 @@ describe('hotkeyProblem', () => {
 
   /**
    * The wiring this depends on: a hotkey row with no `boundKey` gets its
-   * `bound` argument hard-coded to null by `Settings.svelte`, so it can never
+   * `bound` argument hard-coded to null by `Settings.tsx`, so it can never
    * warn about anything. That is the safe default, and this is what notices
    * a row that was meant to be wired and was not.
    */
@@ -428,7 +431,7 @@ describe('clipHotkeyProblem', () => {
   const standard = { clip_hotkey: 'alt+f10', hotkey_mode: 'standard' };
 
   /**
-   * `FirstRun.svelte` renders the clip hotkey row without the settings list
+   * `FirstRun.tsx` renders the clip hotkey row without the settings list
    * around it, so it has no `Field` to hand in. This exists so it does not
    * grow a second opinion about which descriptor the clip hotkey is -- the
    * shape of mistake `liveTest` and `boundKey` were introduced to stop.
@@ -456,7 +459,7 @@ describe('comboFromEvent', () => {
   /**
    * Not a real `KeyboardEvent`: the web suite runs on node with no DOM. Only
    * these five fields are read, which is the reason this function was pulled
-   * out of `Field.svelte`'s handler in the first place.
+   * out of `Field.tsx`'s handler in the first place.
    */
   function press(key: string, held: Partial<KeyboardEvent> = {}): KeyboardEvent {
     return { key, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...held } as KeyboardEvent;

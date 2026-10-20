@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Clippy</title>
+    <!-- The SDK's component CSS is emitted before Tailwind's own, which would
+         declare its `components` layer first and let the preflight reset in
+         `base` override every component. Fixing the order here, ahead of both. -->
+    <style>
+      @layer theme, base, components, utilities;
+    </style>
   </head>
   <body>
     <div id="root"></div>

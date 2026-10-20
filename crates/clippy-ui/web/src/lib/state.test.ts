@@ -654,8 +654,8 @@ describe('AppState.toggleArm', () => {
 
 describe('AppState.addRearmNeeded', () => {
   // The whole point of this finding: `rearmNeeded` used to be component-local
-  // state in Settings.svelte, which App.svelte mounts only inside
-  // `{#if app.view === 'settings'}` -- navigating away destroyed it. Reading
+  // state in Settings.tsx, which App.tsx mounts only inside
+  // the settings view -- navigating away destroyed it. Reading
   // it back off the `app` singleton (module-scoped, not tied to any
   // component's lifetime) is what proves it now survives that trip.
   it('is readable from the shared app singleton, not scoped to a component', () => {
@@ -1158,10 +1158,10 @@ describe('onDaemonUp: first-run routing', () => {
   });
 
   // I1's other hole: a daemon restart while the Screenshots tab is open. Only
-  // `Shots.svelte`'s mount loaded `app.shots` before this fix, so a reconnect
+  // `Shots.tsx`'s mount loaded `app.shots` before this fix, so a reconnect
   // left it stale. onDaemonUp runs on every connect, including a reconnect
   // (see its own comment), so this is also what the resiliency-panel restart
-  // path in App.svelte exercises.
+  // path in App.tsx exercises.
   it('reloads the screenshot list on every connect, same as the clip list', async () => {
     app.view = 'grid';
     stubDaemonCommands(true);
@@ -1319,7 +1319,7 @@ describe('UpdateStore.checkOnceAtLaunch', () => {
 
 describe('UpdateStore.swapping', () => {
   // installing/restarting are the two phases this update itself causes the
-  // daemon to disappear for -- App.svelte relies on this to keep DaemonDown
+  // daemon to disappear for -- App.tsx relies on this to keep DaemonDown
   // (with its Start button Rust would refuse) off screen during the swap.
   it('is true while installing and while restarting', () => {
     const state = new UpdateStore();

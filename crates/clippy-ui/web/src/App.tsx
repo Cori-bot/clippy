@@ -80,7 +80,7 @@ export function App() {
 
   return (
     <>
-      <div className="flex h-screen flex-col">
+      <div className="flex h-screen flex-col overflow-hidden">
         <TitleBar />
         <UpdateBanner />
 
@@ -96,7 +96,7 @@ export function App() {
         ) : (
           <div className="flex min-h-0 flex-1">
             <Rail />
-            <main className="flex-1 overflow-auto px-5 py-[18px]">
+            <main className="relative flex-1 overflow-auto px-5 py-[18px]">
               {a.view === 'grid' && <Grid />}
               {a.view === 'clip' && <ClipPage />}
               {a.view === 'shots' && <Shots />}

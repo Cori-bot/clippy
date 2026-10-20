@@ -3,7 +3,7 @@
  * `core:default` already grants.
  *
  * This exists because a missing window permission is the one defect class
- * this project's whole toolchain is blind to. `svelte-check`, `vite build`
+ * this project's whole toolchain is blind to. `tsc`, `vite build`
  * and `cargo build` all succeed; the call is refused at runtime, in the
  * webview, and the control simply does nothing. It cost a full build and a
  * hand-check to find that `data-tauri-drag-region` was inert because

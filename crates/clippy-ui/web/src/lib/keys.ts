@@ -67,9 +67,9 @@ function inputType(el: { tagName?: unknown; type?: unknown }): string | null {
  * narrower set rather than folded into `TYPING_TAGS`. The title bar's Arm
  * control is a real `<button>` -- it sat in the rail when this bug was found
  * and moved up in the UI overhaul, which only strengthens the reason: the
- * title bar is outside `App.svelte`'s view switch entirely, so it is mounted
- * alongside every screen there is -- and `Grid.svelte` listens on
- * `<svelte:window>`, so
+ * title bar is outside `App.tsx`'s view switch entirely, so it is mounted
+ * alongside every screen there is -- and `Grid.tsx` listens on
+ * `window`, so
  * while the grid was mounted every key press in the app reached it: Space hit
  * the grid's `preventDefault` before the browser could activate the focused
  * button, which left a keyboard user unable to arm or disarm at all, and
@@ -110,7 +110,7 @@ export function isTypingTarget(target: EventTarget | null): boolean {
  * `isTypingTarget`: once a checkbox stops being treated as text entry it stops
  * getting the free pass that kept Space with it, and Space is the one key a
  * checkbox genuinely owns. Nothing in the app hits that today — there is no
- * native checkbox left anywhere in `src`. `Field.svelte`'s boolean rows render
+ * native checkbox left anywhere in `src`. `Field.tsx`'s boolean rows render
  * `Toggle`, which is a `<button role="switch">` and is therefore covered by
  * `ACTIVATABLE_TAGS` instead. The rule is here so the next control that does
  * use one is right by default.
@@ -168,11 +168,11 @@ export function sliderOwnsKey(target: EventTarget | null, key: string): boolean 
  *   keys are never part of what a button owns, so they always fall through.
  *
  * `ownsActivation` lets one caller declare an exception to the second rule
- * for a specific target: `Grid.svelte`'s cards are `<button>`s too, but
+ * for a specific target: `Grid.tsx`'s cards are `<button>`s too, but
  * inside the grid their Space and Enter belong to the grid itself (spec
  * §6.2) — a card left to activate itself would re-select the clip that is
  * already selected instead of previewing or opening it. Every other caller
- * (`ClipPage.svelte` among them) has no such exception and leaves this at
+ * (`ClipPage.tsx` among them) has no such exception and leaves this at
  * its default of `false`, so every button on the page keeps its own Space
  * and Enter.
  *
