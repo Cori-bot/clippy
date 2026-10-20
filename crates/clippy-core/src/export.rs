@@ -626,6 +626,12 @@ fn copy_stream(
 // ---------------------------------------------------------------------------
 
 /// The source reader's stream indexes of the file's audio streams, in file order.
+///
+/// The reader numbers an MP4's audio streams last-written first: a clip written
+/// with its tracks as Mix, game, chat, microphone comes back as microphone,
+/// chat, game, Mix. Our writer always writes the same way, so reversing that
+/// listing gives the order the file (and the sidecar's names) use.
+/// `each_track_comes_back_as_the_stream_written_as_it` holds this to account.
 fn audio_stream_indices(reader: &IMFSourceReader) -> Vec<u32> {
     let mut found = Vec::new();
     // A file never has anywhere near this many streams; the bound only keeps a
@@ -636,6 +642,7 @@ fn audio_stream_indices(reader: &IMFSourceReader) -> Vec<u32> {
             found.push(index);
         }
     }
+    found.reverse();
     found
 }
 
@@ -1304,5 +1311,57 @@ mod tests {
              deleted; finding the path gone is the proof the delete ran"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Frequency of a stereo i16 PCM buffer, from its zero crossings. Good
+    /// enough to tell the test tones (220, 440, 660 Hz) apart.
+    fn pitch_hz(pcm: &[u8]) -> f64 {
+        let left: Vec<i16> = pcm.chunks_exact(4).map(|f| i16::from_le_bytes([f[0], f[1]])).collect();
+        let crossings = left.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
+        let seconds = left.len() as f64 / crate::capture::audio::SAMPLE_RATE as f64;
+        crossings as f64 / 2.0 / seconds
+    }
+
+    /// The bug this guards: the editor's track `n` must be the stream written
+    /// as track `n`. Reading the streams back in another order put the game's
+    /// sound in the chat's track and the other way round.
+    #[test]
+    fn each_track_comes_back_as_the_stream_written_as_it() {
+        use crate::encode::mf::{add_aac_stream, ensure_mf_started, write_pcm_sample};
+        use crate::capture::audio::{ENCODER_BLOCK_ALIGN, SAMPLE_RATE};
+        use windows::Win32::Media::MediaFoundation::MFCreateSinkWriterFromURL;
+        ensure_mf_started().expect("MF");
+        let path = std::env::temp_dir().join(format!("clippy-order-{}.m4a", std::process::id()));
+        let pitches = [220.0f32, 440.0, 660.0];
+        unsafe {
+            let writer = MFCreateSinkWriterFromURL(&HSTRING::from(path.as_os_str()), None, None)
+                .expect("writer");
+            let streams: Vec<u32> =
+                pitches.iter().map(|_| add_aac_stream(&writer).expect("aac")).collect();
+            writer.BeginWriting().expect("begin");
+            for (&stream, &hz) in streams.iter().zip(&pitches) {
+                let frames = SAMPLE_RATE * 2;
+                let mut pcm = Vec::with_capacity(frames * ENCODER_BLOCK_ALIGN);
+                for n in 0..frames {
+                    let v = ((n as f32 * hz * std::f32::consts::TAU / SAMPLE_RATE as f32).sin()
+                        * 6000.0) as i16;
+                    pcm.extend_from_slice(&v.to_le_bytes());
+                    pcm.extend_from_slice(&v.to_le_bytes());
+                }
+                for (k, chunk) in pcm.chunks(SAMPLE_RATE * ENCODER_BLOCK_ALIGN).enumerate() {
+                    write_pcm_sample(&writer, stream, k as i64 * 10_000_000, chunk).expect("write");
+                }
+            }
+            writer.Finalize().expect("finalize");
+        }
+        let mut found = Vec::new();
+        for ordinal in 0..pitches.len() {
+            let (pcm, _) = decode_track(&path, ordinal, 0, i64::MAX).expect("decode");
+            // Skip the encoder's priming at each end.
+            let middle = &pcm[pcm.len() / 4..pcm.len() * 3 / 4];
+            found.push(pitch_hz(middle).round() as i64);
+        }
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(found, [220, 440, 660], "ordinal n must decode as the n-th stream written");
     }
 }

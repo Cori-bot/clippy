@@ -333,7 +333,7 @@ pub(crate) fn video_type(
     }
 }
 
-fn write_pcm_sample(
+pub(crate) fn write_pcm_sample(
     writer: &IMFSinkWriter,
     stream: u32,
     timestamp_100ns: i64,
@@ -371,7 +371,7 @@ pub struct ClipMuxer {
 
 /// Adds one AAC output stream fed with 48 kHz stereo i16 PCM; returns its
 /// stream index. Shared by the single-track and multi-track muxer paths.
-fn add_aac_stream(writer: &IMFSinkWriter) -> Result<u32> {
+pub(crate) fn add_aac_stream(writer: &IMFSinkWriter) -> Result<u32> {
     unsafe {
         let out_type = audio_type(&MFAudioFormat_AAC)?;
         out_type.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24_000)?;

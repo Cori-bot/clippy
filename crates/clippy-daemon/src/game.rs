@@ -207,6 +207,9 @@ fn read_version_string(path: &str) -> Option<String> {
                     value.cast::<u16>(),
                     chars as usize,
                 ));
+                // Trademark signs are part of the resource, not of the name a
+                // person says: "Microsoft® Windows®" reads as "Microsoft Windows".
+                let text: String = text.chars().filter(|c| !matches!(c, '®' | '™')).collect();
                 let text = text.trim();
                 if !text.is_empty() && text.chars().count() <= 48 {
                     return Some(text.to_string());
