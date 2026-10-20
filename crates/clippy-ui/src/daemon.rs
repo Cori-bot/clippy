@@ -218,24 +218,57 @@ fn terminate(pid: u32) -> Result<(), String> {
     }
 }
 
-/// Lets the webview load the clips, thumbnails and per-track audio under `dir`
-/// (and its game sub-folders) through `asset:`.
+/// The clips folder last granted, so a clip saved into a game's folder that
+/// did not exist at connect time can be granted when its `clip_saved` arrives.
+static CLIP_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Lets the webview load the clips, thumbnails and per-track audio that sit
+/// directly in `dir` and in each of its sub-folders (one per game, plus
+/// `Screenshots`), through `asset:`.
 ///
-/// A free function, not a method, so the event closure in [`Supervisor::connect`]
+/// Non-recursive on purpose: the grant covers the folders Clippy files clips
+/// in and nothing deeper, and it never covers `dir`'s other subtrees. A free
+/// function, not a method, so the event closure in [`Supervisor::connect`]
 /// can call it too: that closure must be `'static` (the reader thread that owns
 /// it outlives the `connect` call), so it can only capture an owned clone of
-/// `AppHandle`, never a borrow of `&Supervisor`. Sharing this one line is what
-/// keeps the app-initiated grant (`Supervisor::allow_clip_dir`, called from
+/// `AppHandle`, never a borrow of `&Supervisor`. Sharing this one function is
+/// what keeps the app-initiated grant (`Supervisor::allow_clip_dir`, called from
 /// `on_connected`) and the event-driven one from becoming two copies of the
 /// same rule that could drift apart.
 fn grant_clip_dir(app: &AppHandle, dir: &str) {
-    // Recursive: clips are filed in one sub-folder per game (and the
-    // screenshots in `Screenshots`), and a game's folder only exists once its
-    // first clip is saved, so it cannot be granted ahead of time one by one.
-    // Without this every thumbnail under a game is a broken image with nothing
-    // logged and nothing on screen to say why. The folder is the one the user
-    // chose for Clippy's clips, so what lies under it is Clippy's own output.
-    let _ = app.asset_protocol_scope().allow_directory(dir, true);
+    let root = PathBuf::from(dir);
+    let scope = app.asset_protocol_scope();
+    let _ = scope.allow_directory(&root, false);
+    // Only the folders that exist now. A game's folder appears with its first
+    // clip, and `grant_clip_folder` covers that one when the event arrives.
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                let _ = scope.allow_directory(entry.path(), false);
+            }
+        }
+    }
+    if let Ok(mut last) = CLIP_ROOT.lock() {
+        *last = Some(root);
+    }
+}
+
+/// Grants one sub-folder of the clips folder, named by a `clip_saved` event.
+///
+/// The name comes from the daemon, so it is refused unless it is a single
+/// plain path component: no separators, no drive prefix, not `.` or `..`.
+fn grant_clip_folder(app: &AppHandle, folder: &str) {
+    let plain = !folder.is_empty()
+        && folder != "."
+        && folder != ".."
+        && !folder.contains(['/', '\\', ':']);
+    if !plain {
+        return;
+    }
+    let root = CLIP_ROOT.lock().ok().and_then(|last| last.clone());
+    if let Some(root) = root {
+        let _ = app.asset_protocol_scope().allow_directory(root.join(folder), false);
+    }
 }
 
 /// Owns the current connection and the thread that keeps trying to make one.
@@ -320,6 +353,13 @@ impl Supervisor {
                     && let Some(dir) = event.data.get("clip_dir_resolved").and_then(Value::as_str)
                 {
                     grant_clip_dir(&app, dir);
+                }
+                // A clip saved into a game's folder that did not exist yet.
+                // The folder rides on the event as the clip's own `folder`.
+                if event.event == "clip_saved"
+                    && let Some(folder) = event.data.get("folder").and_then(Value::as_str)
+                {
+                    grant_clip_folder(&app, folder);
                 }
                 // One channel for every daemon event; the frontend switches on
                 // `event`. A Tauri event per protocol event would mean a
