@@ -229,7 +229,8 @@ LICENCE
 -------
 
 Clippy est sous licence MIT ; le texte complet se trouve dans le dépôt des
-sources ci-dessous. Les icônes viennent de Lucide, dont la licence figure à la
-fin de ce fichier.
+sources ci-dessous. Les icônes et les couleurs viennent du système de design
+Apps SDK UI d’OpenAI (licence MIT), dont la licence figure à la fin de ce
+fichier.
 
 Sources, tickets et nouvelles versions :  https://github.com/OWNER/clippy

@@ -175,7 +175,10 @@
     border-radius: var(--r-md);
     box-shadow: var(--shadow);
   }
-  .menu.at { position: fixed; right: auto; top: 0; left: 0; }
+  .menu.at { position: fixed; right: auto; top: 0; left: 0; transform-origin: top left; }
+  /* Grows out of the trigger it hangs from, not out of its own centre. */
+  .menu { transform-origin: top right; animation: open var(--t) var(--ease); }
+  @keyframes open { from { opacity: 0; transform: scale(var(--scale-medium)); } }
   .menu:focus-visible { outline: none; }
   .item {
     display: flex;

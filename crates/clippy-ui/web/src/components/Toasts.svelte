@@ -34,5 +34,6 @@
   .toast :global(.ib) { flex: none; width: 24px; height: 24px; margin-top: -2px; }
   .toast.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--line-strong)); }
   .toast.error > :global(svg) { color: var(--danger); }
-  @keyframes slide { from { opacity: 0; transform: translateX(12px); } }
+  /* Rises from below with a soft cross-blur: slower in than out would be, and never from nothing. */
+  @keyframes slide { from { opacity: 0; transform: translateY(var(--distance-base)); filter: blur(var(--blur-small)); } }
 </style>

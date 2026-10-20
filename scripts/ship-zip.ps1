@@ -310,8 +310,8 @@ $readmeText = Get-Content -LiteralPath $readmeSrc -Raw
 Require -Name 'the shipping README names this version' -Condition ($readmeText -match [regex]::Escape($Version)) `
     -Detail "docs\ship\README.txt never mentions $Version -- it probably still describes the previous release"
 
-# Appended to the README in the zip. Lucide's ISC licence requires its notice
-# in every copy of the icons, and clippy-ui.exe is one, so a zip without it is
+# Appended to the README in the zip. OpenAI's MIT licence (Apps SDK UI icons and
+# colours) requires its notice in every copy, and clippy-ui.exe is one, so a zip without it is
 # not one this script will build.
 $noticesSrc = Join-Path $RepoRoot 'THIRD-PARTY-NOTICES.txt'
 Require -Name 'THIRD-PARTY-NOTICES.txt exists' -Condition (Test-Path -LiteralPath $noticesSrc) -Detail $noticesSrc

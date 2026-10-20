@@ -36,10 +36,10 @@
     background: transparent;
     color: var(--dim);
     cursor: pointer;
-    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
   }
   .ib:hover:not(:disabled) { background: var(--hover); color: var(--text); }
-  .ib:active:not(:disabled) { transform: translateY(1px); }
+  .ib:active:not(:disabled) { transform: scale(0.95); }
   .ib.active { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--text); }
   .ib:disabled { opacity: 0.35; cursor: default; }
 </style>

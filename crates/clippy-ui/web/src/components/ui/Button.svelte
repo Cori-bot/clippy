@@ -52,7 +52,7 @@
      `.ghost:hover`, so whichever is written last wins. Guarding each one
      makes the result independent of source order. */
   .b:hover:not(:disabled) { background: var(--raised-hi); }
-  .b:active:not(:disabled) { transform: translateY(1px); }
+  .b:active:not(:disabled) { transform: scale(0.97); }
   .b:disabled { opacity: 0.4; cursor: default; }
 
   .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }

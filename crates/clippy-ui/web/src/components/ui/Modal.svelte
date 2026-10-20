@@ -155,12 +155,13 @@
     border: 1px solid var(--line-strong);
     border-radius: var(--r-lg);
     box-shadow: var(--shadow);
-    animation: rise var(--t-slow) var(--ease);
+    animation: pop var(--t-slow) var(--ease);
   }
   .panel:focus-visible { outline: none; }
   h2 { margin: 0 0 8px; font-size: 15px; font-weight: 650; }
   .body { color: var(--dim); font-size: 12.5px; }
   .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   @keyframes fade { from { opacity: 0; } }
-  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  /* Scales up from the middle of the screen: a modal hangs from no trigger, so no origin. */
+  @keyframes pop { from { opacity: 0; transform: scale(var(--scale-large)); } }
 </style>

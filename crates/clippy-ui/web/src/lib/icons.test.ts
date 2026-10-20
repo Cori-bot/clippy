@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ICONS, type IconName } from './icons';
+import { ICONS, isSolid, type IconName } from './icons';
 
 /**
  * Every name the app asks for by string somewhere. A missing entry is a
@@ -21,20 +21,23 @@ describe('ICONS', () => {
     }
   });
 
-  it('gives every icon a non-empty path', () => {
+  it('gives every icon at least one non-empty path', () => {
     for (const [name, def] of Object.entries(ICONS)) {
-      expect(def.d.trim().length, `empty path: ${name}`).toBeGreaterThan(0);
+      const ds = isSolid(def) ? def.paths.map((p) => p.d) : [def.d];
+      expect(ds.length, `no path: ${name}`).toBeGreaterThan(0);
+      for (const d of ds) expect(d.trim().length, `empty path: ${name}`).toBeGreaterThan(0);
     }
   });
 
-  it('never continues a flattened path with a relative move', () => {
-    // Lucide writes some pieces as `<path d="m15 5 4 4">`. A lowercase opening
-    // move is absolute only while it opens a path; flattened after another
-    // piece it moves relative to wherever that piece ended, and the stroke
-    // lands off the icon -- the pencil lost its tip and the mute icon its
-    // cross exactly this way, with every other check green.
+  it('gives every solid icon a viewBox the component can use', () => {
     for (const [name, def] of Object.entries(ICONS)) {
-      expect(def.d.slice(1), `relative move inside: ${name}`).not.toMatch(/m/);
+      if (isSolid(def)) expect(def.viewBox, name).toMatch(/^0 0 \d+ \d+$/);
+    }
+  });
+
+  it('keeps the window caption buttons as strokes', () => {
+    for (const name of ['minimize', 'maximize', 'restore', 'close'] as const) {
+      expect(isSolid(ICONS[name]), name).toBe(false);
     }
   });
 

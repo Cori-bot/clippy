@@ -45,10 +45,10 @@
     height: 15px;
     border-radius: 50%;
     background: var(--dim);
-    transition: left var(--t) var(--ease), background var(--t) var(--ease);
+    transition: transform var(--t-slow) var(--ease), background var(--t) var(--ease);
   }
   .tg.on { background: var(--accent); border-color: var(--accent); }
-  .tg.on .knob { left: 20px; background: var(--text); }
+  .tg.on .knob { transform: translateX(18px); background: var(--text); }
   /* Every other interactive control in this folder answers the pointer; this
      one did not, against app.css's own argument that a control which does not
      move under the cursor reads as decoration. Off brightens to --line-hi,

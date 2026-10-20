@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ICONS, type IconName } from '../../lib/icons';
+  import { ICONS, isSolid, type IconName } from '../../lib/icons';
 
   /**
    * Every icon in this app is decorative: something outside it always carries
@@ -15,19 +15,33 @@
   const def = $derived(ICONS[name]);
 </script>
 
-<svg
-  width={size}
-  height={size}
-  viewBox="0 0 24 24"
-  fill={def.filled ? 'currentColor' : 'none'}
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
-  aria-hidden="true"
-  focusable="false">
-  <path d={def.d} />
-</svg>
+{#if isSolid(def)}
+  <svg
+    width={size}
+    height={size}
+    viewBox={def.viewBox}
+    fill="currentColor"
+    aria-hidden="true"
+    focusable="false">
+    {#each def.paths as path (path.d)}
+      <path d={path.d} fill-rule={path.evenodd ? 'evenodd' : undefined} clip-rule={path.evenodd ? 'evenodd' : undefined} />
+    {/each}
+  </svg>
+{:else}
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+    focusable="false">
+    <path d={def.d} />
+  </svg>
+{/if}
 
 <style>
   svg { display: block; flex: 0 0 auto; }
