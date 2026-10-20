@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { call, daemonConnected, onConnected, onDaemonEvent, onDisconnected } from './ipc';
 import { mergeSaved } from './clips';
+import { reactive } from './reactive';
 import type { ClipMeta, LibraryPage, ShotMeta, Status } from './types';
 
 export type View = 'grid' | 'clip' | 'shots' | 'settings' | 'firstrun';
@@ -47,30 +48,30 @@ function favoriteIdsOf(clips: ClipMeta[]): Set<string> {
 }
 
 class AppState {
-  connected = $state(false);
-  status = $state<Status | null>(null);
-  view = $state<View>('grid');
-  clips = $state<ClipMeta[]>([]);
-  total = $state(0);
-  totalBytes = $state<number | null>(null);
-  clipsLoading = $state(false);
-  clipsLoadError = $state<string | null>(null);
-  deleteProgress = $state<{ done: number; total: number } | null>(null);
+  connected = false;
+  status: Status | null = null;
+  view: View = 'grid';
+  clips: ClipMeta[] = [];
+  total = 0;
+  totalBytes: number | null = null;
+  clipsLoading = false;
+  clipsLoadError: string | null = null;
+  deleteProgress: { done: number; total: number } | null = null;
   private clipLoadVersion = 0;
-  libraryContext = $state(0);
+  libraryContext = 0;
   private reloadAfterDelete = false;
   private clipReloadTimer: ReturnType<typeof setTimeout> | undefined;
   clipMutation = 0;
-  shots = $state<ShotMeta[]>([]);
-  shotTotal = $state(0);
+  shots: ShotMeta[] = [];
+  shotTotal = 0;
   /** Index into `shots` of the tile the grid has selected. */
-  shotSelected = $state(0);
+  shotSelected = 0;
   /**
    * Index into `visible` -- not `clips` -- of the clip the grid has selected
    * and the clip page is showing. The two lists are the same list unless the
    * favourites filter is on.
    */
-  selected = $state(0);
+  selected = 0;
   /**
    * The favourites filter: the ids of the clips it shows, or null for all.
    *
@@ -85,18 +86,18 @@ class AppState {
    * Not persisted. Every launch opens on the whole library, so nobody opens
    * Clippy to find most of their clips apparently gone.
    */
-  favoriteIds = $state<Set<string> | null>(null);
-  toasts = $state<Toast[]>([]);
+  favoriteIds: Set<string> | null = null;
+  toasts: Toast[] = [];
   /** Live ring seconds while armed, from `stats`; falls back to `status`. */
-  ringUsed = $state(0);
+  ringUsed = 0;
   /**
    * The saved clip hotkey, for the empty grid's "press X while you play".
    * Free to keep: `onDaemonUp` already fetches the whole config to answer the
    * first-run question, so this is one more field off a call already made.
    */
-  hotkey = $state('alt+f10');
+  hotkey = 'alt+f10';
   /** The saved screenshot hotkey, for the empty tab's "press X while you play". */
-  shotHotkey = $state('alt+f8');
+  shotHotkey = 'alt+f8';
   /**
    * Config keys accepted while armed whose new value only takes effect at
    * the next arm -- the "Re-arm to apply" banner's contents. Lives on `app`
@@ -109,7 +110,7 @@ class AppState {
    * is a privacy and data-loss bug, not a cosmetic one. Cleared only by an
    * actual re-arm (`rearmNow`), never on a timer.
    */
-  rearmNeeded = $state<string[]>([]);
+  rearmNeeded: string[] = [];
 
   get armed() {
     return this.status?.armed ?? false;
@@ -523,7 +524,7 @@ class AppState {
   }
 }
 
-export const app = new AppState();
+export const app = reactive(new AppState());
 
 /**
  * Everything the app does the moment it has a daemon to talk to.
@@ -745,11 +746,11 @@ export type UpdateEvent =
  * daemon for the life of the window.
  */
 export class UpdateStore {
-  release = $state<Release | null>(null);
-  phase = $state<UpdateEvent['state']>('up-to-date');
-  received = $state(0);
-  total = $state(0);
-  error = $state<string | null>(null);
+  release: Release | null = null;
+  phase: UpdateEvent['state'] = 'up-to-date';
+  received = 0;
+  total = 0;
+  error: string | null = null;
 
   /**
    * Set the first time `install()` is called, and never cleared afterwards.
@@ -900,7 +901,7 @@ export class UpdateStore {
     this.installInFlight = true;
     this.installTriggered = true;
     try {
-      await invoke('update_install', { release: $state.snapshot(this.release) });
+      await invoke('update_install', { release: JSON.parse(JSON.stringify(this.release)) });
     } catch (e) {
       this.apply({ state: 'failed', message: String(e) });
     } finally {
@@ -931,7 +932,7 @@ export class UpdateStore {
   }
 }
 
-export const updates = new UpdateStore();
+export const updates = reactive(new UpdateStore());
 
 /**
  * Subscribes the store to install events. Call once, from App.svelte,

@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite';
-import { svelte } from '@sveltejs/vite-plugin-svelte';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [react(), tailwindcss()],
   // Fixed port: tauri.conf.json's devUrl points at it, and a port that moves
   // when 1420 is busy would leave `cargo tauri dev` staring at a blank window.
   //

@@ -1,0 +1,18 @@
+@import 'tailwindcss';
+@import '@openai/apps-sdk-ui/css';
+@source '../node_modules/@openai/apps-sdk-ui';
+
+/* Desktop shell: the window is the page; the webview's text selection is not wanted except where marked. */
+html, body, #root { height: 100%; }
+body { margin: 0; overflow: hidden; user-select: none; background: var(--color-surface-tertiary); color: var(--color-text); }
+.selectable, input, textarea { user-select: text; }
+
+/* Toasts rise from below with a soft cross-blur (transitions.dev "toast"). */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); filter: blur(2px); }
+}
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes pop-in { from { opacity: 0; transform: scale(0.96); } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

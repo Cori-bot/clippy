@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClipMeta, DaemonEvent, ShotMeta } from './types';
 
-// `state.svelte.ts` talks to the daemon through `./ipc`; mocking it here is
+// `state.ts` talks to the daemon through `./ipc`; mocking it here is
 // what lets these tests call the real store methods -- `remove`, `step`,
 // `current` -- rather than a restatement of their logic that would keep
 // passing after the real thing broke.
@@ -18,7 +18,7 @@ vi.mock('./ipc', () => ({
   onDisconnected: vi.fn(),
 }));
 
-// state.svelte.ts talks to Tauri directly for the update commands (they are
+// state.ts talks to Tauri directly for the update commands (they are
 // not daemon calls, so they do not go through `./ipc`'s `call`). Mocked the
 // same way clips.test.ts mocks this module: a bare `invoke` would otherwise
 // hit the real `@tauri-apps/api/core`, which has nothing to talk to outside
@@ -29,14 +29,14 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-// Nothing here drives wireUpdates() itself, but state.svelte.ts imports
+// Nothing here drives wireUpdates() itself, but state.ts imports
 // `listen` at module scope, and the real `@tauri-apps/api/event` reaches for
 // the same Tauri runtime `@tauri-apps/api/core` does.
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }));
 
-const { app, wireDaemon, UpdateStore, trimRangeError } = await import('./state.svelte');
+const { app, wireDaemon, UpdateStore, trimRangeError } = await import('./state');
 const { onConnected, onDaemonEvent } = await import('./ipc');
 
 /**
@@ -969,7 +969,7 @@ describe('wireDaemon: shot_saved', () => {
     expect(app.toasts.at(-1)?.text).toBe('Capture d’écran enregistrée');
   });
 
-  // The bug the comment at state.svelte.ts:503 names: a genuine prepend
+  // The bug the comment at state.ts:503 names: a genuine prepend
   // shifts every existing tile down one slot, so a selection held by index
   // would silently move to a different screenshot -- the same regression
   // clip_saved is tested against above.
