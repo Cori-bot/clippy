@@ -7,8 +7,9 @@ material.
 ------------------------------------------------------------------------
 OpenAI Apps SDK UI (https://github.com/openai/apps-sdk-ui), 0.2.2
 
-The icon shapes and the dark colour scale of the Clippy window are copied
-from OpenAI's Apps SDK UI design system.
+The components, icons and colour scale of the Clippy window come from
+OpenAI's Apps SDK UI design system, which is built on React, Radix UI and
+Tailwind CSS (all MIT licensed).
 ------------------------------------------------------------------------
 
 MIT License

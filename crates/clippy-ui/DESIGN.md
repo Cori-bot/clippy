@@ -1,36 +1,30 @@
 # Clippy — design system
 
-Mode: **Operate** (a tool people open to find a clip, trim it, change a setting). Scanability and consistency outrank expression; the brand lives in precise details.
+Mode: **Operate** (a tool people open to find a clip, trim it, change a setting). Scanability and consistency outrank expression; the brand lives in precise details. The look is OpenAI's: neutral dark grays, one blue, generous space, quiet borders, no decoration.
+
+## Stack
+
+React 19 + Tailwind 4 + **OpenAI Apps SDK UI** (`@openai/apps-sdk-ui`, MIT) on Vite, inside Tauri. The SDK supplies the components (`Button`, `Select`, `Switch`, `Slider`, `Menu`, `Tooltip`, `Alert`, `Input`, …), the icons and the token scale; the app writes no component CSS of its own.
 
 ## Where each decision lives (one seam each)
 
 | Concern | The one place | Callers see |
 | --- | --- | --- |
-| Palette | `web/src/vendor/openai/tokens.css` (generated), mapped to Clippy's names at the top of `web/src/app.css` | `var(--bg)`, `--surface`, `--text`, `--accent`… never a hex |
-| Icons | `web/src/lib/icons.ts` + `components/ui/Icon.svelte` | `<Icon name="play" />`; solid or stroke is hidden |
-| Motion | `--duration-*`, `--ease`, `--scale-*`, `--blur-*`, `--distance-*` in `app.css` | `var(--t)`, `var(--t-slow)` |
-| Settings rows | `web/src/lib/settings.ts` descriptors (`help`, `more`, `advanced`, `onlyWhen`) | `Field.svelte` renders them |
+| Tokens and theme | `@openai/apps-sdk-ui/css`, imported once in `web/src/index.css` (`data-theme="dark"` on `<html>`) | Tailwind utilities (`bg-surface`, `text-secondary`, `border-subtle`, `heading-lg`) and `var(--color-…)` |
+| Icons | `web/src/components/icons.ts` | `import { Play } from '../components/icons'` — the SDK's shapes under the app's names |
+| App state | `web/src/lib/state.ts`, made observable by `lib/reactive.ts` | `const a = useApp()` in a component; mutations go through `app.method()` |
+| Settings rows | `web/src/lib/settings.ts` descriptors (`help`, `more`, `advanced`, `onlyWhen`) | `Field.tsx` renders them |
+| Dialogs | `web/src/components/ui/Dialog.tsx` (Radix + SDK tokens) | `<Dialog open title actions>` |
+| Motion | Tailwind `duration-*`/`ease-*` + the keyframes at the end of `index.css` | ≤ 250 ms, strong ease-out |
 
-## Source of the visuals
+## Rules
 
-- **Colour and icons:** OpenAI's Apps SDK UI (`@openai/apps-sdk-ui` 0.2.2, MIT). It is React + Tailwind, so its components are not used; its neutral dark gray scale, status hues and SVG icons are copied by `web/scripts/sync-openai-design.mjs` (`node scripts/sync-openai-design.mjs`; bump `VERSION` there to update). Notice: `THIRD-PARTY-NOTICES.txt`.
-- **Motion:** the transitions.dev scale (durations 80/150/250 ms, strong ease-out `cubic-bezier(.22,1,.36,1)`, scale .96/.97, 2 px blur, 8 px rise). No bounce/overshoot easing (the app is a tool; the detector bans it).
+- Colour: `success` green means Clippy is recording or ready, `danger` red means destructive or broken, blue (`info`/primary) means selected. Text steps: `text-default` / `text-secondary` / `text-tertiary`. Surfaces step one gray at a time: `bg-surface-tertiary` (page) < `bg-surface-secondary` (rail, panels) < `bg-surface` < `bg-surface-elevated` (menus, dialogs, toasts).
+- Motion (transitions.dev scale): press `active:scale-[0.97]`; things that open from a trigger grow from it (scale .97); a dialog hangs from nothing (scale .96 from centre); toasts rise 8 px with a 2 px blur. Nothing animates longer than 250 ms, no bounce, only `transform` and `opacity`. `prefers-reduced-motion` collapses all of it (`index.css`).
+- Hit areas ≥ 24 px; every icon-only control has an `aria-label`; keyboard-driven actions do not animate.
+- French UI, French typography (’ apostrophe, no-break space before `: ? ! ;`).
+- Tests cover pure logic (`lib/*.test.ts`) in plain Vitest; components are not unit-tested (no DOM environment).
 
-## Colour contract (each token means one thing)
+## Credits
 
-| Token | Means |
-| --- | --- |
-| `--accent` | you selected / this is primary |
-| `--live` | Clippy is recording or ready to |
-| `--danger` | destructive or broken |
-| `--fav` | kept as a favourite |
-| `--text` / `--dim` / `--faint` | primary / secondary / tertiary text — all ≥ 4.5:1 on `--surface` |
-
-Surfaces step one gray at a time: `--bg` (gray-0) < `--surface` (50) < `--raised` (100) < `--overlay` (200). Elevation is lightness, not shadow; only floating surfaces (menu, modal, toast) cast one.
-
-## Motion rules
-
-- Press: `scale(.97)` on buttons, `.95` on icon buttons. Hover washes ≤ 150 ms.
-- Things that appear from a trigger grow from it (menu: `transform-origin` at the trigger, scale .97). A modal hangs from nothing: scale .96 from centre. Toasts rise 8 px with a 2 px blur.
-- Nothing animates longer than 250 ms. Keyboard-driven actions do not animate. `prefers-reduced-motion` collapses every duration (`app.css`).
-- Animate `transform` and `opacity` only (the buffer meter is `scaleX`).
+`THIRD-PARTY-NOTICES.txt` carries the OpenAI Apps SDK UI licence; it is a normal npm dependency (`npm ci` in `web/`).

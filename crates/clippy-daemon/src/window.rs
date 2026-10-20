@@ -1042,7 +1042,7 @@ pub fn handle_action(daemon: &Arc<Daemon>, action: Action) {
             // goes through. Built by hand rather than reusing `dispatch.rs`'s
             // private `error_data` (out of reach here) or `serde_json::json!`
             // (hides an `unwrap`), but the shape matches it exactly:
-            // `{"cmd":"screenshot","error":…}`, which `state.svelte.ts`'s
+            // `{"cmd":"screenshot","error":…}`, which `state.ts`'s
             // `case 'error'` already renders as a toast with no client-side
             // change needed.
             match daemon.screenshot() {

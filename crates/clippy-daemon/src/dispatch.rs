@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(response.data.expect("data")["config_file_exists"], false);
     }
 
-    /// The event `daemon.rs`'s asset-scope grant and `state.svelte.ts`'s
+    /// The event `daemon.rs`'s asset-scope grant and `state.ts`'s
     /// status refresh both depend on (whole-branch review finding 2): every
     /// accepted `config.set` broadcasts `config_changed` to every registered
     /// client, not just the one that sent it. Both routes to "Change clips
