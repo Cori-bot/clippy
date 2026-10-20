@@ -2073,6 +2073,9 @@ impl Daemon {
             encoder: source_meta.encoder.clone(),
             has_audio: outcome.has_audio,
             favorite: false,
+            audio_tracks: if outcome.has_audio { source_meta.audio_tracks.clone() } else { Vec::new() },
+            game: source_meta.game.clone(),
+            folder: source_meta.folder.clone(),
         };
         // A sidecar that will not write is not a failed export: the `.mp4` is
         // on disk and `library::scan` synthesizes metadata for a bare clip, so
@@ -2329,6 +2332,9 @@ mod tests {
             encoder: "test".into(),
             has_audio: true,
             favorite: false,
+            audio_tracks: Vec::new(),
+            game: String::new(),
+            folder: String::new(),
         }
     }
 

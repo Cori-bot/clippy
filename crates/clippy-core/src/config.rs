@@ -492,6 +492,19 @@ impl Config {
         }
     }
 
+    /// The audio tracks a clip carries, in order: the PC's sound (or just the
+    /// named applications), then the microphone. Each is its own track so the
+    /// editor can turn one down; a track whose level is 0 is simply absent.
+    pub fn track_specs(&self) -> Vec<crate::capture::audio::TrackSpec> {
+        use crate::capture::audio::{TrackKind, TrackSpec};
+        let sound = if self.audio_apps.is_empty() {
+            TrackSpec { name: "Son du PC".into(), kind: TrackKind::System }
+        } else {
+            TrackSpec { name: "Applications".into(), kind: TrackKind::Apps(self.audio_apps.clone()) }
+        };
+        vec![sound, TrackSpec { name: "Micro".into(), kind: TrackKind::Mic }]
+    }
+
     /// Target bitrate in bit/s for an output of `width` x `height`: the
     /// explicit `bitrate_kbps`, or the auto value when it is `0`.
     pub fn resolved_bitrate_bps(&self, width: u32, height: u32) -> u32 {

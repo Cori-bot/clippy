@@ -365,14 +365,40 @@ fn write_pcm_sample(
 pub struct ClipMuxer {
     writer: IMFSinkWriter,
     video_stream: u32,
-    audio_stream: Option<u32>,
+    /// One AAC stream per audio track, in track order. Empty = silent clip.
+    audio_streams: Vec<u32>,
+}
+
+/// Adds one AAC output stream fed with 48 kHz stereo i16 PCM; returns its
+/// stream index. Shared by the single-track and multi-track muxer paths.
+fn add_aac_stream(writer: &IMFSinkWriter) -> Result<u32> {
+    unsafe {
+        let out_type = audio_type(&MFAudioFormat_AAC)?;
+        out_type.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24_000)?;
+        let stream = writer.AddStream(&out_type).context("AddStream(clip audio)")?;
+        let in_type = audio_type(&MFAudioFormat_PCM)?;
+        in_type.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, ENCODER_BLOCK_ALIGN as u32)?;
+        in_type.SetUINT32(
+            &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+            (SAMPLE_RATE * ENCODER_BLOCK_ALIGN) as u32,
+        )?;
+        in_type.SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 1)?;
+        writer
+            .SetInputMediaType(stream, &in_type, None)
+            .context("SetInputMediaType(clip PCM)")?;
+        Ok(stream)
+    }
 }
 
 impl ClipMuxer {
+    /// `audio_tracks` AAC streams are added (0 = no audio). Players that read
+    /// only the first audio stream hear track 0, so callers put the full mix
+    /// there and the individual sources after it.
     pub fn new(
         output: &Path,
-        settings: &RecorderSettings,
+        _settings: &RecorderSettings,
         video_input_type: &IMFMediaType,
+        audio_tracks: usize,
     ) -> Result<Self> {
         ensure_mf_started()?;
         unsafe {
@@ -395,27 +421,13 @@ impl ClipMuxer {
                 .SetInputMediaType(video_stream, video_input_type, None)
                 .context("SetInputMediaType(H264 passthrough)")?;
 
-            let audio_stream = if settings.with_audio {
-                let out_type = audio_type(&MFAudioFormat_AAC)?;
-                out_type.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24_000)?;
-                let audio_stream = writer.AddStream(&out_type).context("AddStream(clip audio)")?;
-                let in_type = audio_type(&MFAudioFormat_PCM)?;
-                in_type.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, ENCODER_BLOCK_ALIGN as u32)?;
-                in_type.SetUINT32(
-                    &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
-                    (SAMPLE_RATE * ENCODER_BLOCK_ALIGN) as u32,
-                )?;
-                in_type.SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 1)?;
-                writer
-                    .SetInputMediaType(audio_stream, &in_type, None)
-                    .context("SetInputMediaType(clip PCM)")?;
-                Some(audio_stream)
-            } else {
-                None
-            };
+            let mut audio_streams = Vec::with_capacity(audio_tracks);
+            for _ in 0..audio_tracks {
+                audio_streams.push(add_aac_stream(&writer)?);
+            }
 
             writer.BeginWriting().context("BeginWriting(clip)")?;
-            Ok(Self { writer, video_stream, audio_stream })
+            Ok(Self { writer, video_stream, audio_streams })
         }
     }
 
@@ -444,8 +456,10 @@ impl ClipMuxer {
         }
     }
 
-    pub fn write_audio(&self, timestamp_100ns: i64, pcm: &[u8]) -> Result<()> {
-        let Some(audio_stream) = self.audio_stream else { return Ok(()) };
+    /// Writes PCM to audio track `track` (0-based). A track the muxer was not
+    /// built with is ignored, so callers need not special-case silent clips.
+    pub fn write_audio(&self, track: usize, timestamp_100ns: i64, pcm: &[u8]) -> Result<()> {
+        let Some(&audio_stream) = self.audio_streams.get(track) else { return Ok(()) };
         write_pcm_sample(&self.writer, audio_stream, timestamp_100ns, pcm)
     }
 
@@ -509,5 +523,48 @@ pub(crate) fn allocated_string(attrs: &IMFAttributes, key: &GUID) -> Option<Stri
         let s = value.to_string().ok();
         CoTaskMemFree(Some(value.as_ptr() as *const _));
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whether the Media Foundation MP4 sink writes several AAC streams as
+    /// separate `trak` boxes is the premise of multi-track clips, and nothing
+    /// in the docs promises it -- so it is pinned here against the real sink.
+    #[test]
+    fn mp4_sink_writes_one_trak_per_aac_stream() {
+        ensure_mf_started().expect("MF");
+        let path = std::env::temp_dir().join(format!("clippy-tracks-{}.m4a", std::process::id()));
+        let tracks = 3usize;
+        unsafe {
+            let writer = MFCreateSinkWriterFromURL(&HSTRING::from(path.as_os_str()), None, None)
+                .expect("writer");
+            let streams: Vec<u32> =
+                (0..tracks).map(|_| add_aac_stream(&writer).expect("aac stream")).collect();
+            writer.BeginWriting().expect("begin");
+            // 2 s per track, a different pitch each so a mix-up would be audible.
+            for (i, &stream) in streams.iter().enumerate() {
+                let hz = 220.0 * (i as f32 + 1.0);
+                let frames = SAMPLE_RATE * 2;
+                let mut pcm = Vec::with_capacity(frames * ENCODER_BLOCK_ALIGN);
+                for n in 0..frames {
+                    let v = ((n as f32 * hz * std::f32::consts::TAU / SAMPLE_RATE as f32).sin()
+                        * 6000.0) as i16;
+                    pcm.extend_from_slice(&v.to_le_bytes());
+                    pcm.extend_from_slice(&v.to_le_bytes());
+                }
+                for (k, chunk) in pcm.chunks(SAMPLE_RATE * ENCODER_BLOCK_ALIGN).enumerate() {
+                    write_pcm_sample(&writer, stream, k as i64 * 10_000_000, chunk).expect("write");
+                }
+            }
+            writer.Finalize().expect("finalize");
+        }
+        let bytes = std::fs::read(&path).expect("read back");
+        let _ = std::fs::remove_file(&path);
+        let count = |needle: &[u8]| bytes.windows(needle.len()).filter(|w| *w == needle).count();
+        assert_eq!(count(b"trak"), tracks, "one trak box per AAC stream");
+        assert_eq!(count(b"soun"), tracks, "every trak is an audio track");
     }
 }

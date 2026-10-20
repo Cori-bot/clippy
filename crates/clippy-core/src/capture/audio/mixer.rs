@@ -78,6 +78,10 @@ fn apply_gain(pcm: &mut [u8], gain: f32) {
 /// truncate the other, which would be a permanent A/V desync rather than a
 /// glitch. Summing in i32 and clamping means a loud game plus a loud voice
 /// distorts; wrapping would invert the waveform and produce a scream.
+pub fn mix_pcm_into(dst: &mut [u8], src: &[u8], gain: f32) {
+    mix_into(dst, src, gain);
+}
+
 fn mix_into(dst: &mut [u8], src: &[u8], gain: f32) {
     let common = dst.len().min(src.len());
     let whole_samples = common - (common % 2);
@@ -451,6 +455,239 @@ impl Drop for AudioMixer {
     /// Without this, a source whose device is silent never notices its
     /// receiver is gone (it only checks on the next packet it sends), so the
     /// thread and its WASAPI stream outlive the session that opened them.
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+/// What one recorded audio track is made of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrackKind {
+    /// The whole system's loopback.
+    System,
+    /// Only these applications (executable names), summed into the one track.
+    Apps(Vec<String>),
+    /// The default microphone.
+    Mic,
+}
+
+/// One track a clip will carry: the name the editor shows, and where its
+/// sound comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackSpec {
+    pub name: String,
+    pub kind: TrackKind,
+}
+
+struct Track {
+    name: String,
+    mic: bool,
+    sources: Vec<Source>,
+    watcher: Option<AppWatcher>,
+}
+
+/// Like [`AudioMixer`], but keeps each track apart instead of summing them:
+/// `pump` hands the caller one PCM stem per track, already scaled by that
+/// track's level, all the same length and frame-aligned (every timeline anchors
+/// to the first video frame, as in `AudioMixer`). What a clip does with the
+/// stems -- a premixed first track for ordinary players, each stem on its own
+/// -- is the caller's business, which is what lets the editor mute or turn
+/// down one source after the fact.
+pub struct TrackMixer {
+    tracks: Vec<Track>,
+    t0_qpc: Option<i64>,
+    gains: Arc<AudioGains>,
+    frames_emitted: u64,
+    /// Reused across every `pump`, like `AudioMixer::mixed`.
+    stems: Vec<Vec<u8>>,
+}
+
+impl TrackMixer {
+    /// Opens the tracks whose level is non-zero. A level of 0 leaves the track
+    /// out entirely for the reason `AudioMixer::start_sources` gives (Windows'
+    /// microphone indicator), and a source that cannot be opened drops its
+    /// track instead of failing the arm.
+    pub fn start_sources(gains: Arc<AudioGains>, specs: &[TrackSpec]) -> Self {
+        let mut tracks = Vec::new();
+        for spec in specs {
+            let (mic, sources, watcher) = match &spec.kind {
+                TrackKind::System if AudioMixer::should_open(gains.system_percent()) => {
+                    (false, AudioMixer::open(AudioSourceKind::SystemAudio).into_iter().collect(), None)
+                }
+                TrackKind::Apps(apps)
+                    if !apps.is_empty() && AudioMixer::should_open(gains.system_percent()) =>
+                {
+                    let watcher = match AppWatcher::start(apps.clone()) {
+                        Ok(w) => Some(w),
+                        Err(e) => {
+                            tracing::warn!(
+                                track = %spec.name,
+                                error = %format!("{e:#}"),
+                                "application audio unavailable, recording continues without it"
+                            );
+                            None
+                        }
+                    };
+                    // The silent anchor keeps the track advancing, and
+                    // frame-aligned, while none of its applications runs.
+                    (false, vec![Source::silent()], watcher)
+                }
+                TrackKind::Mic if AudioMixer::should_open(gains.mic_percent()) => {
+                    (true, AudioMixer::open(AudioSourceKind::Microphone).into_iter().collect(), None)
+                }
+                _ => continue,
+            };
+            if sources.is_empty() {
+                continue;
+            }
+            tracks.push(Track { name: spec.name.clone(), mic, sources, watcher });
+        }
+        Self { tracks, t0_qpc: None, gains, frames_emitted: 0, stems: Vec::new() }
+    }
+
+    /// The same mixer over receivers the caller supplies, one per track.
+    pub fn with_sources(
+        tracks: Vec<(String, bool, Receiver<AudioPacket>)>,
+        gains: Arc<AudioGains>,
+    ) -> Self {
+        let tracks = tracks
+            .into_iter()
+            .map(|(name, mic, rx)| Track {
+                name,
+                mic,
+                sources: vec![Source::new(
+                    if mic { AudioSourceKind::Microphone } else { AudioSourceKind::SystemAudio },
+                    rx,
+                )],
+                watcher: None,
+            })
+            .collect();
+        Self { tracks, t0_qpc: None, gains, frames_emitted: 0, stems: Vec::new() }
+    }
+
+    /// The names of the tracks that opened, in stem order.
+    pub fn names(&self) -> Vec<String> {
+        self.tracks.iter().map(|t| t.name.clone()).collect()
+    }
+
+    pub fn active(&self) -> bool {
+        !self.tracks.is_empty()
+    }
+
+    pub fn start(&mut self, t0_qpc: i64) {
+        self.t0_qpc.get_or_insert(t0_qpc);
+        for source in self.tracks.iter_mut().flat_map(|t| t.sources.iter_mut()) {
+            source.timeline.start(t0_qpc);
+        }
+    }
+
+    pub fn started(&self) -> bool {
+        self.tracks.iter().flat_map(|t| t.sources.iter()).any(|s| s.timeline.started())
+    }
+
+    pub fn frames_emitted(&self) -> u64 {
+        self.frames_emitted
+    }
+
+    pub fn silence_frames_emitted(&self) -> u64 {
+        self.tracks
+            .iter()
+            .flat_map(|t| t.sources.iter())
+            .map(|s| s.timeline.silence_frames_emitted())
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// As `AudioMixer::follow_applications`, per track: a newcomer joins at the
+    /// frame the stems have reached; one whose process quit is dropped.
+    fn follow_applications(&mut self) {
+        let (t0, emitted) = (self.t0_qpc, self.frames_emitted);
+        for track in &mut self.tracks {
+            if let Some(watcher) = &track.watcher {
+                while let Some(app) = watcher.next_new_app() {
+                    let mut source = Source::new(AudioSourceKind::SystemAudio, app.rx);
+                    source.gone = Some(app.gone);
+                    if let Some(t0) = t0 {
+                        source.timeline.start(t0 + frames_to_100ns(emitted));
+                    }
+                    track.sources.push(source);
+                }
+            }
+            track
+                .sources
+                .retain(|s| s.gone.as_ref().is_none_or(|gone| !gone.load(Ordering::Relaxed)));
+        }
+    }
+
+    /// Emits `(start_frame, stems)` -- one equal-length PCM buffer per track,
+    /// in `names()` order -- covering only the span every source supplied.
+    pub fn pump(&mut self, target_qpc: i64, sink: &mut impl FnMut(u64, &[Vec<u8>])) {
+        self.follow_applications();
+        for source in self.tracks.iter_mut().flat_map(|t| t.sources.iter_mut()) {
+            AudioMixer::stage(source, target_qpc);
+        }
+        let Some(available) =
+            self.tracks.iter().flat_map(|t| t.sources.iter()).map(|s| s.staged.len()).min()
+        else {
+            return;
+        };
+        let bytes = available - (available % ENCODER_BLOCK_ALIGN);
+        if bytes == 0 {
+            return;
+        }
+        self.stems.resize_with(self.tracks.len(), Vec::new);
+        for (stem, track) in self.stems.iter_mut().zip(&self.tracks) {
+            stem.clear();
+            let Some((first, rest)) = track.sources.split_first() else {
+                stem.resize(bytes, 0);
+                continue;
+            };
+            stem.extend_from_slice(&first.staged[..bytes]);
+            for other in rest {
+                mix_into(stem, &other.staged[..bytes], 1.0);
+            }
+            apply_gain(stem, if track.mic { self.gains.mic() } else { self.gains.system() });
+        }
+        for source in self.tracks.iter_mut().flat_map(|t| t.sources.iter_mut()) {
+            source.staged.drain(..bytes);
+        }
+        sink(self.frames_emitted, &self.stems);
+        self.frames_emitted += (bytes / ENCODER_BLOCK_ALIGN) as u64;
+    }
+
+    pub fn log_diagnostics(&self) {
+        for track in &self.tracks {
+            for source in &track.sources {
+                source.timeline.log_diagnostics(&track.name);
+            }
+        }
+    }
+
+    pub fn stop(&mut self) -> Result<()> {
+        let mut outcome = Ok(());
+        for track in &mut self.tracks {
+            if let Some(mut watcher) = track.watcher.take() {
+                watcher.stop();
+            }
+            for source in &mut track.sources {
+                let Some(capture) = source.capture.take() else { continue };
+                if let Err(e) = capture.stop() {
+                    tracing::warn!(
+                        track = %track.name,
+                        error = %format!("{e:#}"),
+                        "capture did not stop cleanly"
+                    );
+                    if outcome.is_ok() {
+                        outcome = Err(e);
+                    }
+                }
+            }
+        }
+        outcome
+    }
+}
+
+impl Drop for TrackMixer {
     fn drop(&mut self) {
         let _ = self.stop();
     }
@@ -948,5 +1185,74 @@ mod tests {
         mixer.start(0);
         let emitted = drain(&mut mixer, frames_to_100ns(480));
         assert!(emitted[0].1.iter().all(|&s| s == 1300), "unexpected samples");
+    }
+    /// Collects one `TrackMixer` pump as (start_frame, one sample vector per track).
+    fn drain_tracks(mixer: &mut TrackMixer, target_qpc: i64) -> Vec<(u64, Vec<Vec<i16>>)> {
+        let mut out = Vec::new();
+        mixer.pump(target_qpc, &mut |start, stems| {
+            out.push((start, stems.iter().map(|s| samples(s)).collect()));
+        });
+        out
+    }
+
+    #[test]
+    fn tracks_come_out_apart_not_summed() {
+        let (_a, game) = source(1000, 480);
+        let (_b, mic) = source(500, 480);
+        let mut mixer = TrackMixer::with_sources(
+            vec![("Jeu".into(), false, game), ("Micro".into(), true, mic)],
+            AudioGains::new(100, 100),
+        );
+        assert_eq!(mixer.names(), vec!["Jeu", "Micro"]);
+        mixer.start(0);
+        let emitted = drain_tracks(&mut mixer, frames_to_100ns(480));
+        assert_eq!(emitted.len(), 1);
+        let stems = &emitted[0].1;
+        assert_eq!(stems.len(), 2);
+        assert!(stems[0].iter().all(|&s| s == 1000), "the game track must carry only the game");
+        assert!(stems[1].iter().all(|&s| s == 500), "the mic track must carry only the mic");
+        assert_eq!(stems[0].len(), stems[1].len(), "stems are frame-aligned");
+    }
+
+    #[test]
+    fn each_track_is_scaled_by_its_own_level() {
+        let (_a, game) = source(1000, 480);
+        let (_b, mic) = source(1000, 480);
+        // System at 50% is a gain of 0.25; the mic stays at unity.
+        let mut mixer = TrackMixer::with_sources(
+            vec![("Jeu".into(), false, game), ("Micro".into(), true, mic)],
+            AudioGains::new(50, 100),
+        );
+        mixer.start(0);
+        let stems = &drain_tracks(&mut mixer, frames_to_100ns(480))[0].1;
+        assert!(stems[0].iter().all(|&s| s == 250), "system level applies to the game track");
+        assert!(stems[1].iter().all(|&s| s == 1000), "and not to the mic track");
+    }
+
+    #[test]
+    fn a_track_mixer_with_no_tracks_is_inactive() {
+        let mut mixer = TrackMixer::with_sources(Vec::new(), AudioGains::new(100, 100));
+        assert!(!mixer.active());
+        mixer.start(0);
+        assert!(drain_tracks(&mut mixer, frames_to_100ns(480)).is_empty());
+    }
+
+    #[test]
+    fn the_sum_of_the_stems_is_what_the_old_mixer_emitted() {
+        // The clip's first, pre-mixed track is built from the stems at save
+        // time; it has to equal what summing the sources always produced.
+        let (_a, system) = source(1000, 480);
+        let (_b, mic) = source(500, 480);
+        let mut mixer = TrackMixer::with_sources(
+            vec![("Jeu".into(), false, system), ("Micro".into(), true, mic)],
+            AudioGains::new(100, 100),
+        );
+        mixer.start(0);
+        let mut sum = Vec::new();
+        mixer.pump(frames_to_100ns(480), &mut |_, stems| {
+            sum = stems[0].clone();
+            mix_pcm_into(&mut sum, &stems[1], 1.0);
+        });
+        assert!(samples(&sum).iter().all(|&s| s == 1500));
     }
 }

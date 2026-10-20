@@ -23,7 +23,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 
 use crate::{
     capture::audio::{
-        AudioGains, AudioMixer, ENCODER_BLOCK_ALIGN, SAMPLE_RATE, SILENCE_GRACE_100NS,
+        AudioGains, TrackMixer, ENCODER_BLOCK_ALIGN, SAMPLE_RATE, SILENCE_GRACE_100NS,
         dur_100ns_to_frames, frames_to_100ns,
     },
     capture::source::{CaptureHandle, Flow, FrameSink, SourceFrame},
@@ -65,13 +65,24 @@ pub struct ReplayOptions {
 struct ReplayFlags {
     settings: RecorderSettings,
     replay_100ns: i64,
-    mixer: AudioMixer,
+    mixer: TrackMixer,
     stats_seconds: u32,
 }
 
+/// One pump's worth of audio: a PCM stem per track, all the same length.
 struct AudioChunk {
     start_frame: u64,
-    data: Vec<u8>,
+    tracks: Vec<Vec<u8>>,
+}
+
+impl AudioChunk {
+    fn frames(&self) -> u64 {
+        self.tracks.first().map_or(0, |t| t.len() / ENCODER_BLOCK_ALIGN) as u64
+    }
+
+    fn bytes(&self) -> usize {
+        self.tracks.iter().map(Vec::len).sum()
+    }
 }
 
 /// Everything needed to write one clip, cloned out of the ring under the
@@ -83,8 +94,11 @@ struct ClipSnapshot {
     video_type: windows::Win32::Media::MediaFoundation::IMFMediaType,
     video: Vec<EncodedPacket>,
     base_pts: i64,
-    /// Continuous PCM starting at `base_pts + audio_offset_100ns`.
-    audio_pcm: Vec<u8>,
+    /// Continuous PCM per track (one stem each, equal lengths), starting at
+    /// `base_pts + audio_offset_100ns`.
+    audio_stems: Vec<Vec<u8>>,
+    /// The tracks' names, in stem order.
+    audio_names: Vec<String>,
     /// Non-zero when audio older than the ring's span bound was trimmed
     /// (long static stretch): the track starts late instead of carrying an
     /// unbounded run of spliced silence.
@@ -111,7 +125,7 @@ struct ReplaySession {
     ring_bytes: usize,
     audio_ring: VecDeque<AudioChunk>,
 
-    mixer: AudioMixer,
+    mixer: TrackMixer,
     t0_qpc: Option<i64>,
     last_frame_qpc: i64,
     /// QPC time the next frame is due; arrivals more than half a frame early
@@ -174,17 +188,17 @@ impl ReplaySession {
     /// soak: +110 MB working set over 12 idle minutes).
     fn pump_audio_to(&mut self, target_100ns: i64) {
         let ring = &mut self.audio_ring;
-        self.mixer.pump(target_100ns, &mut |start_frame, pcm| {
-            ring.push_back(AudioChunk { start_frame, data: pcm.to_vec() });
+        self.mixer.pump(target_100ns, &mut |start_frame, stems| {
+            ring.push_back(AudioChunk { start_frame, tracks: stems.to_vec() });
         });
         // evict() trims audio against the *video* front, which stops moving
         // the moment the screen goes static — bound the span directly too.
         if let Some(back) = self.audio_ring.back() {
-            let newest_end = back.start_frame + (back.data.len() / ENCODER_BLOCK_ALIGN) as u64;
+            let newest_end = back.start_frame + back.frames();
             let budget = dur_100ns_to_frames(self.replay_100ns + KEYFRAME_MARGIN_100NS);
             let horizon = newest_end.saturating_sub(budget);
             while let Some(front) = self.audio_ring.front() {
-                let front_end = front.start_frame + (front.data.len() / ENCODER_BLOCK_ALIGN) as u64;
+                let front_end = front.start_frame + front.frames();
                 if front_end <= horizon {
                     self.audio_ring.pop_front();
                 } else {
@@ -221,7 +235,7 @@ impl ReplaySession {
 
     fn log_perf(&self, tag: &str) {
         let m = self.stats.memory();
-        let audio_ring_bytes: usize = self.audio_ring.iter().map(|c| c.data.len()).sum();
+        let audio_ring_bytes: usize = self.audio_ring.iter().map(AudioChunk::bytes).sum();
         // The exact CPU-side allocation we own and that scales with config —
         // the number the <30 MB budget is really about (working set is
         // UMA-inflated by GPU surfaces).
@@ -270,7 +284,7 @@ impl ReplaySession {
         }
         let video_front_pts = self.video_ring.front().map_or(0, |p| p.pts_100ns);
         while let Some(chunk) = self.audio_ring.front() {
-            let end_frame = chunk.start_frame + (chunk.data.len() / ENCODER_BLOCK_ALIGN) as u64;
+            let end_frame = chunk.start_frame + chunk.frames();
             if frames_to_100ns(end_frame) < video_front_pts {
                 self.audio_ring.pop_front();
             } else {
@@ -313,9 +327,11 @@ impl ReplaySession {
         let first_keyframe = video.iter().find(|p| p.keyframe).map(|p| &p.data[..]);
         let video_type = self.encoder.mux_input_type(first_keyframe)?;
 
-        // Assemble continuous PCM aligned to base_pts. Chunks are gapless and
-        // consecutive by construction (AudioTimeline emits one stream).
-        let mut audio_pcm = Vec::new();
+        // Assemble continuous PCM per track, aligned to base_pts. Chunks are
+        // gapless and consecutive by construction (AudioTimeline emits one
+        // stream per source) and every track of a chunk has the same length.
+        let audio_names = self.mixer.names();
+        let mut audio_stems: Vec<Vec<u8>> = vec![Vec::new(); audio_names.len()];
         let mut audio_offset_100ns = 0i64;
         if self.settings.with_audio {
             let base_frame = dur_100ns_to_frames(base_pts);
@@ -330,12 +346,16 @@ impl ReplaySession {
                 } else if start_frame > base_frame {
                     audio_offset_100ns = frames_to_100ns(start_frame - base_frame);
                 }
-                let total: usize = self.audio_ring.iter().map(|c| c.data.len()).sum();
-                audio_pcm.reserve(total.saturating_sub(skip));
-                for chunk in &self.audio_ring {
-                    let from = skip.min(chunk.data.len());
-                    skip -= from;
-                    audio_pcm.extend_from_slice(&chunk.data[from..]);
+                for (track, stem) in audio_stems.iter_mut().enumerate() {
+                    let total: usize = self.audio_ring.iter().map(|c| c.tracks[track].len()).sum();
+                    stem.reserve(total.saturating_sub(skip));
+                    let mut left = skip;
+                    for chunk in &self.audio_ring {
+                        let data = &chunk.tracks[track];
+                        let from = left.min(data.len());
+                        left -= from;
+                        stem.extend_from_slice(&data[from..]);
+                    }
                 }
             }
         }
@@ -345,7 +365,8 @@ impl ReplaySession {
             video_type,
             video,
             base_pts,
-            audio_pcm,
+            audio_stems,
+            audio_names,
             audio_offset_100ns,
         }))
     }
@@ -498,8 +519,51 @@ impl FrameSink for ReplaySession {
     }
 }
 
+/// The audio streams a clip is written with, as `(name, pcm)`.
+///
+/// One track is written as it is. With several, the first stream is the
+/// pre-mixed sum -- the only one an ordinary player (Explorer, a browser, a
+/// Discord embed) plays -- followed by each source on its own, which is what
+/// the editor works on. The sum is made here, at save time, so the ring only
+/// ever stores the stems.
+fn audio_streams(snapshot: &ClipSnapshot) -> Vec<(String, std::borrow::Cow<'_, [u8]>)> {
+    use std::borrow::Cow;
+    match snapshot.audio_stems.as_slice() {
+        [] => Vec::new(),
+        [only] => vec![(snapshot.audio_names[0].clone(), Cow::Borrowed(only.as_slice()))],
+        [first, rest @ ..] => {
+            let mut mix = first.clone();
+            for stem in rest {
+                crate::capture::audio::mix_pcm_into(&mut mix, stem, 1.0);
+            }
+            let mut streams = vec![(MIX_TRACK_NAME.to_string(), Cow::Owned(mix))];
+            streams.extend(
+                snapshot
+                    .audio_names
+                    .iter()
+                    .cloned()
+                    .zip(snapshot.audio_stems.iter().map(|s| Cow::Borrowed(s.as_slice()))),
+            );
+            streams
+        }
+    }
+}
+
+/// The names `audio_streams` writes, without building the mix.
+fn audio_track_names(snapshot: &ClipSnapshot) -> Vec<String> {
+    match snapshot.audio_names.as_slice() {
+        [] => Vec::new(),
+        [only] => vec![only.clone()],
+        many => std::iter::once(MIX_TRACK_NAME.to_string()).chain(many.iter().cloned()).collect(),
+    }
+}
+
+/// What the pre-mixed first track of a multi-track clip is called.
+pub const MIX_TRACK_NAME: &str = "Mix";
+
 fn write_clip(snapshot: &ClipSnapshot, path: &Path) -> Result<()> {
-    let muxer = ClipMuxer::new(path, &snapshot.settings, &snapshot.video_type)?;
+    let streams = audio_streams(snapshot);
+    let muxer = ClipMuxer::new(path, &snapshot.settings, &snapshot.video_type, streams.len())?;
     for packet in &snapshot.video {
         muxer.write_video_packet(
             packet.pts_100ns - snapshot.base_pts,
@@ -509,12 +573,17 @@ fn write_clip(snapshot: &ClipSnapshot, path: &Path) -> Result<()> {
         )?;
     }
     // 1-second PCM buffers; the muxer's AAC encoder eats them at flush speed.
+    // One track at a time: throttling is off, so a stream written whole before
+    // the next does not stall the writer.
     let second = SAMPLE_RATE * ENCODER_BLOCK_ALIGN;
-    for (i, chunk) in snapshot.audio_pcm.chunks(second).enumerate() {
-        muxer.write_audio(
-            snapshot.audio_offset_100ns + frames_to_100ns((i * SAMPLE_RATE) as u64),
-            chunk,
-        )?;
+    for (track, (_, pcm)) in streams.iter().enumerate() {
+        for (i, chunk) in pcm.chunks(second).enumerate() {
+            muxer.write_audio(
+                track,
+                snapshot.audio_offset_100ns + frames_to_100ns((i * SAMPLE_RATE) as u64),
+                chunk,
+            )?;
+        }
     }
     muxer.finish()
 }
@@ -659,7 +728,8 @@ fn save_clip(
 
     let last = &snapshot.video[snapshot.video.len() - 1];
     let video_100ns = last.pts_100ns + last.duration_100ns - snapshot.base_pts;
-    let audio_secs = snapshot.audio_pcm.len() as f64 / (SAMPLE_RATE * ENCODER_BLOCK_ALIGN) as f64;
+    let audio_secs = snapshot.audio_stems.first().map_or(0, Vec::len) as f64
+        / (SAMPLE_RATE * ENCODER_BLOCK_ALIGN) as f64;
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
     let meta = ClipMeta {
@@ -674,6 +744,9 @@ fn save_clip(
         encoder: encoder_name.to_string(),
         has_audio: snapshot.settings.with_audio,
         favorite: false,
+        audio_tracks: audio_track_names(&snapshot),
+        game: String::new(),
+        folder: String::new(),
     };
     // A clip with no sidecar is still a clip — the next scan adopts it — so a
     // sidecar failure is logged, not propagated over the freshly written MP4.
@@ -992,7 +1065,7 @@ fn start_session(
     let bitrate_bps = config.resolved_bitrate_bps(width, height);
     let clip_dir = config.clip_dir_path();
 
-    let mixer = AudioMixer::start_sources(Arc::clone(gains), &config.audio_apps);
+    let mixer = TrackMixer::start_sources(Arc::clone(gains), &config.track_specs());
 
     let flags = ReplayFlags {
         settings: RecorderSettings {

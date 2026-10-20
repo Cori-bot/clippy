@@ -272,6 +272,9 @@ fn adopt(dir: &Path, id: &str) -> ClipMeta {
         encoder: String::new(),
         has_audio: false,
         favorite: false,
+        audio_tracks: Vec::new(),
+        game: String::new(),
+        folder: String::new(),
     }
 }
 
@@ -636,6 +639,9 @@ mod tests {
             encoder: "test".into(),
             has_audio: true,
             favorite: false,
+            audio_tracks: Vec::new(),
+            game: String::new(),
+            folder: String::new(),
         }
     }
 }

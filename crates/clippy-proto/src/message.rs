@@ -81,6 +81,19 @@ pub struct ClipMeta {
     pub has_audio: bool,
     #[serde(default)]
     pub favorite: bool,
+    /// Names of the audio tracks in the file, in stream order; empty for a clip
+    /// recorded before tracks existed. With more than one entry the first is the
+    /// pre-mixed track (what an ordinary player plays) and the rest are the
+    /// individual sources, so an editor lists `audio_tracks[1..]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_tracks: Vec<String>,
+    /// The game this clip was recorded in; empty for the desktop.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub game: String,
+    /// The sub-folder of the clips folder the files live in (a single sanitised
+    /// path component); empty for the clips folder itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 /// One screenshot's metadata: the payload of `shot_saved` and `shots.list`.
