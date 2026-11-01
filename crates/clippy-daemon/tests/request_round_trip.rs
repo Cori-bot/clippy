@@ -34,7 +34,7 @@ impl ClientHandler for EchoHandler {
 
     fn client_disconnected(&self, _client: u64) {}
 
-    fn dispatch(&self, _client: u64, request: &Request) -> Response {
+    fn dispatch(self: &Arc<Self>, _client: u64, request: &Request) -> Response {
         let _ = self.dispatched.send(request.id);
         Response::ok(request.id, serde_json::Value::Null)
     }

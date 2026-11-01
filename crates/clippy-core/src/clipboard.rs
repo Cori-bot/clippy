@@ -6,7 +6,7 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
-use windows::Win32::System::Ole::CF_DIBV5;
+use windows::Win32::System::Ole::{CF_DIBV5, CF_HDROP};
 
 /// `size_of::<BITMAPV5HEADER>()`, stated once so the writer and the tests
 /// cannot disagree about where the pixels start.
@@ -93,10 +93,63 @@ pub fn copy_bgra(bgra: &[u8], width: u32, height: u32, stride: usize) -> Result<
     }
 }
 
+/// `size_of::<DROPFILES>()`: where the file list starts in a `CF_HDROP` blob.
+pub const DROPFILES_BYTES: usize = 20;
+
+/// Packs file paths into a `CF_HDROP` blob: a `DROPFILES` header declaring
+/// wide strings, then each path NUL-terminated, then one more NUL.
+///
+/// Paths must be absolute: the pasting application resolves them against
+/// its own working directory otherwise.
+pub fn dropfiles(paths: &[&std::path::Path]) -> Result<Vec<u8>> {
+    use std::os::windows::ffi::OsStrExt as _;
+    if paths.is_empty() {
+        bail!("aucun fichier à copier");
+    }
+    let mut blob = vec![0u8; DROPFILES_BYTES];
+    blob[0..4].copy_from_slice(&(DROPFILES_BYTES as u32).to_le_bytes()); // pFiles
+    blob[16..20].copy_from_slice(&1u32.to_le_bytes()); // fWide
+    for path in paths {
+        if !path.is_absolute() {
+            bail!("{} n’est pas un chemin absolu", path.display());
+        }
+        for unit in path.as_os_str().encode_wide() {
+            if unit == 0 {
+                bail!("chemin invalide : {}", path.display());
+            }
+            blob.extend_from_slice(&unit.to_le_bytes());
+        }
+        blob.extend_from_slice(&[0, 0]);
+    }
+    blob.extend_from_slice(&[0, 0]);
+    Ok(blob)
+}
+
+/// Puts files on the clipboard the way Explorer's Copy does, so Ctrl+V in
+/// Discord, a browser upload box or a folder pastes the files themselves.
+pub fn copy_files(paths: &[&std::path::Path]) -> Result<()> {
+    let blob = dropfiles(paths)?;
+    unsafe {
+        if OpenClipboard(Some(HWND::default())).is_err() {
+            std::thread::sleep(RETRY_AFTER);
+            OpenClipboard(Some(HWND::default()))
+                .context("un autre programme utilise le presse-papiers")?;
+        }
+        let result = set_blob(CF_HDROP.0 as u32, &blob);
+        let _ = CloseClipboard();
+        result
+    }
+}
+
 /// The body between `OpenClipboard` and `CloseClipboard`.
 ///
 /// Split out so the close above can be unconditional.
 unsafe fn set_dib(dib: &[u8]) -> Result<()> {
+    unsafe { set_blob(CF_DIBV5.0 as u32, dib) }
+}
+
+/// Empties the clipboard and hands it one global holding `dib` as `format`.
+unsafe fn set_blob(format: u32, dib: &[u8]) -> Result<()> {
     unsafe {
         EmptyClipboard().context("emptying the clipboard")?;
         let global: HGLOBAL =
@@ -112,7 +165,7 @@ unsafe fn set_dib(dib: &[u8]) -> Result<()> {
         // Ownership transfers to the clipboard on success only, so the free
         // below belongs to the failure path alone. Freeing after a successful
         // SetClipboardData hands every pasting application a dangling handle.
-        match SetClipboardData(CF_DIBV5.0 as u32, Some(HANDLE(global.0))) {
+        match SetClipboardData(format, Some(HANDLE(global.0))) {
             Ok(_) => Ok(()),
             Err(e) => {
                 let _ = GlobalFree(Some(global));
@@ -125,6 +178,20 @@ unsafe fn set_dib(dib: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropfiles_declares_wide_paths_each_terminated_then_a_final_nul() {
+        let a = std::path::Path::new(r"C:\Clips\é.mp4");
+        let b = std::path::Path::new(r"D:\x.mp4");
+        let blob = dropfiles(&[a, b]).unwrap();
+        assert_eq!(u32::from_le_bytes(blob[0..4].try_into().unwrap()), 20);
+        assert_eq!(u32::from_le_bytes(blob[16..20].try_into().unwrap()), 1);
+        let units: Vec<u16> =
+            blob[20..].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), "C:\\Clips\\é.mp4\0D:\\x.mp4\0\0");
+        assert!(dropfiles(&[]).is_err());
+        assert!(dropfiles(&[std::path::Path::new("relative.mp4")]).is_err());
+    }
 
     /// Byte written into the driver's row padding. Distinctive and non-zero
     /// on purpose: padding filled with zeros would be indistinguishable from

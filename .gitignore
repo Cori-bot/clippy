@@ -32,3 +32,5 @@
 # rebuilt on demand with /graphify.
 /graphify-out
 .claude-session.tmp
+/.test-tmp
+/.impeccable

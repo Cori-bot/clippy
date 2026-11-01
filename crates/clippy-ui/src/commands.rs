@@ -74,3 +74,41 @@ pub fn start_daemon(supervisor: State<'_, Arc<Supervisor>>) -> Result<(), String
 pub fn daemon_connected(supervisor: State<'_, Arc<Supervisor>>) -> bool {
     supervisor.is_connected()
 }
+
+/// Appends lines to `%APPDATA%\clippy\logs\ui-<day>.jsonl` for diagnostics
+/// mode (see clippy-daemon's `diag.rs`). The window only calls this while
+/// `diagnostics` is on; the daemon owns pruning the folder.
+///
+/// `day` comes from the window (`YYYYMMDD`, its local date) and is checked to
+/// be exactly that, so it cannot name another file.
+#[tauri::command]
+pub fn diag_append(day: String, lines: Vec<String>) -> Result<(), String> {
+    use std::io::Write as _;
+    if day.len() != 8 || !day.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("jour invalide".into());
+    }
+    let dir = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .ok_or("APPDATA absent")?
+        .join("clippy")
+        .join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("ui-{day}.jsonl"));
+    // Same per-file ceiling as the daemon's logs.
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 200 * 1024 * 1024) {
+        return Ok(());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    let mut out = String::new();
+    for line in lines.iter().take(2000) {
+        // One record per line, whatever the window sent.
+        let line: String = line.chars().take(8192).filter(|c| *c != '\n' && *c != '\r').collect();
+        out.push_str(&line);
+        out.push('\n');
+    }
+    file.write_all(out.as_bytes()).map_err(|e| e.to_string())
+}

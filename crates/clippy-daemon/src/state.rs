@@ -285,16 +285,22 @@ mod clip_paths {
             &self.thumb
         }
 
-        /// Where audio track `ordinal` is extracted for the editor, next to
-        /// the clip: `<id>.t<n>.m4a`.
+        pub(super) fn track_cache(&self) -> PathBuf {
+            self.dir.join(library::TRACK_CACHE_DIR)
+        }
+
+        /// Editor derivatives stay separate from the user's master MP4s.
         pub(super) fn track(&self, ordinal: usize) -> PathBuf {
+            self.track_cache()
+                .join(self.mp4.with_extension(format!("t{ordinal}.m4a")).file_name().unwrap())
+        }
+
+        pub(super) fn legacy_track(&self, ordinal: usize) -> PathBuf {
             self.mp4.with_extension(format!("t{ordinal}.m4a"))
         }
 
-        /// The same file while it is being written, so a reader never finds a
-        /// half track under the real name.
         pub(super) fn track_partial(&self, ordinal: usize) -> PathBuf {
-            self.mp4.with_extension(format!("t{ordinal}.part.m4a"))
+            self.track(ordinal).with_extension("part.m4a")
         }
     }
 }
@@ -424,7 +430,7 @@ fn crosses_zero(key: &str, before: Option<&Value>, after: Option<&Value>) -> boo
 /// do is fall silently behind `Config`, so
 /// `every_numeric_config_key_is_range_checked` fails the build the day a
 /// numeric key is added without a bound here.
-const NUMERIC_BOUNDS: [(&str, u64, u64); 9] = [
+const NUMERIC_BOUNDS: [(&str, u64, u64); 10] = [
     ("fps", MIN_FPS as u64, MAX_FPS as u64),
     ("bitrate_kbps", 0, 200_000),
     ("max_bitrate_kbps", 0, 200_000),
@@ -434,6 +440,7 @@ const NUMERIC_BOUNDS: [(&str, u64, u64); 9] = [
     ("max_library_gb", 0, 10_000),
     ("system_volume", 0, MAX_VOLUME_PERCENT as u64),
     ("mic_volume", 0, MAX_VOLUME_PERCENT as u64),
+    ("auto_clip_min_kills", 1, 5),
 ];
 
 /// Refuses the whole request if any bounded key is out of range.
@@ -546,6 +553,8 @@ pub struct Daemon {
     /// Serialises the per-track audio extraction, so two editors opening the
     /// same clip do not write the same files at once.
     track_files: Mutex<()>,
+    pub(crate) export_jobs: crate::export_jobs::ExportJobs,
+    pub(crate) export_active: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // Lock ordering, and the one rule that matters: `armed` is never held while
@@ -595,7 +604,10 @@ fn game_session(seen: &Sighting, entry: Option<&GameEntry>) -> SessionContext {
     let profile = entry.map(|e| e.profile.clone()).unwrap_or_else(GameProfile::default);
     let mut tracks = vec![TrackSpec { name: name.clone(), kind: TrackKind::Apps(vec![seen.exe.clone()]) }];
     for app in &profile.apps {
-        tracks.push(TrackSpec { name: app.name.clone(), kind: TrackKind::Apps(vec![app.exe.clone()]) });
+        tracks.push(TrackSpec {
+            name: app.name.clone(),
+            kind: TrackKind::Apps(vec![app.exe.clone()]),
+        });
     }
     if profile.mic {
         tracks.push(TrackSpec { name: "Micro".to_string(), kind: TrackKind::Mic });
@@ -606,12 +618,27 @@ fn game_session(seen: &Sighting, entry: Option<&GameEntry>) -> SessionContext {
     SessionContext { tracks: Some(tracks), game: Some(GameContext { name, folder }) }
 }
 
+/// Unknown modification times force a rebuild; cache bytes must describe
+/// the current master rather than an older file with the same clip id.
+fn track_cache_is_fresh(source: &Path, cached: &Path) -> bool {
+    let Ok(source) = std::fs::metadata(source).and_then(|m| m.modified()) else { return false };
+    let Ok(cached) = std::fs::metadata(cached) else { return false };
+    cached.is_file()
+        && cached.len() > 0
+        && cached.modified().is_ok_and(|modified| modified >= source)
+}
+
 /// The track list of a remixed export: the sum first when several tracks were
 /// kept, as a recording lays them out, then each by its name in the source.
 fn exported_track_names(source_names: &[String], kept: &[export::TrackChoice]) -> Vec<String> {
     let mut names: Vec<String> = kept
         .iter()
-        .map(|k| source_names.get(k.ordinal).cloned().unwrap_or_else(|| format!("Piste {}", k.ordinal + 1)))
+        .map(|k| {
+            source_names
+                .get(k.ordinal)
+                .cloned()
+                .unwrap_or_else(|| format!("Piste {}", k.ordinal + 1))
+        })
         .collect();
     if names.len() > 1 {
         names.insert(0, "Mix".to_string());
@@ -693,6 +720,8 @@ impl Daemon {
             game: Mutex::new(GameWatch::default()),
             games: Mutex::new(registry),
             track_files: Mutex::new(()),
+            export_jobs: crate::export_jobs::ExportJobs::default(),
+            export_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -745,20 +774,32 @@ impl Daemon {
     /// disappears for under [`GAME_GRACE`] (a loading screen swapping windows)
     /// is still the game. The replay starts when one is seen while it is wanted
     /// and idle, and stops when it was started for a game and none is left.
+    /// Records what the watcher saw, in every capture mode: auto-clip needs
+    /// to know the game in front even while the whole desktop is recorded.
+    /// Starting and stopping the replay stays [`Self::game_tick`]'s, in the
+    /// game mode only.
+    pub fn note_sighting(&self, seen: Option<Sighting>, now: Instant) {
+        Self::update_sighting(&mut self.lock_game(), seen, now);
+    }
+
+    fn update_sighting(game: &mut GameWatch, seen: Option<Sighting>, now: Instant) {
+        match seen {
+            Some(found) => {
+                game.last_seen = Some(now);
+                game.sighting = Some(found);
+            }
+            None => {
+                if game.last_seen.is_none_or(|at| now.duration_since(at) >= GAME_GRACE) {
+                    game.sighting = None;
+                }
+            }
+        }
+    }
+
     pub fn game_tick(&self, seen: Option<Sighting>, now: Instant) {
         let (start, stop) = {
             let mut game = self.lock_game();
-            match seen {
-                Some(found) => {
-                    game.last_seen = Some(now);
-                    game.sighting = Some(found);
-                }
-                None => {
-                    if game.last_seen.is_none_or(|at| now.duration_since(at) >= GAME_GRACE) {
-                        game.sighting = None;
-                    }
-                }
-            }
+            Self::update_sighting(&mut game, seen, now);
             let armed = self.lock_armed().is_some();
             let retry_ok = game.last_attempt.is_none_or(|at| now.duration_since(at) >= GAME_RETRY);
             let start =
@@ -797,10 +838,9 @@ impl Daemon {
         let now = Instant::now();
         {
             let mut watch = self.lock_game();
-            let recent = watch
-                .last_noted
-                .as_ref()
-                .is_some_and(|(exe, at)| *exe == seen.exe && now.duration_since(*at) < GAME_NOTE_EVERY);
+            let recent = watch.last_noted.as_ref().is_some_and(|(exe, at)| {
+                *exe == seen.exe && now.duration_since(*at) < GAME_NOTE_EVERY
+            });
             if recent {
                 return;
             }
@@ -1065,6 +1105,20 @@ impl Daemon {
         Ok(saved)
     }
 
+    /// Watches `region` of the live picture (None stops) and returns its
+    /// newest read-back. `Ok(None)` while the replay is off or no read-back
+    /// finished since the last call.
+    pub fn probe(
+        &self,
+        region: Option<clippy_core::capture::probe::ProbeRegion>,
+    ) -> Result<Option<clippy_core::capture::stage::StagedFrame>> {
+        let armed = self.lock_armed();
+        match armed.as_ref() {
+            Some(state) => state.engine.probe(region),
+            None => Ok(None),
+        }
+    }
+
     /// Writes a screenshot from the live capture session.
     ///
     /// Armed-only, and it says so. A screenshot comes off the session that is
@@ -1204,6 +1258,9 @@ impl Daemon {
         // takes no lock of its own -- it only reads the guard already held
         // -- so this cannot deadlock the way calling `custom_sound_source`
         // while holding the guard would.
+        // The banner follows the chime's rule (a hotkey or automatic clip,
+        // never an export the window asked for), with its own toggle.
+        let banner = matches!(sound, PlaySound::Yes) && self.lock_config().clip_banner;
         let sound = match sound {
             PlaySound::No => None,
             PlaySound::Yes => {
@@ -1251,6 +1308,9 @@ impl Daemon {
         if let Some(custom) = sound {
             crate::sound::play(custom.as_deref());
         }
+        if banner {
+            crate::banner::show(clip_banner_message(meta));
+        }
     }
 
     /// Tells every connected client that a screenshot has just been written,
@@ -1267,7 +1327,10 @@ impl Daemon {
         // `config` is read fresh here rather than threaded down from
         // `screenshot`, which already reads it after the `armed` lock is
         // released — see the lock ordering note at the top of this file.
-        let play_sound = self.lock_config().screenshot_sound;
+        let (play_sound, banner) = {
+            let config = self.lock_config();
+            (config.screenshot_sound, config.clip_banner)
+        };
 
         // Broadcast before the sound, matching `record_saved_clip`: the event
         // is what makes the screenshot real to a client, and the chime is
@@ -1285,6 +1348,12 @@ impl Daemon {
 
         if play_sound {
             crate::sound::play_shot();
+        }
+        if banner {
+            crate::banner::show(crate::banner::Message {
+                title: "Capture d’écran enregistrée".into(),
+                detail: "Copiée dans le presse-papiers".into(),
+            });
         }
     }
 
@@ -1423,6 +1492,15 @@ impl Daemon {
     /// the whole reason `presence.rs` is a loop: this is how a `config.set`
     /// toggle reaches the presence thread, and there is no other wiring
     /// between them.
+    pub fn auto_clip_settings(&self) -> AutoClipSettings {
+        let config = self.lock_config();
+        AutoClipSettings {
+            enabled: config.auto_clip,
+            min_kills: config.auto_clip_min_kills.max(1),
+            replay_seconds: config.replay_seconds,
+        }
+    }
+
     pub fn discord_presence_enabled(&self) -> bool {
         self.lock_config().discord_presence
     }
@@ -1574,8 +1652,11 @@ impl Daemon {
         // somewhere else. The rescan at the end of this function reads it.
         let mut clip_dir_moved = false;
         if values.contains_key("clip_dir") {
-            library::ensure_writable(&updated.clip_dir_path())?;
             clip_dir_moved = updated.clip_dir_path() != config.clip_dir_path();
+            if clip_dir_moved && self.export_active.load(std::sync::atomic::Ordering::Acquire) {
+                bail!("attendez la fin de l’export ou annulez-le avant de changer le dossier des clips");
+            }
+            library::ensure_writable(&updated.clip_dir_path())?;
         }
 
         // Decoded here, before anything is written, for the same all-or-nothing
@@ -2093,6 +2174,19 @@ impl Daemon {
             .with_context(|| format!("impossible d’afficher le clip {id} dans l’Explorateur"))
     }
 
+    /// Puts the clip's `.mp4` on the clipboard as a file, for a paste into
+    /// Discord or any upload box. The path goes through [`Self::paths_for`]
+    /// like every other clip path.
+    pub fn copy_clip(&self, id: &str) -> Result<()> {
+        let paths = self.paths_for(id)?;
+        if !paths.mp4().is_file() {
+            bail!("clip {id} introuvable dans la bibliothèque");
+        }
+        let path = std::path::absolute(paths.mp4())?;
+        clippy_core::clipboard::copy_files(&[&path])
+            .with_context(|| format!("impossible de copier le clip {id}"))
+    }
+
     /// Every keyframe position in a clip, for the trim bar's ticks.
     ///
     /// [`Self::paths_for`] is the sealed choke point: it runs
@@ -2116,11 +2210,25 @@ impl Daemon {
         Ok(Value::Object(out))
     }
 
+    /// Indexes actual video presentation boundaries through the sealed clip path.
+    pub(crate) fn frames(&self, clip_id: &str) -> Result<Value> {
+        let paths = self.paths_for(clip_id)?;
+        if !paths.mp4().is_file() {
+            bail!("clip {clip_id} introuvable");
+        }
+        let frames = export::frame_index(paths.mp4())
+            .with_context(|| format!("impossible d’indexer les images du clip {clip_id}"))?;
+        Ok(serde_json::json!({
+            "timestamps_100ns": frames.timestamps_100ns,
+            "end_100ns": frames.end_100ns,
+        }))
+    }
+
+
     /// Exports a range of a clip as a new clip in the library.
     ///
-    /// Synchronous, like [`Self::clip`]: a fast-mode export is a stream copy of
-    /// a few seconds and finishes well inside a socket round trip, so there is
-    /// no worker thread and no progress event to subscribe to.
+    /// Legacy synchronous entry point. The editor uses the daemon-owned job
+    /// entry point for progress, cancellation and reconnection recovery.
     ///
     /// The source is only ever read. Everything written goes to an id this
     /// function allocates — there is no caller-supplied destination, so no
@@ -2132,28 +2240,86 @@ impl Daemon {
         start_ms: u64,
         end_ms: u64,
         mode: &str,
+        output: clippy_proto::command::ExportOutput,
         tracks: Option<&[clippy_proto::command::ExportTrack]>,
+        shaping: Shaping,
     ) -> Result<ClipMeta> {
-        // Named rather than "invalid mode": `precise` is already on the wire
-        // (see `Command::LibraryExport`) so it can arrive without a protocol
-        // change, and a client that reads its own mode back learns the daemon
-        // does not do that one yet instead of hunting a typo.
-        if mode != "fast" {
-            bail!(
-                "le mode d’export \"{mode}\" n’est pas encore pris en charge\u{a0}; seul \"fast\" est disponible"
-            );
+        let _permit = self.acquire_export_permit()?;
+        self.export_clip_with_control(clip_id, start_ms, end_ms, mode, output, tracks, shaping, &export::ExportControl::default())
+    }
+
+    pub(crate) fn validate_export_request(&self, clip_id: &str, start_ms: u64, end_ms: u64, mode: &str, output: clippy_proto::command::ExportOutput, shaping: Shaping) -> Result<()> {
+        Self::validate_shaping(mode, output, shaping)?;
+        if !matches!(mode, "fast" | "precise") { bail!("mode d’export inconnu : \"{mode}\" ; choisissez \"fast\" ou \"precise\""); }
+        let paths = self.paths_for(clip_id)?;
+        if !paths.mp4().is_file() { bail!("clip {clip_id} introuvable"); }
+        let meta = library::read_sidecar(paths.sidecar())?;
+        Self::export_range(meta.duration_ms, start_ms, end_ms, mode)?;
+        Ok(())
+    }
+
+    /// A size cap needs the reencode (`precise`) and a single mix (`share`):
+    /// stems would spend the budget on audio nobody hears in a chat embed.
+    /// A portrait crop needs the reencode too.
+    fn validate_shaping(mode: &str, output: clippy_proto::command::ExportOutput, shaping: Shaping) -> Result<()> {
+        if shaping.size_limit_mb.is_some() && (mode != "precise" || output != clippy_proto::command::ExportOutput::Share) {
+            bail!("une taille maximale demande la coupe précise et le MP4 de partage");
+        }
+        if shaping.vertical_center.is_some() && mode != "precise" {
+            bail!("le format vertical demande la coupe précise");
+        }
+        Ok(())
+    }
+
+    fn export_range(duration: u64, start: u64, end: u64, mode: &str) -> Result<(u64, u64)> {
+        if mode != "precise" {
+            return export::clamp_range(duration, start, end).map_err(anyhow::Error::msg);
+        }
+        let end = end.min(duration);
+        if duration == 0 || start >= end { bail!("la plage précise doit contenir au moins une image"); }
+        Ok((start, end))
+    }
+
+    pub(crate) fn export_clip_with_control(
+        &self, clip_id: &str, start_ms: u64, end_ms: u64, mode: &str,
+        output: clippy_proto::command::ExportOutput,
+        tracks: Option<&[clippy_proto::command::ExportTrack]>,
+        shaping: Shaping,
+        control: &export::ExportControl,
+    ) -> Result<ClipMeta> {
+        Self::validate_shaping(mode, output, shaping)?;
+        if !matches!(mode, "fast" | "precise") {
+            bail!("mode d’export inconnu : \"{mode}\" ; choisissez \"fast\" ou \"precise\"");
         }
         let paths = self.paths_for(clip_id)?;
         if !paths.mp4().is_file() {
             bail!("clip {clip_id} introuvable");
         }
-        //The source's own sidecar carries the width/height/fps/encoder the
-        // export inherits verbatim — a stream copy changes none of them — and
-        // the duration the requested range is clamped against.
+        // The source sidecar supplies dimensions, nominal fps and the duration
+        // against which the requested range is validated.
         let source_meta = library::read_sidecar(paths.sidecar())
             .with_context(|| format!("{clip_id} has no readable metadata"))?;
-        let (start_ms, end_ms) = export::clamp_range(source_meta.duration_ms, start_ms, end_ms)
-            .map_err(anyhow::Error::msg)?;
+        let (start_ms, end_ms) = Self::export_range(source_meta.duration_ms, start_ms, end_ms, mode)?;
+
+        // Validate before reserving a destination: a refused track choice
+        // must not strand an empty MP4. Reconcile legacy sidecars against the
+        // actual source so old trims cannot invent missing audio streams.
+        let source_audio_count = export::audio_track_count(paths.mp4())?;
+        let source_audio_names: Vec<String> = (0..source_audio_count)
+            .map(|index| source_meta.audio_tracks.get(index).cloned()
+                .unwrap_or_else(|| if index == 0 { "Mix".to_string() } else { format!("Piste {}", index + 1) }))
+            .collect();
+        let kept: Option<Vec<export::TrackChoice>> = match tracks {
+            Some(tracks) => Some(self.validate_export_tracks(paths.mp4(), tracks)?
+                .into_iter().filter(|track| track.gain_percent > 0).collect()),
+            None if output == clippy_proto::command::ExportOutput::Share => Some(
+                (source_audio_count > 0).then_some(export::TrackChoice {
+                    ordinal: 0,
+                    gain_percent: 100,
+                }).into_iter().collect()
+            ),
+            None => None,
+        };
 
         let dir = paths.dir();
         // Same folder as the source, found from the directory the source was
@@ -2189,31 +2355,39 @@ impl Daemon {
         // that file itself, one statement ago, for this export. So the two
         // halves stay honest: `export.rs` never touches a `dest` it did not
         // create, and `state.rs` cleans up the file it did.
-        let kept = match tracks {
-            Some(tracks) => Some(self.validate_export_tracks(paths.mp4(), tracks)?),
-            None => None,
+        let remix_output = match output {
+            clippy_proto::command::ExportOutput::Master => export::RemixOutput::MixAndStems,
+            clippy_proto::command::ExportOutput::Share => export::RemixOutput::MixOnly,
         };
-        let exported = match &kept {
-            None => export::export_fast(export::FastExport {
+        let exported = if mode == "precise" {
+            export::export_precise_with_control(export::PreciseExport {
+                source: paths.mp4(), dest: new_paths.mp4(), start_ms, end_ms,
+                tracks: kept.as_deref(), output: remix_output,
+                size_limit_bytes: shaping.size_limit_mb.map(|mb| u64::from(mb) * 1_000_000),
+                vertical_center: shaping.vertical_center,
+            }, control)
+        } else { match &kept {
+            None => export::export_fast_with_control(export::FastExport {
                 source: paths.mp4(),
                 dest: new_paths.mp4(),
                 start_ms,
                 end_ms,
-            }),
-            Some(kept) => export::export_remix(export::RemixExport {
+            }, control),
+            Some(kept) => export::export_remix_with_control(export::RemixExport {
                 source: paths.mp4(),
                 dest: new_paths.mp4(),
                 start_ms,
                 end_ms,
                 tracks: kept,
-            }),
-        };
+                output: remix_output,
+            }, control),
+        }};
         let outcome = match exported {
             Ok(outcome) => outcome,
             Err(e) => {
                 // `NotFound` is the ordinary case, not a problem: an attempt
                 // that got as far as creating `dest` deletes it on the way out
-                // (`with_video_only_retry`), so there is usually nothing left.
+                // (the core export cleans up), so there is usually nothing left.
                 match std::fs::remove_file(new_paths.mp4()) {
                     Ok(()) => {}
                     Err(remove) if remove.kind() == std::io::ErrorKind::NotFound => {}
@@ -2232,6 +2406,13 @@ impl Daemon {
             }
         };
 
+        if control.is_cancelled() {
+            if let Err(error) = std::fs::remove_file(new_paths.mp4()) {
+                if error.kind() != std::io::ErrorKind::NotFound { tracing::warn!(%error, "could not remove cancelled export"); }
+            }
+            return Err(export::ExportCancelled.into());
+        }
+
         // The source's thumbnail, copied. It is the source's first frame rather
         // than the trim's, which is wrong in the strict sense — but a grid card
         // with no image at all reads as a broken clip, and this export has no
@@ -2241,22 +2422,27 @@ impl Daemon {
 
         let meta = ClipMeta {
             id: new_id.clone(),
-            title: format!("{} (trimmed)", source_meta.title),
+            title: match (shaping.size_limit_mb, shaping.vertical_center.is_some()) {
+                (Some(mb), true) => format!("{} (9:16, {mb} Mo)", source_meta.title),
+                (Some(mb), false) => format!("{} ({mb} Mo)", source_meta.title),
+                (None, true) => format!("{} (9:16)", source_meta.title),
+                (None, false) => format!("{} (trimmed)", source_meta.title),
+            },
             created: library::now_rfc3339_local(),
-            // From the samples that were written, not from the range that was
-            // asked for: the in-point snapped back to a keyframe.
+            // Measured from written samples, including any boundary snapping.
             duration_ms: outcome.duration_ms,
             bytes: std::fs::metadata(new_paths.mp4()).map(|m| m.len()).unwrap_or(0),
-            width: source_meta.width,
-            height: source_meta.height,
+            width: outcome.frame_size.map_or(source_meta.width, |(w, _)| w),
+            height: outcome.frame_size.map_or(source_meta.height, |(_, h)| h),
             fps: source_meta.fps,
-            encoder: source_meta.encoder.clone(),
+            encoder: if mode == "precise" { "Media Foundation H.264".into() } else { source_meta.encoder.clone() },
             has_audio: outcome.has_audio,
             favorite: false,
             audio_tracks: match &kept {
                 _ if !outcome.has_audio => Vec::new(),
-                None => source_meta.audio_tracks.clone(),
-                Some(kept) => exported_track_names(&source_meta.audio_tracks, kept),
+                _ if output == clippy_proto::command::ExportOutput::Share => vec!["Mix".to_string()],
+                None => source_audio_names.clone(),
+                Some(kept) => exported_track_names(&source_audio_names, kept),
             },
             game: source_meta.game.clone(),
             folder: source_meta.folder.clone(),
@@ -2297,6 +2483,9 @@ impl Daemon {
         if tracks.len() > MAX_TRACKS {
             bail!("au plus {MAX_TRACKS} pistes audio par export");
         }
+        if available > 1 && tracks.len() > 1 && tracks.iter().any(|track| track.index == 0) {
+            bail!("le Mix contient déjà les pistes séparées ; choisissez le Mix seul ou les pistes à mélanger");
+        }
         let mut kept: Vec<export::TrackChoice> = Vec::new();
         for track in tracks {
             if track.index >= available {
@@ -2311,8 +2500,8 @@ impl Daemon {
     }
 
     /// `library.tracks`: each audio track of a clip as a file of its own, for
-    /// the editor to play side by side. Extracted on first request and kept
-    /// next to the clip (`delete` and the ceiling remove them with it).
+    /// the editor to play side by side. Rebuildable derivatives live in the
+    /// reserved cache; the library retains one master MP4 per clip.
     pub(crate) fn clip_tracks(&self, clip_id: &str) -> Result<Value> {
         let paths = self.paths_for(clip_id)?;
         if !paths.mp4().is_file() {
@@ -2325,27 +2514,64 @@ impl Daemon {
             .map(|clip| clip.audio_tracks.clone())
             .unwrap_or_default();
         let count = export::audio_track_count(paths.mp4())?;
-        let _one_at_a_time = self.track_files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut out = Vec::new();
+        let _one_at_a_time =
+            self.track_files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::fs::create_dir_all(paths.track_cache())
+            .context("création du cache audio de l’éditeur")?;
+        // Relocate old derivatives even when the Mix is no longer requested.
+        // Only exact files derived from this validated clip id are touched.
         for ordinal in 0..count {
+            let legacy = paths.legacy_track(ordinal);
+            if legacy.is_file() {
+                let cached = paths.track(ordinal);
+                if cached.exists() {
+                    std::fs::remove_file(&legacy).with_context(|| {
+                        format!("nettoyage de l’ancienne piste audio {ordinal}")
+                    })?;
+                } else {
+                    std::fs::rename(&legacy, &cached)
+                        .with_context(|| format!("migration de la piste audio {ordinal}"))?;
+                }
+            }
+        }
+        let mut out = Vec::new();
+        // Mix is already in the MP4 and is not an editable stem.
+        let first = usize::from(count > 1);
+        for ordinal in first..count {
             let file = paths.track(ordinal);
-            let ready = std::fs::metadata(&file).is_ok_and(|m| m.len() > 0);
-            if !ready {
+            if !track_cache_is_fresh(paths.mp4(), &file) {
                 let partial = paths.track_partial(ordinal);
-                export::extract_audio_track(paths.mp4(), ordinal, &partial)
-                    .with_context(|| format!("impossible d’extraire la piste {ordinal} de {clip_id}"))?;
-                std::fs::rename(&partial, &file)
-                    .with_context(|| format!("impossible d’enregistrer la piste {ordinal}"))?;
+                let extracted = export::extract_audio_track(paths.mp4(), ordinal, &partial)
+                    .and_then(|()| {
+                        std::fs::rename(&partial, &file)
+                            .with_context(|| format!("impossible d’enregistrer la piste {ordinal}"))
+                    });
+                if let Err(error) = extracted {
+                    if let Err(cleanup) = std::fs::remove_file(&partial) {
+                        if cleanup.kind() != std::io::ErrorKind::NotFound {
+                            tracing::warn!(path = %partial.display(), %cleanup, "could not remove partial editor audio");
+                        }
+                    }
+                    return Err(error).with_context(|| {
+                        format!("impossible d’extraire la piste {ordinal} de {clip_id}")
+                    });
+                }
             }
             let mut entry = Map::new();
             entry.insert("index".to_string(), Value::from(ordinal));
             entry.insert(
                 "name".to_string(),
-                Value::from(names.get(ordinal).cloned().unwrap_or_else(|| format!("Piste {}", ordinal + 1))),
+                Value::from(
+                    names.get(ordinal).cloned().unwrap_or_else(|| format!("Piste {}", ordinal + 1)),
+                ),
             );
             entry.insert(
                 "file".to_string(),
-                Value::from(file.file_name().and_then(|n| n.to_str()).unwrap_or_default()),
+                Value::from(format!(
+                    "{}/{}",
+                    library::TRACK_CACHE_DIR,
+                    file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+                )),
             );
             out.push(Value::Object(entry));
         }
@@ -2457,7 +2683,7 @@ impl Daemon {
         self.game.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn lock_config(&self) -> MutexGuard<'_, Config> {
+    pub(crate) fn lock_config(&self) -> MutexGuard<'_, Config> {
         self.config.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
@@ -2579,8 +2805,105 @@ fn write_sound_cache(config_path: &std::path::Path, wav: &[u8], source: &str) ->
     Ok(())
 }
 
+
+/// What the auto-clip service reads from the config on every moment.
+#[derive(Debug, Clone, Copy)]
+pub struct AutoClipSettings {
+    pub enabled: bool,
+    pub min_kills: u32,
+    pub replay_seconds: u32,
+}
+
+/// How an export reshapes the picture and its size, beyond the cut itself.
+/// The banner for a clip the hotkey (or auto-clip) just saved: what was saved
+/// and how long it is.
+pub(crate) fn clip_banner_message(meta: &ClipMeta) -> crate::banner::Message {
+    // A clip nobody named yet is titled after its id (`clip_<stamp>`), which
+    // says nothing; the game it was recorded in says more.
+    let name = if meta.title.is_empty() || meta.title == format!("clip_{}", meta.id) {
+        if meta.game.is_empty() { "Bureau" } else { meta.game.as_str() }
+    } else {
+        meta.title.as_str()
+    };
+    crate::banner::Message {
+        title: "Clip enregistré".into(),
+        detail: format!("{name} · {}", crate::banner::duration_label(meta.duration_ms)),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Shaping {
+    pub size_limit_mb: Option<u32>,
+    pub vertical_center: Option<u16>,
+}
+
+#[cfg(test)]
+mod banner_tests {
+    use super::*;
+
+    fn meta(id: &str, title: &str, game: &str) -> ClipMeta {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "title": title, "created": "2026-11-01T12:00:00+01:00",
+            "duration_ms": 15_000, "bytes": 1, "width": 1920, "height": 1080, "fps": 60,
+            "encoder": "x", "has_audio": true, "favorite": false, "game": game,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_banner_names_the_game_rather_than_a_default_title() {
+        let id = "20261101_120000";
+        assert_eq!(clip_banner_message(&meta(id, &format!("clip_{id}"), "")).detail, "Bureau · 0:15");
+        assert_eq!(clip_banner_message(&meta(id, &format!("clip_{id}"), "Valorant")).detail, "Valorant · 0:15");
+        assert_eq!(clip_banner_message(&meta(id, "Double kill · Valorant", "Valorant")).detail, "Double kill · Valorant · 0:15");
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn precise_export_accepts_single_frame_but_fast_keeps_its_floor() {
+        assert_eq!(super::Daemon::export_range(1000, 17, 33, "precise").unwrap(), (17, 33));
+        assert!(super::Daemon::export_range(1000, 17, 33, "fast").is_err());
+        assert_eq!(super::Daemon::export_range(1000, 950, 1100, "precise").unwrap(), (950, 1000));
+        assert!(super::Daemon::export_range(1000, 1000, 1100, "precise").is_err());
+        assert!(super::Daemon::export_range(0, 0, 1, "precise").is_err());
+    }
+
+    #[test]
+    fn editor_derivatives_stay_in_the_reserved_cache() {
+        let dir = std::path::PathBuf::from(r"D:\clips\VALORANT");
+        let paths = super::ClipPaths::for_id(dir.clone(), "20260101_100000").unwrap();
+        assert_eq!(paths.track(2), dir.join(".clippy-cache").join("20260101_100000.t2.m4a"));
+        assert_eq!(
+            paths.track_partial(2),
+            dir.join(".clippy-cache").join("20260101_100000.t2.part.m4a")
+        );
+        assert_eq!(paths.legacy_track(2), dir.join("20260101_100000.t2.m4a"));
+    }
+
+    #[test]
+    fn editor_cache_requires_nonempty_audio_newer_than_the_master() {
+        use std::time::{Duration, SystemTime};
+        let dir =
+            std::env::temp_dir().join(format!("clippy-cache-freshness-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("clip.mp4");
+        let cached = dir.join("clip.t1.m4a");
+        std::fs::write(&source, b"master").unwrap();
+        assert!(!super::track_cache_is_fresh(&source, &cached));
+        std::fs::write(&cached, b"audio").unwrap();
+        let now = SystemTime::now();
+        std::fs::OpenOptions::new().write(true).open(&source).unwrap().set_modified(now).unwrap();
+        std::fs::OpenOptions::new().write(true).open(&cached).unwrap().set_modified(now - Duration::from_secs(10)).unwrap();
+        assert!(!super::track_cache_is_fresh(&source, &cached));
+        std::fs::OpenOptions::new().write(true).open(&cached).unwrap().set_modified(now + Duration::from_secs(10)).unwrap();
+        assert!(super::track_cache_is_fresh(&source, &cached));
+        std::fs::write(&cached, b"").unwrap();
+        assert!(!super::track_cache_is_fresh(&source, &cached));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use std::path::{Path, PathBuf};
 
     use super::*;
@@ -3069,6 +3392,20 @@ mod tests {
         assert_eq!(daemon.status().game.as_deref(), Some("eldenring.exe"), "inside the grace");
         daemon.game_tick(None, start + GAME_GRACE + Duration::from_secs(1));
         assert_eq!(daemon.status().game, None, "past the grace");
+    }
+
+    /// Auto-clip reads the game in front from the status in every mode; the
+    /// desktop mode used to leave it empty, so Valorant was never watched.
+    #[test]
+    fn the_desktop_mode_still_knows_the_game_in_front_without_arming_for_it() {
+        let daemon = idle("game-desktop", Config::default());
+        let start = Instant::now();
+        daemon.note_sighting(Some(sighting("valorant-win64-shipping.exe")), start);
+        let status = daemon.status();
+        assert_eq!(status.game.as_deref(), Some("valorant-win64-shipping.exe"));
+        assert!(!status.armed && !status.waiting_for_game, "seeing a game arms nothing");
+        daemon.note_sighting(None, start + GAME_GRACE + Duration::from_secs(1));
+        assert_eq!(daemon.status().game, None);
     }
 
     #[test]

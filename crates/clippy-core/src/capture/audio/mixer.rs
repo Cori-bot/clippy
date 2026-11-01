@@ -516,9 +516,11 @@ impl TrackMixer {
         let mut tracks = Vec::new();
         for spec in specs {
             let (mic, sources, watcher) = match &spec.kind {
-                TrackKind::System if AudioMixer::should_open(gains.system_percent()) => {
-                    (false, AudioMixer::open(AudioSourceKind::SystemAudio).into_iter().collect(), None)
-                }
+                TrackKind::System if AudioMixer::should_open(gains.system_percent()) => (
+                    false,
+                    AudioMixer::open(AudioSourceKind::SystemAudio).into_iter().collect(),
+                    None,
+                ),
                 TrackKind::Apps(apps)
                     if !apps.is_empty() && AudioMixer::should_open(gains.system_percent()) =>
                 {
@@ -537,9 +539,11 @@ impl TrackMixer {
                     // frame-aligned, while none of its applications runs.
                     (false, vec![Source::silent()], watcher)
                 }
-                TrackKind::Mic if AudioMixer::should_open(gains.mic_percent()) => {
-                    (true, AudioMixer::open(AudioSourceKind::Microphone).into_iter().collect(), None)
-                }
+                TrackKind::Mic if AudioMixer::should_open(gains.mic_percent()) => (
+                    true,
+                    AudioMixer::open(AudioSourceKind::Microphone).into_iter().collect(),
+                    None,
+                ),
                 _ => continue,
             };
             if sources.is_empty() {

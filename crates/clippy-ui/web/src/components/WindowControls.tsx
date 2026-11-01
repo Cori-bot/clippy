@@ -27,7 +27,7 @@ function Caption({ shape, label, onClick, danger }: { shape: keyof typeof SHAPES
 }
 
 export function WindowControls() {
-  const win = getCurrentWindow();
+  const [win] = useState(getCurrentWindow);
   const [maximized, setMaximized] = useState(false);
 
   // The window can be maximized without these buttons (double-click on the drag

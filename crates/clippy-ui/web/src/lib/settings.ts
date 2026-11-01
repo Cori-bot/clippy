@@ -16,6 +16,8 @@ export type Field = {
   min?: number;
   max?: number;
   options?: { value: string; label: string }[];
+  /** The select's values are numbers on the wire (shown as strings). */
+  numeric?: boolean;
   /**
    * A `tier` field's presets, in dropdown order. Lives on the descriptor
    * rather than in a table `Field.tsx` looks up by `field.key`, for the
@@ -77,6 +79,7 @@ const BOUNDS: Record<string, [number, number]> = {
   max_library_gb: [0, 10000],
   system_volume: [0, 200],
   mic_volume: [0, 200],
+  auto_clip_min_kills: [1, 5],
 };
 
 /**
@@ -198,6 +201,15 @@ export const FIELDS: Field[] = [
 
   { key: 'clip_dir', label: 'Dossier des clips', kind: 'folder', section: 'Clips', help: 'Emplacement d’enregistrement des clips. Vide : Videos\\Clippy.' },
   { key: 'group_by_game', label: 'Ranger les clips par jeu', kind: 'bool', section: 'Clips', help: 'Un sous-dossier par jeu dans le dossier des clips (Bureau pour le reste), comme l’application NVIDIA. Pris en compte au prochain démarrage du replay.' },
+  { key: 'auto_clip', label: 'Clips automatiques', kind: 'bool', section: 'Clips', help: 'Un clip tout seul après vos kills, multi-kills et aces dans Counter-Strike 2, League of Legends et Valorant. Le replay doit être actif. CS2 : redémarrez le jeu après l’activation.',
+    more: 'Clippy utilise les interfaces officielles des jeux, sans lire leur mémoire : l’intégration d’état de jeu de Valve (fichier gamestate_integration_clippy.cfg ajouté au dossier cfg de CS2, lu au lancement du jeu) l’API Live Client Data de Riot pour League of Legends et, pour Valorant, le kill feed lu dans l’image déjà enregistrée (votre portrait encadré de jaune).' },
+  { key: 'auto_clip_min_kills', label: 'Kills pour un clip automatique', kind: 'select', section: 'Clips', options: [
+      { value: '1', label: 'Chaque kill' },
+      { value: '2', label: '2 kills rapprochés ou plus' },
+      { value: '3', label: '3 kills rapprochés ou plus' },
+      { value: '4', label: '4 kills rapprochés ou plus' },
+      { value: '5', label: '5 kills (ace)' },
+    ], numeric: true, help: 'Les kills à quelques secondes d’intervalle forment un seul clip. Un ace ou un penta kill est toujours enregistré.' },
   { key: 'max_library_gb', label: 'Limite de la bibliothèque', kind: 'number', section: 'Clips', ...span('max_library_gb'), help: 'En Go. Au-delà de la limite, les clips non favoris les plus anciens sont supprimés. 0 désactive la limite.' },
 
   { key: 'clip_hotkey', label: 'Raccourci du clip', kind: 'hotkey', section: 'Shortcuts', liveTest: true, boundKey: 'clip_hotkey_bound',
@@ -212,6 +224,8 @@ export const FIELDS: Field[] = [
     more: 'S’applique aux deux raccourcis. Standard demande à Windows de réserver la combinaison : la demande est refusée d’emblée si un autre programme l’utilise déjà, et même lorsqu’elle aboutit, certains jeux et surcouches interceptent la touche avant que Windows ne la transmette (constaté dans Euro Truck Simulator 2, où Clippy détenait la touche sans jamais voir d’appui). Bas niveau surveille directement le clavier : la touche est vue dans les deux cas, puis retransmise afin que les autres programmes qui l’utilisent continuent de fonctionner. Certains logiciels anti-triche se méfient des programmes qui surveillent le clavier ; OBS, Discord et Steam le font aussi, mais Clippy ne peut pas garantir comment un anti-triche donné l’interprète. Aucun des deux modes n’aide si le jeu s’exécute en tant qu’administrateur et que Clippy ne le fait pas.' },
 
   { key: 'screenshot_sound', label: 'Son de capture d’écran', kind: 'bool', section: 'Sounds', help: 'Un bref son à l’enregistrement d’une capture d’écran, différent de celui du clip pour les distinguer sans regarder.' },
+  { key: 'clip_banner', label: 'Bandeau à l’écran', kind: 'bool', section: 'Sounds', help: 'Affiche « Clip enregistré » en haut à droite, par-dessus le jeu, à chaque clip ou capture. N’apparaît jamais dans les enregistrements.',
+    more: 'Visible par-dessus les jeux en fenêtré ou en plein écran fenêtré. Un jeu en plein écran exclusif le masque.' },
   { key: 'clip_sound', label: 'Son du clip', kind: 'bool', section: 'Sounds', help: 'Joue un son à l’enregistrement d’un clip, même lorsque la fenêtre de Clippy est fermée.' },
   { key: 'clip_sound_path', label: 'Fichier son', kind: 'sound', section: 'Sounds', help: 'Un son personnel, ou celui intégré à Clippy. mp3, wav, m4a et tout autre format que Windows sait lire. Seules les 10 premières secondes sont utilisées.' },
 
@@ -222,6 +236,8 @@ export const FIELDS: Field[] = [
   { key: 'discord_presence', label: 'Présence Discord', kind: 'bool', section: 'App',
     help: 'Affiche « Clipping with Clippy » sur le profil Discord, avec un bouton pour que les amis l’obtiennent.',
     more: 'Ne communique qu’avec l’application Discord de ce PC et n’envoie aucune information personnelle.' },
+  { key: 'diagnostics', label: 'Journal de diagnostic', kind: 'bool', section: 'App', help: 'Enregistre en détail ce qui se passe dans Clippy et les performances du PC, pour analyser un problème. Reste sur ce PC.',
+    more: 'Écrit dans %APPDATA%\clippy\logs : journal détaillé de l’enregistreur, actions dans la fenêtre (jamais le texte saisi), et toutes les 2 secondes processeur, mémoire, carte graphique et statistiques de capture. Les fichiers de plus de 14 jours sont supprimés.' },
   { key: 'stats_seconds', label: 'Intervalle des statistiques', kind: 'number', section: 'App', advanced: true, ...span('stats_seconds'), help: 'Secondes entre deux rapports de performances. 0 les désactive.' },
 
   { key: 'check_for_updates', label: 'Rechercher les mises à jour', kind: 'bool', section: 'Updates', help: 'Interroge github.com une fois par lancement pour savoir si une version plus récente existe. Rien n’est installé sans validation.',

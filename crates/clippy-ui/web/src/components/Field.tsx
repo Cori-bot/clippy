@@ -306,7 +306,7 @@ export function Field({
               size="sm"
               value={String(value ?? '')}
               options={field.options ?? []}
-              onChange={(o) => onset(field.key, o.value)}
+              onChange={(o) => onset(field.key, field.numeric ? Number(o.value) : o.value)}
             />
           )}
         </div>

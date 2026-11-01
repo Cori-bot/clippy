@@ -376,7 +376,7 @@ pub trait ClientHandler {
     /// memory. See [`crate::clients::OUTBOUND_QUEUE_DEPTH`].
     fn client_connected(&self, out: std::sync::mpsc::SyncSender<String>) -> u64;
     fn client_disconnected(&self, client: u64);
-    fn dispatch(&self, client: u64, request: &clippy_proto::Request) -> clippy_proto::Response;
+    fn dispatch(self: &Arc<Self>, client: u64, request: &clippy_proto::Request) -> clippy_proto::Response;
 
     /// This client's eviction flag, if the handler keeps one. Set by the
     /// registry when a broadcast overflows the client's queue and its entry is

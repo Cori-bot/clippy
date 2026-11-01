@@ -27,6 +27,7 @@ export {
   ArrowRotateCw as Rearm,
   Warning as Alert,
   Copy,
+  Search,
   CloseBold as Close,
 } from '@openai/apps-sdk-ui/components/Icon';
 

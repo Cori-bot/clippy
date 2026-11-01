@@ -7,6 +7,34 @@ html, body, #root { height: 100%; }
 body { margin: 0; overflow: hidden; user-select: none; background: var(--color-surface-tertiary); color: var(--color-text); }
 .selectable, input, textarea { user-select: text; }
 
+/* transitions.dev page transition: a short directional entrance, visible by
+   default and disabled for reduced motion. No second mounted recorder view. */
+:root { --page-slide-dur: 250ms; --page-slide-distance: 8px; --page-slide-ease: cubic-bezier(0.22, 1, 0.36, 1); }
+.view-enter { animation: view-enter var(--page-slide-dur) var(--page-slide-ease); }
+@keyframes view-enter {
+  from { opacity: 0; transform: translateX(var(--page-slide-distance)); }
+}
+::selection { background: var(--color-background-primary-soft-alpha); color: var(--color-text); }
+* { scrollbar-width: thin; scrollbar-color: var(--color-border-strong) transparent; }
+.export-progress { appearance: none; border: 0; border-radius: 2px; overflow: hidden; background: var(--color-border-subtle); }
+.export-progress::-webkit-progress-bar { background: var(--color-border-subtle); }
+.export-progress::-webkit-progress-value { background: var(--color-text); transition: width 250ms cubic-bezier(0.22, 1, 0.36, 1); }
+.export-progress::-moz-progress-bar { background: var(--color-text); }
+
+/* Amicro/Lucide Animated inspired feedback, using OpenAI icon shapes.
+   Only the interacted control moves; nothing runs while the app is idle. */
+.motion-icon { display: inline-flex; transform-origin: center; }
+.motion-control:is(:hover, :focus-visible) .motion-nudge { animation: icon-nudge 250ms cubic-bezier(0.22, 1, 0.36, 1); }
+.motion-control:is(:hover, :focus-visible) .motion-rotate { animation: icon-turn 250ms cubic-bezier(0.22, 1, 0.36, 1); }
+.search-control:focus-within svg { animation: icon-search 250ms cubic-bezier(0.22, 1, 0.36, 1); }
+.favorite-control[aria-pressed="true"] svg { animation: icon-favorite 250ms cubic-bezier(0.22, 1, 0.36, 1); }
+@keyframes icon-nudge { 40% { transform: translateX(2px); } }
+@keyframes icon-turn { from { transform: rotate(-35deg); } }
+@keyframes icon-search { 40% { transform: rotate(-12deg); } }
+@keyframes icon-favorite { 40% { transform: scale(1.2) rotate(-10deg); } }
+.save-confirmation { animation: saved-in 250ms cubic-bezier(0.22, 1, 0.36, 1); }
+@keyframes saved-in { from { opacity: 0; transform: scale(0.8) rotate(-12deg); } }
+
 /* Toasts rise from below with a soft cross-blur (transitions.dev "toast"). */
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(8px); filter: blur(2px); }
@@ -20,3 +48,71 @@ body { margin: 0; overflow: hidden; user-select: none; background: var(--color-s
 /* Menus and tooltips are portalled to <body> with no z-index of their own; the
    hovered or focused card lifts itself with z-[1], and would paint over them. */
 [data-radix-popper-content-wrapper] { z-index: 60 !important; }
+
+/* Editing is a docked desktop workspace. The library keeps its own scrolling shell. */
+.editor-workspace {
+  --editor-ground: #151719;
+  --editor-panel: #202225;
+  --editor-rule: #34373b;
+  --editor-muted: #b5b9c0;
+  --editor-accent: #4b94ff;
+  height: 100%; min-height: 0; display: flex; flex-direction: column;
+  background: var(--editor-ground); color: #eef0f3; font-size: 12px;
+}
+.editor-workspace button { border-radius: 5px; }
+.editor-workspace :is(button, summary):focus-visible { outline: 2px solid var(--editor-accent); outline-offset: 2px; }
+.editor-workspace ::selection { background: #28569c; color: #fff; }
+.editor-toolbar { display: flex; align-items: center; flex-shrink: 0; gap: 9px; min-height: 56px; padding: 0 16px; border-bottom: 1px solid var(--editor-rule); background: var(--editor-panel); }
+.editor-brand { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 600; padding-right: 18px; border-right: 1px solid var(--editor-rule); }
+.editor-title { flex: 1; min-width: 60px; padding-left: 16px; border-left: 1px solid var(--editor-rule); }
+.editor-title h1 { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 600; }
+.editor-navigation, .editor-history { display: flex; align-items: center; gap: 2px; }
+.editor-navigation { font-size: 11px; color: var(--editor-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.editor-history { border-left: 1px solid var(--editor-rule); padding-left: 7px; }
+.editor-save-state { display: flex; align-items: center; gap: 6px; color: var(--editor-muted); font-size: 11px; white-space: nowrap; }
+.editor-save-state svg { width: 16px; height: 16px; }
+.editor-workspace .editor-export { background: #287ce4; color: white; padding-inline: 14px; }
+.editor-workspace .editor-export::before { background: inherit; }
+.editor-workspace .editor-export:hover:not(:disabled) { background: #3588ee; }
+.editor-workspace .editor-export:disabled { opacity: .45; }
+.editor-inspector { min-width: 0; min-height: 0; overflow-y: auto; padding: 17px 18px 0; background: var(--editor-panel); }
+.editor-inspector h2 { margin: 0 0 15px; font-size: 16px; font-weight: 600; }
+.editor-inspector-section { border-top: 1px solid var(--editor-rule); padding: 15px 0; }
+.editor-inspector-section h3 { font-size: 12px; font-weight: 600; margin: 0 0 13px; }
+.editor-selection { display: grid; gap: 7px; font-variant-numeric: tabular-nums; }
+.editor-selection > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 29px; }
+.editor-selection dt { color: var(--editor-muted); }
+.editor-selection dd { display: flex; align-items: center; gap: 4px; }
+.editor-selection dd > button:first-child { min-width: 102px; background: #1b1d20; border: 1px solid #3e4248; height: 29px; padding: 0 7px; cursor: pointer; }
+.editor-selection dd > button:first-child:hover { border-color: #69717e; }
+.editor-selection .editor-duration { min-width: 102px; margin-right: 28px; justify-content: center; color: var(--editor-muted); }
+.editor-notice { margin-top: 8px; font-size: 11px; line-height: 1.5; color: var(--editor-muted); }
+.editor-notice.text-danger { color: var(--color-text-danger); }
+.editor-output-controls { display: grid; gap: 8px; }
+.editor-output-controls button { width: 100%; justify-content: space-between; border-radius: 4px; }
+.editor-crop-slider { padding: 2px 2px 4px; }
+.editor-audio-tracks { display: grid; gap: 13px; }
+.editor-audio-track { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; column-gap: 8px; row-gap: 0; }
+.editor-audio-track > button { height: 25px; width: 25px; }
+.editor-details { border-top: 1px solid var(--editor-rule); color: var(--editor-muted); font-size: 11px; }
+.editor-details summary { padding: 12px 0; cursor: pointer; }
+.editor-details p { padding-bottom: 12px; line-height: 1.7; }
+.editor-details > section { margin: 0 0 12px; border: 0; padding-top: 0; }
+.editor-statusbar { min-height: 29px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 16px; flex-shrink: 0; background: var(--editor-panel); border-top: 1px solid var(--editor-rule); font-size: 10px; color: var(--editor-muted); }
+.editor-statusbar kbd { font: inherit; color: #d7dbe1; }
+@media (max-width: 1100px) {
+  .editor-toolbar { gap: 5px; padding-inline: 10px; }
+  .editor-brand { padding-right: 8px; }
+  .editor-brand span, .editor-save-state { display: none; }
+  .editor-title { padding-left: 8px; }
+  .editor-navigation > span { display: none; }
+  .editor-inspector { padding-inline: 14px; }
+}
+@media (max-height: 650px) {
+  .editor-toolbar { min-height: 45px; }
+  .editor-inspector { padding-top: 12px; }
+  .editor-inspector h2 { margin-bottom: 10px; font-size: 14px; }
+  .editor-inspector-section { padding: 11px 0; }
+  .editor-inspector-section h3 { margin-bottom: 8px; }
+  .editor-statusbar { min-height: 25px; }
+}

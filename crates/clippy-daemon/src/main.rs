@@ -30,14 +30,27 @@ use clippy_daemon::{game, pipe, presence, state::Daemon, window};
 fn init_tracing() {
     let verbose = std::env::args().any(|arg| arg == "-v" || arg == "--verbose");
     let default_level = if verbose { "clippy=debug" } else { "clippy=info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
-        )
-        .with_target(false)
-        .compact()
-        .init();
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    let console = tracing_subscriber::fmt::layer().with_target(false).compact().with_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
+    );
+    // The diagnostics log: debug level whatever the console shows, written
+    // only while `diagnostics` is on (the writer is a no-op otherwise).
+    let file = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_thread_names(true)
+        .with_writer(|| clippy_daemon::diag::LogWriter)
+        // Checked per event, so nothing is even formatted while it is off.
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+            clippy_daemon::diag::enabled()
+                && meta.target().starts_with("clippy")
+                && *meta.level() <= tracing::Level::DEBUG
+        }));
+    tracing_subscriber::registry().with(console).with(file).init();
+    clippy_daemon::diag::install_panic_hook();
 }
 
 /// How long shutdown waits for `disarm` before exiting anyway.
@@ -239,6 +252,7 @@ fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let config = Config::load();
+    clippy_daemon::diag::set_enabled(config.diagnostics);
     tracing::debug!(?config, "loaded configuration");
     // What the tray menu ticks until the first `config.set` publishes again.
     window::publish_prefs(&config);
@@ -314,7 +328,12 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     game::spawn_watch(Arc::clone(&daemon));
+    // Kills and aces from the games' own local feeds; idle while the setting is off.
+    if let Err(error) = clippy_daemon::autoclip::spawn(Arc::clone(&daemon)) {
+        tracing::warn!(%error, "automatic clips unavailable");
+    }
     spawn_auto_arm(Arc::clone(&daemon))?;
+    clippy_daemon::diag::spawn(Arc::downgrade(&daemon));
 
     // `pipe::serve` logs "listening on {PIPE_NAME}" itself, once the first
     // pipe instance is actually bound — see the comment in `pipe.rs`.

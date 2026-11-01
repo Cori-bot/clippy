@@ -10,9 +10,10 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
-import { formatClock } from '../lib/timeline';
+import { formatClock, formatPreciseClock, frameStep, nearestFrameBoundary, presentedFrameBoundary, type FrameIndex } from '../lib/timeline';
 import { trackVolume, type TrackState } from '../lib/tracks';
 import { useTrackSync } from '../lib/useTrackSync';
+import { verticalBand } from '../lib/share';
 import { clamp, pointerRatio, ratioToValue, stepBy, valueToRatio } from '../lib/ui';
 import {
   VOLUME_STEP,
@@ -21,12 +22,17 @@ import {
   parseStoredVolume,
   unmutedLevel,
 } from '../lib/volume';
-import { Fullscreen, FullscreenExit, Pause, Play, Volume, VolumeMute } from './icons';
+import { ChevronLeft, ChevronRight, Fullscreen, FullscreenExit, Pause, Play, Volume, VolumeMute } from './icons';
+import './pro-player.css';
 
 /** What `ClipPage` can ask of the player from outside. */
 export type VideoPlayerHandle = {
   toggle: () => void;
   seekTo: (ms: number) => void;
+  seekFrame: (ms: number) => void;
+  stepFrame: (direction: 1 | -1) => void;
+  /** Read synchronously for In/Out, independently of throttled timeupdate. */
+  currentFrame: () => number;
   stepVolume: (direction: 1 | -1) => void;
 };
 
@@ -123,11 +129,19 @@ export function VideoPlayer({
   src,
   onTime,
   timeline,
+  inspector,
   trackUrls = [],
   trackStates = [],
+  frameIndex,
+  verticalCenter = null,
+  onVerticalCenter,
   ref,
 }: {
   src: string;
+  /** Shows the 9:16 crop centred this many thousandths across; null hides it. */
+  verticalCenter?: number | null;
+  onVerticalCenter?: (center: number) => void;
+  frameIndex?: FrameIndex;
   /**
    * Separate audio files, one per editable track. When given, the `<video>`
    * is muted and these play in sync instead; absent or empty keeps the
@@ -136,8 +150,9 @@ export function VideoPlayer({
   trackUrls?: string[];
   trackStates?: TrackState[];
   onTime: (ms: number) => void;
+  inspector?: ReactNode;
   /**
-   * The unified band, rendered inside the transport row. Handed the duration
+   * The full-width editing timeline below the transport. Handed the duration
    * this player read off the file -- the only duration available for a clip
    * the library recorded as `duration_ms: 0`, and 0 until `loadedmetadata`.
    */
@@ -154,6 +169,28 @@ export function VideoPlayer({
   const [full, setFull] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
+  /** Where the picture is drawn inside the viewer (object-fit: contain). */
+  const [frame, setFrame] = useState<PictureFrame | null>(null);
+  const measureFrame = useCallback(() => {
+    const v = video.current;
+    if (!v || !v.videoWidth || !v.videoHeight) return setFrame(null);
+    const scale = Math.min(v.clientWidth / v.videoWidth, v.clientHeight / v.videoHeight);
+    const width = v.videoWidth * scale;
+    const height = v.videoHeight * scale;
+    setFrame({ left: v.offsetLeft + (v.clientWidth - width) / 2, top: v.offsetTop + (v.clientHeight - height) / 2, width, height });
+  }, []);
+  useEffect(() => {
+    const v = video.current;
+    if (!v || verticalCenter === null) return;
+    measureFrame();
+    const observer = new ResizeObserver(measureFrame);
+    observer.observe(v);
+    return () => observer.disconnect();
+  }, [measureFrame, verticalCenter === null]);
+  // Retain the requested frame while Chromium asynchronously completes a seek.
+  // Repeated key presses must advance, even before currentTime/seeked catches up.
+  const requestedFrame = useRef<number | null>(null);
+  const presentedFrame = useRef<number | null>(null);
 
   // Volume. The level is remembered across launches; muting is not, so a clip
   // never opens silent because of something done in an earlier session.
@@ -221,15 +258,57 @@ export function VideoPlayer({
   const toggle = useCallback(() => {
     const v = video.current;
     if (!v) return;
-    if (v.paused) void v.play();
+    if (v.paused) { requestedFrame.current = null; void v.play(); }
     else v.pause();
   }, []);
 
   const seekTo = useCallback((ms: number) => {
+    requestedFrame.current = null;
+    presentedFrame.current = null;
     if (video.current) video.current.currentTime = ms / 1000;
   }, []);
 
-  useImperativeHandle(ref, () => ({ toggle, seekTo, stepVolume }), [toggle, seekTo, stepVolume]);
+  const seekFrame = useCallback((ms: number) => {
+    const v = video.current;
+    if (!v || !frameIndex?.timestamps_100ns.length || !Number.isFinite(ms)) return;
+    const target = nearestFrameBoundary(ms, frameIndex);
+    v.pause();
+    requestedFrame.current = target;
+    v.currentTime = target / 1000;
+    setPositionMs(target);
+    onTime(target);
+  }, [frameIndex, onTime]);
+
+  const currentFrame = useCallback(() => {
+    if (requestedFrame.current !== null) return requestedFrame.current;
+    // RVFC gives a frame's identity, potentially rounded to Chromium's media
+    // clock precision. Match it to the nearest indexed PTS, not its predecessor.
+    if (presentedFrame.current !== null) {
+      return frameIndex ? nearestFrameBoundary(presentedFrame.current, frameIndex) : presentedFrame.current;
+    }
+    const ms = (video.current?.currentTime ?? 0) * 1000;
+    // currentTime is a playback position between images, so its frame is floor.
+    return frameIndex ? presentedFrameBoundary(ms, frameIndex) : ms;
+  }, [frameIndex]);
+
+  const stepFrame = useCallback((direction: 1 | -1) => {
+    if (!video.current || !frameIndex?.timestamps_100ns.length) return;
+    seekFrame(frameStep(currentFrame(), frameIndex, direction));
+  }, [frameIndex, seekFrame, currentFrame]);
+
+  useImperativeHandle(ref, () => ({ toggle, seekTo, seekFrame, stepFrame, currentFrame, stepVolume }), [toggle, seekTo, seekFrame, stepFrame, currentFrame, stepVolume]);
+
+  useEffect(() => {
+    const v = video.current;
+    if (!v || typeof v.requestVideoFrameCallback !== 'function') return;
+    let callbackId = 0;
+    const presented: VideoFrameRequestCallback = (_, metadata) => {
+      presentedFrame.current = metadata.mediaTime * 1000;
+      callbackId = v.requestVideoFrameCallback(presented);
+    };
+    callbackId = v.requestVideoFrameCallback(presented);
+    return () => v.cancelVideoFrameCallback(callbackId);
+  }, [src]);
 
   const toggleMute = () => {
     if (muted || level === 0) {
@@ -268,6 +347,8 @@ export function VideoPlayer({
   // assignment for a non-finite duration -- so an unfinalized mp4 stepped to
   // from a 60s clip would keep reading `/ 1:00.0`. Zero is the honest value.
   useEffect(() => {
+    requestedFrame.current = null;
+    presentedFrame.current = null;
     setDurationMs(0);
     setPositionMs(0);
   }, [src]);
@@ -295,18 +376,29 @@ export function VideoPlayer({
   };
 
   const silent = muted || level === 0;
+  const clock = frameIndex?.timestamps_100ns.length ? formatPreciseClock : formatClock;
 
   return (
     <div
       ref={stage}
-      className="grid gap-3 [&:fullscreen]:content-center [&:fullscreen]:bg-black [&:fullscreen]:px-6 [&:fullscreen]:pb-6">
+      className={`pro-player${inspector ? ' pro-player--inspector' : ''}`}>
+      <div className="pro-player-viewer">
       <video
         ref={video}
+        onResize={measureFrame}
         src={src}
         autoPlay
-        onPlay={() => setPlaying(true)}
+        onPlay={() => { requestedFrame.current = null; setPlaying(true); }}
         onPause={() => setPlaying(false)}
+        onSeeked={() => {
+          const v = video.current;
+          if (!v) return;
+          const ms = v.paused && requestedFrame.current !== null ? requestedFrame.current : v.currentTime * 1000;
+          setPositionMs(ms);
+          onTime(ms);
+        }}
         onLoadedMetadata={() => {
+          measureFrame();
           // Guarded, not just truthy-checked: an unfinalized or fragmented mp4
           // reports `Infinity`, which sails past every `durationMs <= 0` guard
           // in timeline.ts and lands in `currentTime`, whose setter rejects a
@@ -317,18 +409,31 @@ export function VideoPlayer({
         onTimeUpdate={() => {
           const v = video.current;
           if (!v) return;
-          const ms = v.currentTime * 1000;
+          const ms = v.paused && requestedFrame.current !== null ? requestedFrame.current : v.currentTime * 1000;
           setPositionMs(ms);
           onTime(ms);
         }}
         onClick={toggle}
-        className="block max-h-[58vh] w-full cursor-pointer rounded-xl bg-black [:fullscreen_&]:max-h-[calc(100vh-100px)]"
+        className="pro-player-video"
       />
+      {verticalCenter !== null && frame && <VerticalCropOverlay frame={frame} center={verticalCenter} onChange={onVerticalCenter} />}
+      </div>
+      {inspector && <aside className="pro-player-inspector" aria-label="Réglages du montage">{inspector}</aside>}
 
-      <div className="flex items-center gap-3">
+      <div className="pro-player-transport">
+        <span className="pro-player-clock">
+          <strong>{clock(positionMs)}</strong><span>/</span>{clock(durationMs)}
+        </span>
+        <div className="pro-player-playback" role="group" aria-label="Lecture et navigation image par image">
+          <Button color="secondary" variant="ghost" size="sm" uniform
+            disabled={!frameIndex?.timestamps_100ns.length}
+            aria-label="Image précédente" title="Image précédente (,)" onClick={() => stepFrame(-1)}>
+            <ChevronLeft className="size-4" />
+          </Button>
         <Button
-          color="primary"
-          size="lg"
+          color="secondary"
+          variant="ghost"
+          size="sm"
           uniform
           aria-label={playing ? 'Pause' : 'Lecture'}
           className="shrink-0 transition-transform duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-[0.97]"
@@ -336,12 +441,14 @@ export function VideoPlayer({
           {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
         </Button>
 
-        <div className="min-w-0 flex-1">{timeline(durationMs)}</div>
+          <Button color="secondary" variant="ghost" size="sm" uniform
+            disabled={!frameIndex?.timestamps_100ns.length}
+            aria-label="Image suivante" title="Image suivante (.)" onClick={() => stepFrame(1)}>
+            <ChevronRight className="size-4" />
+          </Button>
+        </div>
 
-        <span className="shrink-0 text-xs text-tertiary tabular-nums">
-          {formatClock(positionMs)} / {formatClock(durationMs)}
-        </span>
-
+        <div className="pro-player-output">
         {/* The popup comes after the speaker in the markup so Tab reaches the
             speaker first and then the slider, though it is drawn above. */}
         <div
@@ -393,7 +500,42 @@ export function VideoPlayer({
           onClick={toggleFull}>
           {full ? <FullscreenExit className="size-4" /> : <Fullscreen className="size-4" />}
         </Button>
+        </div>
       </div>
+      <div className="pro-player-timeline">{timeline(durationMs)}</div>
+    </div>
+  );
+}
+
+type PictureFrame = { left: number; top: number; width: number; height: number };
+
+/** Dims what a 9:16 export leaves out; drag the band to move the crop. */
+function VerticalCropOverlay({ frame, center, onChange }: { frame: PictureFrame; center: number; onChange?: (center: number) => void }) {
+  const band = verticalBand(frame.width, frame.height, center);
+  const drag = useRef<{ x: number; center: number } | null>(null);
+  const travel = frame.width - band.width;
+  const move = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!drag.current || !onChange || travel <= 0) return;
+    const delta = ((event.clientX - drag.current.x) / frame.width) * 1000;
+    onChange(Math.round(Math.min(1000, Math.max(0, drag.current.center + delta))));
+  };
+  return (
+    <div className="vertical-crop" style={{ left: frame.left, top: frame.top, width: frame.width, height: frame.height }} aria-hidden="true">
+      <div className="vertical-crop-shade" style={{ left: 0, width: band.left }} />
+      <div
+        className="vertical-crop-band"
+        style={{ left: band.left, width: band.width, cursor: onChange && travel > 0 ? 'ew-resize' : undefined }}
+        onPointerDown={(event) => {
+          if (!onChange) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          // Start from the centre the band shows: a clamped one sits off its nominal value.
+          drag.current = { x: event.clientX, center: travel > 0 ? ((band.left + band.width / 2) / frame.width) * 1000 : center };
+        }}
+        onPointerMove={move}
+        onPointerUp={() => { drag.current = null; }}
+        onPointerCancel={() => { drag.current = null; }}
+      />
+      <div className="vertical-crop-shade" style={{ left: band.left + band.width, right: 0 }} />
     </div>
   );
 }

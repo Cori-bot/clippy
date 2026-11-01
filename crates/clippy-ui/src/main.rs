@@ -51,6 +51,7 @@ fn main() {
             commands::clippy_call,
             commands::start_daemon,
             commands::daemon_connected,
+            commands::diag_append,
             update::update_check,
             update::update_install,
             update::update_current_version,

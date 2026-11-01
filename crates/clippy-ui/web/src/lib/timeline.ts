@@ -1,5 +1,51 @@
 import { clamp } from './ui';
 
+/** Actual presentation timestamps; the end is a trim boundary, never a frame. */
+export type FrameIndex = { timestamps_100ns: number[]; end_100ns: number };
+
+function lowerBound(values: number[], target: number): number {
+  let lo = 0;
+  let hi = values.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (values[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Nearest real boundary, ties to the earlier frame, matching the exporter. */
+export function nearestFrameBoundary(ms: number, index: FrameIndex, includeEnd = false): number {
+  const frames = index.timestamps_100ns;
+  if (!frames.length || !Number.isFinite(ms)) return ms;
+  const target = Math.round(ms * 10_000);
+  const at = lowerBound(frames, target);
+  const before = frames[Math.max(0, at - 1)];
+  const after = at < frames.length ? frames[at] : includeEnd ? index.end_100ns : frames[frames.length - 1];
+  return (target - before <= after - target ? before : after) / 10_000;
+}
+
+/** The frame on screen at a media time; never rounds forward into a later image. */
+export function presentedFrameBoundary(ms: number, index: FrameIndex): number {
+  const frames = index.timestamps_100ns;
+  if (!frames.length || !Number.isFinite(ms)) return ms;
+  const target = Math.round(ms * 10_000);
+  const at = lowerBound(frames, target);
+  return frames[at < frames.length && frames[at] === target ? at : Math.max(0, at - 1)] / 10_000;
+}
+
+/** Step from the currently presented frame, including irregular frame rates. */
+export function frameStep(ms: number, index: FrameIndex, direction: 1 | -1, includeEnd = false): number {
+  const frames = index.timestamps_100ns;
+  if (!frames.length || !Number.isFinite(ms)) return ms;
+  const target = Math.round(ms * 10_000);
+  const at = lowerBound(frames, target);
+  const current = includeEnd && target >= index.end_100ns ? frames.length
+    : at < frames.length && frames[at] === target ? at : Math.max(0, at - 1);
+  const next = clamp(current + direction, 0, frames.length - (includeEnd ? 0 : 1));
+  return (next === frames.length ? index.end_100ns : frames[next]) / 10_000;
+}
+
 /**
  * Geometry and snapping for the unified seek-and-trim band.
  *
@@ -71,6 +117,13 @@ export function formatClock(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')},${tenths}`;
+}
+
+/** Millisecond precision keeps adjacent frames distinguishable in the editor. */
+export function formatPreciseClock(ms: number): string {
+  const safe = Math.max(0, Math.round(ms));
+  const seconds = Math.floor(safe / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')},${String(safe % 1000).padStart(3, '0')}`;
 }
 
 /**

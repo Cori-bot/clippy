@@ -56,6 +56,14 @@ describe('clipUrl and thumbUrl', () => {
     );
   });
 
+  it('resolves private editor audio within root and game folders', () => {
+    const file = `.clippy-cache/${id}.t1.m4a`;
+    expect(trackUrl('D:\\clips', ref, file)).toBe(`D:\\clips\\${file}`);
+    expect(trackUrl('D:\\clips', { id, folder: 'Valorant' }, file)).toBe(
+      `D:\\clips\\Valorant\\${file}`,
+    );
+  });
+
   it('handles a drive root, whose trailing separator is not optional', () => {
     expect(thumbUrl('D:\\', ref)).toBe(`D:\\${id}.jpg`);
     expect(clipUrl('D:\\', ref)).toBe(`D:\\${id}.mp4`);

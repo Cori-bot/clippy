@@ -383,9 +383,7 @@ pub(crate) fn add_aac_stream(writer: &IMFSinkWriter) -> Result<u32> {
             (SAMPLE_RATE * ENCODER_BLOCK_ALIGN) as u32,
         )?;
         in_type.SetUINT32(&MF_MT_ALL_SAMPLES_INDEPENDENT, 1)?;
-        writer
-            .SetInputMediaType(stream, &in_type, None)
-            .context("SetInputMediaType(clip PCM)")?;
+        writer.SetInputMediaType(stream, &in_type, None).context("SetInputMediaType(clip PCM)")?;
         Ok(stream)
     }
 }

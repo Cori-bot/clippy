@@ -1,4 +1,4 @@
-Clippy 1.5.0
+Clippy 1.6.0
 ============
 
 Un enregistreur de clips pour Windows, pour les PC qui ne peuvent pas se
@@ -11,33 +11,32 @@ jeu est proche de zéro, et l'application reste discrète pendant que vous jouez
 NOUVEAUTÉS
 ----------
 
-  * Entièrement en français : application, menu de la zone de notification,
-    messages d'erreur et installateur.
+  * Un éditeur de clip complet : coupe précise à l'image près, navigation
+    image par image, pistes audio séparées (son du PC, micro, jeu) avec leur
+    volume, annuler / rétablir, et exports en arrière-plan avec progression.
 
-  * Mode de capture, comme dans l'application NVIDIA. « Jeux uniquement »
-    attend qu'un jeu soit au premier plan en plein écran, enregistre l'écran
-    où il se trouve et s'arrête quand il se ferme : le bureau, le navigateur
-    et les lecteurs vidéo ne sont jamais capturés. « Jeux et bureau »
-    enregistre tout ce qui est affiché tant que le replay est actif.
-    Paramètres -> Capture -> Mode de capture, ou clic droit sur l'icône.
-    Un jeu en fenêtré se déclare dans « Jeux reconnus ».
+  * Partager en un geste : « Copier le fichier » (puis Ctrl+V dans Discord),
+    et des exports plafonnés à 20, 50 ou 500 Mo pour passer sous les limites
+    de Discord.
 
-  * Le son par application. Par défaut, tout le son du PC est enregistré.
-    Dans Paramètres -> Audio -> Applications enregistrées, choisissez par
-    exemple Spotify : le clip ne contient alors que sa musique, pas la vidéo
-    YouTube qui joue dans le navigateur. Nécessite Windows 11.
+  * Format vertical 9:16 pour TikTok, Shorts et Reels, avec un cadre à
+    déplacer sur la vidéo.
 
-  * Des sons de clip et de capture d'écran plus doux.
+  * Clips automatiques sur vos kills, multi-kills et aces dans Counter-Strike
+    2, League of Legends et Valorant. Paramètres -> Clips. Désactivé par
+    défaut ; pour CS2, relancez le jeu après l'activation.
 
-  * Un installateur (Clippy_<version>_x64-setup.exe), sans droits
-    administrateur.
+  * Un bandeau « Clip enregistré » en haut à droite, par-dessus le jeu, comme
+    dans l'application NVIDIA. Il n'apparaît jamais dans vos enregistrements.
 
-  * Le replay s'active tout seul : l'application lance l'enregistreur, et
-    « Lancer au démarrage de Windows » et « Activer le replay au lancement
-    de Clippy » sont proposés dès le premier lancement.
+  * Des sons de clip et de capture d'écran plus doux et plus discrets.
 
-  * Navigation dans toute la bibliothèque, même au-delà de 1 000 clips, et
-    suppression de plusieurs clips à la fois (Sélectionner, puis Supprimer).
+  * Profils de jeu : un dossier de clips par jeu, et la liste des jeux
+    détectés.
+
+  * Journal de diagnostic (Paramètres -> Application) : enregistre en détail
+    ce qui se passe et les performances du PC, pour analyser un problème.
+    Désactivé par défaut, tout reste sur ce PC.
 
 
 POUR COMMENCER

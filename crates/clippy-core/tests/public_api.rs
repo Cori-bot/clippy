@@ -34,7 +34,11 @@ fn session_option_structs_are_publicly_constructible() {
 fn bitrate_helpers_are_public() {
     let config = Config::default();
     assert_eq!(config.resolved_bitrate_bps(1920, 1080), 8_000_000, "auto = 8 Mbps at 1080p60");
-    assert_eq!(config.resolved_max_bitrate_bps(1920, 1080), 12_000_000, "0 means auto = 1.5x target");
+    assert_eq!(
+        config.resolved_max_bitrate_bps(1920, 1080),
+        12_000_000,
+        "0 means auto = 1.5x target"
+    );
 }
 
 /// Guards the clip-library module the daemon (plan 3) reads and writes clips
@@ -88,8 +92,10 @@ fn engine_entry_points_are_public() {
     // of the memory report, which its `stats` event calls with no capture
     // session anywhere. Bound rather than called for the same reason as the
     // rest of this test: `encoders` runs `MFStartup`.
-    let _: fn() -> anyhow::Result<Vec<clippy_core::probe::MonitorInfo>> = clippy_core::probe::monitors;
-    let _: fn() -> anyhow::Result<Vec<clippy_core::probe::EncoderInfo>> = clippy_core::probe::encoders;
+    let _: fn() -> anyhow::Result<Vec<clippy_core::probe::MonitorInfo>> =
+        clippy_core::probe::monitors;
+    let _: fn() -> anyhow::Result<Vec<clippy_core::probe::EncoderInfo>> =
+        clippy_core::probe::encoders;
     let _: fn() -> u64 = clippy_core::stats::working_set;
     let _: fn(&Config, &std::path::Path) -> anyhow::Result<()> = Config::save_to;
 

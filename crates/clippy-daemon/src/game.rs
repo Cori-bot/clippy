@@ -396,6 +396,8 @@ pub fn spawn_watch(daemon: std::sync::Arc<crate::state::Daemon>) {
             }
             if daemon.capture_mode() == CaptureMode::Game {
                 daemon.game_tick(seen, std::time::Instant::now());
+            } else {
+                daemon.note_sighting(seen, std::time::Instant::now());
             }
         }
     });

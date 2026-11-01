@@ -34,6 +34,12 @@ pub enum EngineCommand {
     /// one frame, so a session that cannot produce one within the wait is a
     /// frozen screen — an error, not an empty success.
     Screenshot { reply: Sender<Result<ShotMeta>> },
+    /// Watch a region of the picture (None stops) and answer with its newest
+    /// read-back, if one finished since the last call. Never waits for one.
+    Probe {
+        region: Option<crate::capture::probe::ProbeRegion>,
+        reply: Sender<Result<Option<crate::capture::stage::StagedFrame>>>,
+    },
     /// Leave the rebuild loop and shut the capture session down.
     Stop,
 }
@@ -154,6 +160,18 @@ impl EngineHandle {
         let (reply, answer) = channel();
         self.tx
             .send(EngineCommand::Screenshot { reply })
+            .map_err(|_| anyhow!("le moteur de capture n’est plus actif"))?;
+        recv_bounded(&answer)
+    }
+
+    /// See [`EngineCommand::Probe`].
+    pub fn probe(
+        &self,
+        region: Option<crate::capture::probe::ProbeRegion>,
+    ) -> Result<Option<crate::capture::stage::StagedFrame>> {
+        let (reply, answer) = channel();
+        self.tx
+            .send(EngineCommand::Probe { region, reply })
             .map_err(|_| anyhow!("le moteur de capture n’est plus actif"))?;
         recv_bounded(&answer)
     }

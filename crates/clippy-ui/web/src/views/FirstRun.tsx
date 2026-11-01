@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { Select } from '@openai/apps-sdk-ui/components/Select';
 import { Switch } from '@openai/apps-sdk-ui/components/Switch';
@@ -18,6 +18,11 @@ function Hint({ children }: { children: React.ReactNode }) {
 export function FirstRun() {
   const a = useApp();
   const [step, setStep] = useState(1);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const operation = useRef(false);
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [monitorIndex, setMonitorIndex] = useState(0);
   // What the wizard sets up besides the capture itself. Both start on because
@@ -41,23 +46,33 @@ export function FirstRun() {
   const problem = clipHotkeyProblem(a.status?.clip_hotkey_bound, config);
 
   useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setLoadError(null);
     void (async () => {
       try {
         const list = await call<{ monitors: Monitor[] }>('monitors.list');
-        setMonitors(list.monitors);
         const next = await call<Record<string, unknown>>('config.get');
+        if (!active) return;
+        setMonitors(list.monitors);
+        if (list.monitors.length > 0) setMonitorIndex(list.monitors[0].index);
         setConfig(next);
         setClipDir(String(next['clip_dir_resolved'] ?? ''));
       } catch (e) {
-        app.toast('error', String(e));
+        if (active) setLoadError(String(e));
+      } finally {
+        if (active) setLoading(false);
       }
     })();
-  }, []);
+    return () => { active = false; };
+  }, [loadAttempt]);
 
   // `onDaemonEvent` lives on Tauri's event bus, not on the component, so the
   // handler needs teardown (the unlisten is a Promise).
   useEffect(() => {
+    let active = true;
     const unlisten = onDaemonEvent((event) => {
+      if (!active) return;
       if (event.event === 'hotkey_pressed') setHeard(true);
       if (event.event === 'hotkey_rebound') {
         // Raised by this page's own `config.set`. Whether the new combination
@@ -71,9 +86,16 @@ export function FirstRun() {
         const resolved = event.data['clip_dir_resolved'];
         if (typeof resolved === 'string') setClipDir(resolved);
       }
+    }).then((fn) => {
+      if (!active) { fn(); return null; }
+      return fn;
+    }).catch((e: unknown) => {
+      if (active) app.toast('error', String(e));
+      return null;
     });
     return () => {
-      void unlisten.then((fn) => fn());
+      active = false;
+      void unlisten.then((fn) => fn?.());
     };
   }, []);
 
@@ -87,7 +109,9 @@ export function FirstRun() {
   }
 
   async function saveHotkey() {
-    if (capture === null) return;
+    if (capture === null || operation.current || loading || loadError !== null) return;
+    operation.current = true;
+    setPending(true);
     try {
       // Saved here rather than carried to `finish`: the only way to find out
       // whether Windows will hand Clippy a combination is to have the daemon
@@ -102,6 +126,9 @@ export function FirstRun() {
       setHeard(false);
     } catch (e) {
       app.toast('error', String(e));
+    } finally {
+      operation.current = false;
+      setPending(false);
     }
   }
 
@@ -115,32 +142,40 @@ export function FirstRun() {
   }
 
   async function finish() {
+    if (operation.current || loading || loadError !== null || problem !== null || capture !== null) return;
+    operation.current = true;
+    setPending(true);
     try {
-      // One call, because config.set is all-or-nothing: three keys in three
-      // calls could leave a half-configured install behind.
-      await call('config.set', {
-        capture_mode: captureMode,
-        monitor_index: monitorIndex,
-        clip_hotkey: hotkey,
-        auto_arm: autoArm,
-        autostart,
-      });
-    } catch (e) {
-      // Setup itself did not happen -- staying on this step, whose only
-      // control retries the very call that just failed, is the correct response.
-      app.toast('error', String(e));
-      return;
-    }
+      try {
+        // One call, because config.set is all-or-nothing: three keys in three
+        // calls could leave a half-configured install behind.
+        await call('config.set', {
+          capture_mode: captureMode,
+          monitor_index: monitorIndex,
+          clip_hotkey: hotkey,
+          auto_arm: autoArm,
+          autostart,
+        });
+      } catch (e) {
+        // Setup itself did not happen -- staying on this step, whose only
+        // control retries the very call that just failed, is the correct response.
+        app.toast('error', String(e));
+        return;
+      }
 
-    // config.set succeeded, so setup is done: leave the wizard no matter what
-    // happens next. Arming is a separate, retryable action the rail exposes.
-    try {
-      await call('arm');
-    } catch (e) {
-      app.toast('error', String(e));
+      // config.set succeeded, so setup is done: leave the wizard no matter what
+      // happens next. Arming is a separate, retryable action the rail exposes.
+      try {
+        await call('arm');
+      } catch (e) {
+        app.toast('error', String(e));
+      }
+      await app.refreshStatus();
+      app.view = 'grid';
+    } finally {
+      operation.current = false;
+      setPending(false);
     }
-    await app.refreshStatus();
-    app.view = 'grid';
   }
 
   const stateClass =
@@ -156,11 +191,21 @@ export function FirstRun() {
         <h1 className="heading-lg m-0">Configurer Clippy</h1>
         <p className="m-0 text-xs text-tertiary tabular-nums">Étape {step} sur 3</p>
 
+        {loading && <p role="status" className="m-0 text-sm text-secondary">Chargement de la configuration…</p>}
+        {loadError !== null && (
+          <div role="alert" className="grid gap-2 text-sm text-secondary">
+            <p className="m-0">Impossible de charger la configuration : {loadError}</p>
+            <Button color="secondary" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>Réessayer</Button>
+          </div>
+        )}
+        <fieldset disabled={loading || loadError !== null || pending} aria-busy={pending} className="m-0 w-full min-w-0 border-0 p-0">
         {step === 1 && (
           <div key="s1" className="grid w-full animate-[fade-in_250ms_ease-out] justify-items-start gap-3">
             <h2 className="heading-sm mt-3 mb-0">Que faut-il enregistrer&nbsp;?</h2>
             <div role="group" aria-label="Quoi enregistrer">
               <Select
+                aria-label="Quoi enregistrer"
+                disabled={loading || loadError !== null || pending}
                 block={false}
                 value={captureMode}
                 options={[
@@ -180,6 +225,8 @@ export function FirstRun() {
                 <h2 className="heading-sm mt-3 mb-0">Quel écran capturer&nbsp;?</h2>
                 <div role="group" aria-label="Écran">
                   <Select
+                    aria-label="Écran"
+                    disabled={loading || loadError !== null || pending}
                     block={false}
                     value={String(monitorIndex)}
                     options={monitors.map((m) => ({
@@ -237,7 +284,7 @@ export function FirstRun() {
             </p>
             <div className="mt-1 flex items-center gap-2">
               <Button color="secondary" variant="ghost" onClick={() => setStep(1)}>Retour</Button>
-              <Button color="primary" onClick={() => setStep(3)}>Suivant</Button>
+              <Button color="primary" disabled={problem !== null || capture !== null} onClick={() => { if (problem === null && capture === null && !operation.current) setStep(3); }}>Suivant</Button>
             </div>
           </div>
         )}
@@ -265,6 +312,7 @@ export function FirstRun() {
             </div>
           </div>
         )}
+        </fieldset>
       </div>
     </div>
   );

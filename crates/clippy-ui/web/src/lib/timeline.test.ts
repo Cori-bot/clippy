@@ -1,5 +1,60 @@
 import { describe, expect, it } from 'vitest';
-import { SEEK_STEP_FINE_MS, SEEK_STEP_MS, formatClock, keyframeStep, msFromRatio, ratioFromMs, seekKeyTarget, snapStart } from './timeline';
+import { SEEK_STEP_FINE_MS, SEEK_STEP_MS, formatClock, formatPreciseClock, frameStep, keyframeStep, msFromRatio, nearestFrameBoundary, presentedFrameBoundary, ratioFromMs, seekKeyTarget, snapStart } from './timeline';
+
+describe('real frame boundaries', () => {
+  const variable = { timestamps_100ns: [0, 166667, 500000, 916667], end_100ns: 1_200_000 };
+
+  it('keeps adjacent frames distinct in the displayed time', () => {
+    expect(formatPreciseClock(16.6667)).toBe('0:00,017');
+    expect(formatPreciseClock(33.3333)).toBe('0:00,033');
+    expect(formatPreciseClock(59999.9)).toBe('1:00,000');
+  });
+
+  it('finds the actual 60fps frame after rounding its input to 17ms', () => {
+    expect(nearestFrameBoundary(17, variable)).toBe(16.6667);
+  });
+
+  it('matches a quantized RVFC frame identity without confusing it with playback position', () => {
+    expect(nearestFrameBoundary(16.666, variable)).toBe(16.6667);
+    expect(frameStep(nearestFrameBoundary(16.666, variable), variable, 1)).toBe(50);
+    expect(presentedFrameBoundary(16.666, variable)).toBe(0);
+  });
+
+  it('uses earlier boundaries on exact ties, including the exclusive end', () => {
+    const regular = { timestamps_100ns: [0, 1_000_000, 2_000_000], end_100ns: 3_000_000 };
+    expect(nearestFrameBoundary(150, regular)).toBe(100);
+    expect(nearestFrameBoundary(250, regular, true)).toBe(200);
+    expect(nearestFrameBoundary(290, regular, true)).toBe(300);
+    expect(nearestFrameBoundary(300, regular)).toBe(200);
+  });
+
+  it('steps across variable intervals rather than inventing a nominal frame rate', () => {
+    expect(frameStep(16.6667, variable, 1)).toBe(50);
+    expect(frameStep(50, variable, 1)).toBe(91.6667);
+    expect(frameStep(50, variable, -1)).toBe(16.6667);
+    // At 70ms the picture on screen is the frame presented at 50ms.
+    expect(frameStep(70, variable, -1)).toBe(16.6667);
+    expect(frameStep(70, variable, 1)).toBe(91.6667);
+  });
+
+  it('marks the currently displayed image instead of rounding to a future frame', () => {
+    expect(presentedFrameBoundary(45, variable)).toBe(16.6667);
+    expect(presentedFrameBoundary(50, variable)).toBe(50);
+    expect(presentedFrameBoundary(120, variable)).toBe(91.6667);
+  });
+
+  it('steps back from the exclusive out boundary but never treats it as a display frame', () => {
+    expect(frameStep(120, variable, -1, true)).toBe(91.6667);
+    expect(frameStep(91.6667, variable, 1, true)).toBe(120);
+    expect(frameStep(91.6667, variable, 1)).toBe(91.6667);
+    expect(frameStep(0, variable, -1)).toBe(0);
+  });
+
+  it('does not fabricate frames before a nonzero first timestamp or with an empty index', () => {
+    expect(nearestFrameBoundary(0, { timestamps_100ns: [500000, 900000], end_100ns: 1_000_000 })).toBe(50);
+    expect(frameStep(50, { timestamps_100ns: [], end_100ns: 1000000 }, 1)).toBe(50);
+  });
+});
 
 describe('snapStart', () => {
   it('moves back to the latest keyframe at or before the point', () => {

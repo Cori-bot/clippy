@@ -18,11 +18,15 @@
 //! `clippy-proto` are libraries with a thin consumer (`clippy-cli`); this gives the
 //! daemon binary the same shape.
 
+pub mod autoclip;
 pub mod autostart;
+pub mod banner;
 pub mod clients;
 pub mod com;
+pub mod diag;
 pub mod dispatch;
 pub mod folder;
+pub mod export_jobs;
 pub mod game;
 pub mod games;
 pub mod hook;
@@ -33,4 +37,5 @@ pub mod sound;
 pub mod state;
 pub mod stats;
 pub mod tray;
+pub mod valorant;
 pub mod window;

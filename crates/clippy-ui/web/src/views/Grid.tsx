@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { EmptyMessage } from '@openai/apps-sdk-ui/components/EmptyMessage';
+import { Input } from '@openai/apps-sdk-ui/components/Input';
+import { Select } from '@openai/apps-sdk-ui/components/Select';
 import { ClipCard } from '../components/ClipCard';
 import { Dialog } from '../components/ui/Dialog';
-import { Check, Star, StarFilled, Trash } from '../components/icons';
+import { Check, Close, Search, Star, StarFilled, Trash } from '../components/icons';
+import type { ClipSort } from '../lib/library-query';
 import { app, useApp } from '../lib/app';
 import type { ClipMeta } from '../lib/types';
 import { shouldHandleKey, moveSelection, CARD_CONTROL_SELECTOR } from '../lib/keys';
@@ -36,6 +39,9 @@ export function Grid() {
   metrics.current = { columns, stride };
 
   const visible = a.visible;
+  const games = useMemo(() => [...new Set(a.clips.map(clip => clip.game).filter((game): game is string => !!game))]
+    .sort((x, y) => x.localeCompare(y, 'fr')), [a.clips]);
+  const filtered = !!a.searchQuery.trim() || a.gameFilter !== null || a.favoritesOnly;
   const windowed = gridWindow(visible.length, columns, stride, scroll, viewport);
   const mounted = visible.slice(windowed.start, windowed.end);
   const selectedClips = visible.filter((clip) => checked.has(clip.id));
@@ -47,6 +53,14 @@ export function Grid() {
     setSelecting(false);
     setChecked(new Set());
     setAnchor(null);
+  };
+
+  const changeCriteria = (change: () => void) => {
+    clearSelection();
+    setPreviewing(null);
+    change();
+    scrollerRef.current?.scrollTo({ top: 0 });
+    requestAnimationFrame(measure);
   };
 
   const toggleCheck = (id: string, range = false) => {
@@ -132,7 +146,8 @@ export function Grid() {
       const { columns: cols, stride: step } = metrics.current;
       const top = origin + Math.floor(app.selected / cols) * step;
       const bottom = top + step;
-      if (top < scroller.scrollTop) scroller.scrollTop = Math.max(0, top - 14);
+      if (app.selected < cols) scroller.scrollTop = 0;
+      else if (top < scroller.scrollTop) scroller.scrollTop = Math.max(0, top - 14);
       else if (bottom > scroller.scrollTop + scroller.clientHeight) scroller.scrollTop = bottom - scroller.clientHeight;
       flushSync(measure);
       if (focus) {
@@ -178,6 +193,17 @@ export function Grid() {
     const ownedByCardControl = !!target?.closest(CARD_CONTROL_SELECTOR);
     const insideGrid = !ownedByCardControl && !!gridEl && event.target instanceof Node && gridEl.contains(event.target);
     if (!shouldHandleKey(event.target, event.key, insideGrid)) return;
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'c' && !selecting) {
+      const clip = clips[app.selected];
+      // A focused menu belongs to its own card, maybe not the selected one;
+      // AltGr (Ctrl+Alt) and Ctrl+Shift+C are other keys, and a held key
+      // must not copy again and again.
+      if (clip && !event.repeat && !target?.closest('[role="menu"],[role="dialog"]') && !window.getSelection()?.toString()) {
+        event.preventDefault();
+        void app.copyClip(clip.id);
+      }
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
       event.preventDefault();
       selectAll();
@@ -239,10 +265,10 @@ export function Grid() {
 
   return (
     <>
-      <header className="mb-3.5 flex flex-wrap items-center gap-2.5">
-        <h1 className="heading-sm m-0">Clips</h1>
+      <header className="mb-5 flex flex-wrap items-center gap-2.5">
+        <h1 className="heading-lg m-0">Clips</h1>
         <span className="text-xs text-tertiary tabular-nums">
-          {a.favoritesOnly ? `${visible.length} sur ` : ''}
+          {filtered ? `${visible.length} sur ` : ''}
           {a.total} {count}
           {a.totalBytes !== null ? ` · ${formatBytes(a.totalBytes)}` : ''}
         </span>
@@ -260,15 +286,13 @@ export function Grid() {
             </Button>
             <Button
               color={a.favoritesOnly ? 'warning' : 'secondary'}
+              className="favorite-control"
               variant={a.favoritesOnly ? 'soft' : 'outline'}
               size="sm"
               disabled={busy}
               aria-pressed={a.favoritesOnly}
               onClick={() => {
-                clearSelection();
-                setPreviewing(null);
-                app.setFavoritesOnly(!app.favoritesOnly);
-                requestAnimationFrame(() => revealSelected());
+                changeCriteria(() => app.setFavoritesOnly(!app.favoritesOnly));
               }}>
               {a.favoritesOnly ? <StarFilled /> : <Star />}
               Favoris
@@ -276,6 +300,55 @@ export function Grid() {
           </div>
         )}
       </header>
+
+      {a.clips.length > 0 && (
+        <div className="mb-5 flex flex-wrap items-center gap-2" role="search" aria-label="Rechercher dans les clips"
+          onKeyDown={event => event.stopPropagation()}>
+          <Input
+            className="search-control min-w-[200px] flex-1"
+            type="search"
+            size="lg"
+            variant="soft"
+            aria-label="Rechercher un clip ou un jeu"
+            placeholder="Rechercher un clip ou un jeu"
+            value={a.searchQuery}
+            disabled={busy}
+            startAdornment={<Search className="size-4 text-secondary" />}
+            onChange={event => changeCriteria(() => app.setSearchQuery(event.target.value))}
+          />
+          <Select
+            aria-label="Filtrer par jeu"
+            size="lg"
+            variant="soft"
+            block={false}
+            disabled={busy}
+            value={a.gameFilter ?? ''}
+            options={[{ value: '', label: 'Tous les jeux' }, ...games.map(game => ({ value: game, label: game }))]}
+            onChange={option => changeCriteria(() => app.setGameFilter(option.value || null))}
+          />
+          <Select
+            aria-label="Trier les clips"
+            size="lg"
+            variant="soft"
+            block={false}
+            disabled={busy}
+            value={a.sortOrder}
+            options={[
+              { value: 'newest', label: 'Plus récents' },
+              { value: 'oldest', label: 'Plus anciens' },
+              { value: 'duration', label: 'Plus longs' },
+              { value: 'size', label: 'Plus volumineux' },
+            ]}
+            onChange={option => changeCriteria(() => app.setSortOrder(option.value as ClipSort))}
+          />
+          {filtered && (
+            <Button size="sm" color="secondary" variant="ghost" disabled={busy}
+              onClick={() => changeCriteria(() => app.resetLibraryFilters())}>
+              <Close /> Effacer les filtres
+            </Button>
+          )}
+        </div>
+      )}
 
       {selecting && (
         <div
@@ -356,16 +429,19 @@ export function Grid() {
       ) : visible.length === 0 ? (
         <EmptyMessage className="h-[60vh]">
           <EmptyMessage.Title>
-            {a.clipsLoading ? 'Chargement des favoris…' : 'Aucun favori pour le moment.'}
+            {a.clipsLoading ? 'Recherche dans les clips chargés…' : 'Aucun clip ne correspond.'}
           </EmptyMessage.Title>
           <EmptyMessage.Description>
-            Faire un clic droit sur un clip, puis choisir «&nbsp;Ajouter aux favoris&nbsp;»&nbsp;: il apparaîtra ici.
+            Essayer un autre titre ou un autre jeu, ou effacer les filtres.
           </EmptyMessage.Description>
+          <Button color="secondary" variant="outline" onClick={() => changeCriteria(() => app.resetLibraryFilters())}>
+            Effacer les filtres
+          </Button>
         </EmptyMessage>
       ) : (
         <div
           ref={setGridEl}
-          className="grid grid-cols-[repeat(auto-fill,minmax(min(230px,100%),1fr))] gap-3.5 [overflow-anchor:none]"
+          className="grid grid-cols-[repeat(auto-fill,minmax(min(230px,100%),1fr))] gap-x-4 gap-y-6 [overflow-anchor:none]"
           style={{ paddingTop: windowed.top, paddingBottom: windowed.bottom }}>
           {mounted.map((clip, localIndex) => {
             const index = windowed.start + localIndex;
@@ -387,6 +463,7 @@ export function Grid() {
                   }}
                   onfavorite={() => app.setFavorite(clip.id, !clip.favorite)}
                   onrename={(title) => app.rename(clip.id, title)}
+                  oncopy={() => app.copyClip(clip.id)}
                   onreveal={() => app.reveal(clip.id)}
                   ondelete={() => {
                     app.selected = index;

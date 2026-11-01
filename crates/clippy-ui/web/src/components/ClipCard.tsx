@@ -5,11 +5,11 @@ import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
 import { formatBytes, formatDuration, thumbUrl } from '../lib/clips';
 import type { ClipMeta } from '../lib/types';
-import { Dots, Folder, Pencil, Star, StarFilled, Trash } from './icons';
+import { Copy, Dots, Folder, Pencil, Star, StarFilled, Trash } from './icons';
 
 const EASE = 'ease-[cubic-bezier(0.22,1,0.36,1)]';
 
-type ItemId = 'favorite' | 'rename' | 'reveal' | 'delete';
+type ItemId = 'favorite' | 'rename' | 'copy' | 'reveal' | 'delete';
 
 export function ClipCard({
   clip,
@@ -22,6 +22,7 @@ export function ClipCard({
   onselect,
   onfavorite,
   onrename,
+  oncopy,
   onreveal,
   ondelete,
 }: {
@@ -35,6 +36,7 @@ export function ClipCard({
   onselect: (event?: MouseEvent) => void;
   onfavorite: () => void;
   onrename: (title: string) => void;
+  oncopy: () => void;
   onreveal: () => void;
   ondelete: () => void;
 }) {
@@ -64,6 +66,7 @@ export function ClipCard({
     closeMenus();
     if (id === 'favorite') onfavorite();
     else if (id === 'rename') startRename();
+    else if (id === 'copy') oncopy();
     else if (id === 'reveal') onreveal();
     else ondelete();
   };
@@ -97,6 +100,12 @@ export function ClipCard({
         <span className="flex items-center gap-2">
           <Pencil className="size-4" />
           Renommer
+        </span>
+      </Menu.Item>
+      <Menu.Item onSelect={() => pick('copy')}>
+        <span className="flex items-center gap-2">
+          <Copy className="size-4" />
+          Copier le fichier
         </span>
       </Menu.Item>
       <Menu.Item onSelect={() => pick('reveal')}>
@@ -222,9 +231,11 @@ export function ClipCard({
             </>
           )}
         </div>
-        <span className="text-xs text-secondary tabular-nums">
-          {formatBytes(clip.bytes)} · {clip.width}x{clip.height}
-          {clip.fps ? <> · {clip.fps}&nbsp;fps</> : null}
+        <span className="truncate text-xs text-secondary" title={`${formatBytes(clip.bytes)} · ${clip.width}×${clip.height} · ${clip.fps} fps`}>
+          {clip.game ? `${clip.game} · ` : ''}
+          {Number.isFinite(Date.parse(clip.created)) ? (
+            <time dateTime={clip.created}>{new Date(clip.created).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}</time>
+          ) : 'Date inconnue'}
         </span>
       </div>
 

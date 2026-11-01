@@ -47,7 +47,7 @@ impl ClientHandler for Daemon {
     /// `stats.subscribe` cares — it is a per-connection flag, not daemon state,
     /// because two UIs must be able to disagree about whether they want a
     /// 1 Hz event stream.
-    fn dispatch(&self, client: ClientId, request: &Request) -> Response {
+    fn dispatch(self: &Arc<Self>, client: ClientId, request: &Request) -> Response {
         match Command::parse(request) {
             Ok(Command::Status) => Response::ok(request.id, self.status().to_json()),
             Ok(Command::Arm) => arm(self, request.id),
@@ -73,7 +73,14 @@ impl ClientHandler for Daemon {
             Ok(Command::LibraryReveal { clip_id }) => {
                 acknowledge(request.id, &clip_id, self.reveal(&clip_id))
             }
+            Ok(Command::LibraryCopy { clip_id }) => {
+                acknowledge(request.id, &clip_id, self.copy_clip(&clip_id))
+            }
             Ok(Command::LibraryKeyframes { clip_id }) => match self.keyframes(&clip_id) {
+                Ok(data) => Response::ok(request.id, data),
+                Err(e) => Response::err(request.id, format!("{e:#}")),
+            },
+            Ok(Command::LibraryFrames { clip_id }) => match self.frames(&clip_id) {
                 Ok(data) => Response::ok(request.id, data),
                 Err(e) => Response::err(request.id, format!("{e:#}")),
             },
@@ -81,12 +88,28 @@ impl ClientHandler for Daemon {
             // `library.rename` uses. The export is announced to every other
             // client by the `clip_saved` `Daemon::export_clip` broadcasts, so
             // there is no export-specific event to subscribe to.
-            Ok(Command::LibraryExport { clip_id, start_ms, end_ms, mode, tracks }) => {
+            Ok(Command::LibraryExport { clip_id, start_ms, end_ms, mode, output, tracks, size_limit_mb, vertical_center }) => {
+                let shaping = crate::state::Shaping { size_limit_mb, vertical_center };
                 updated_clip(
                     request.id,
-                    self.export_clip(&clip_id, start_ms, end_ms, &mode, tracks.as_deref()),
+                    self.export_clip(&clip_id, start_ms, end_ms, &mode, output, tracks.as_deref(), shaping),
                 )
             }
+            Ok(Command::LibraryExportStart { clip_id, start_ms, end_ms, mode, output, tracks, size_limit_mb, vertical_center, request_token }) => {
+                let shaping = crate::state::Shaping { size_limit_mb, vertical_center };
+                match self.start_export(clip_id, start_ms, end_ms, mode, output, tracks, shaping, request_token) {
+                    Ok(snapshot) => Response::ok(request.id, snapshot),
+                    Err(error) => Response::err(request.id, format!("{error:#}")),
+                }
+            }
+            Ok(Command::LibraryExportStatus { job_id, request_token }) => match self.export_jobs.status_for(job_id.as_deref(), request_token.as_deref()) {
+                Ok(snapshot) => Response::ok(request.id, snapshot.unwrap_or(Value::Null)),
+                Err(error) => Response::err(request.id, format!("{error:#}")),
+            },
+            Ok(Command::LibraryExportCancel { job_id }) => match self.export_jobs.cancel(&job_id) {
+                Ok(snapshot) => Response::ok(request.id, snapshot),
+                Err(error) => Response::err(request.id, format!("{error:#}")),
+            },
             Ok(Command::LibraryTracks { clip_id }) => match self.clip_tracks(&clip_id) {
                 Ok(data) => Response::ok(request.id, data),
                 Err(e) => Response::err(request.id, format!("{e:#}")),
@@ -533,7 +556,7 @@ mod tests {
     /// at the developer's real `Videos\Clippy`, which would make the assertions
     /// below depend on how many clips happen to be sitting there — and would
     /// aim a `library.delete` test at real footage.
-    fn with_two_clips(name: &str) -> (Daemon, std::path::PathBuf) {
+    fn with_two_clips(name: &str) -> (Arc<Daemon>, std::path::PathBuf) {
         let dir =
             std::env::temp_dir().join(format!("clippy-dispatch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -547,7 +570,7 @@ mod tests {
         // These tests never call `config.set`, so nothing would have been
         // written -- but nothing here needs a config path at all, and the
         // safest place for that to be true is the constructor.
-        (Daemon::new_at(config, None), dir)
+        (Arc::new(Daemon::new_at(config, None)), dir)
     }
 
     /// Everything below runs against an idle daemon: arming needs real
@@ -572,10 +595,10 @@ mod tests {
     /// first launch. It is left behind empty, exactly as `with_two_clips` and
     /// `with_scratch_config` leave theirs; what matters is that it is scratch
     /// rather than the developer's real clip folder.
-    fn idle(name: &str) -> Daemon {
+    fn idle(name: &str) -> Arc<Daemon> {
         let dir = std::env::temp_dir().join(format!("clippy-idle-{name}-{}", std::process::id()));
         let config = Config { clip_dir: dir.to_string_lossy().into_owned(), ..Config::default() };
-        Daemon::new_at(config, None)
+        Arc::new(Daemon::new_at(config, None))
     }
 
     /// A daemon whose `config.set` writes to a scratch file rather than the
@@ -585,13 +608,13 @@ mod tests {
     ///
     /// `clip_dir` points into the scratch directory too, so the startup library
     /// scan does not walk the developer's real clip folder.
-    fn with_scratch_config(name: &str) -> (Daemon, std::path::PathBuf, std::path::PathBuf) {
+    fn with_scratch_config(name: &str) -> (Arc<Daemon>, std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("clippy-config-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         let config = Config { clip_dir: dir.to_string_lossy().into_owned(), ..Config::default() };
-        (Daemon::new_at(config, Some(path.clone())), path, dir)
+        (Arc::new(Daemon::new_at(config, Some(path.clone()))), path, dir)
     }
 
     #[test]
@@ -755,13 +778,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// `precise` is on the wire so it can arrive without a protocol change, but
-    /// nothing implements it yet. Refusing it *by name* is the point: a
-    /// third-party client that reads "invalid mode" starts checking its own
-    /// spelling, where one that reads the mode back learns the daemon simply
-    /// does not do that one yet.
     #[test]
-    fn library_export_refuses_precise_mode_by_name() {
+    fn library_export_precise_validates_the_clip_instead_of_refusing_the_mode() {
         let daemon = idle("export-precise");
         let response = daemon.dispatch(
             1,
@@ -776,12 +794,23 @@ mod tests {
                 ],
             ),
         );
-        assert!(!response.ok, "precise mode is not implemented and must not pretend to be");
+        assert!(!response.ok, "an unknown source must still be refused");
         let error = response.error.unwrap_or_default();
-        assert!(
-            error.contains("precise"),
-            "the error must name the mode so a client knows what to change: {error}"
-        );
+        assert!(error.contains("introuvable"), "precise must reach source validation: {error}");
+    }
+
+    #[test]
+    fn library_export_refuses_an_unknown_mode_by_name() {
+        let daemon = idle("export-mode-typo");
+        for command in ["library.export", "library.export.start"] {
+            let response = daemon.dispatch(1, &request_with(1, command, &[
+                ("clip_id", Value::from("20260822_101500")),
+                ("start_ms", Value::from(0)), ("end_ms", Value::from(2000)),
+                ("mode", Value::from("presice")),
+            ]));
+            assert!(!response.ok);
+            assert!(response.error.unwrap_or_default().contains("presice"));
+        }
     }
 
     /// The same boundary `library.delete` already enforces, reached through the
@@ -818,6 +847,17 @@ mod tests {
             &request_with(1, "library.keyframes", &[("clip_id", Value::from("20260822_101500"))]),
         );
         assert!(!response.ok, "a clip that is not there has no keyframes");
+    }
+
+    #[test]
+    fn library_frames_refuses_unknown_and_hostile_clips() {
+        let daemon = idle("frames-unknown");
+        for id in ["20260822_101500", "../../windows/system32/config"] {
+            let response = daemon.dispatch(1, &request_with(1, "library.frames", &[
+                ("clip_id", Value::from(id)),
+            ]));
+            assert!(!response.ok, "no index may be fabricated for {id}");
+        }
     }
 
     /// The published `config.get` payload: every key `Config` has, plus
@@ -1605,7 +1645,7 @@ mod tests {
             clip_sound_path: r"C:\chosen.mp3".into(),
             ..Config::default()
         };
-        let daemon = Daemon::new_at(config, Some(config_path.clone()));
+        let daemon = Arc::new(Daemon::new_at(config, Some(config_path.clone())));
 
         assert_eq!(
             daemon.custom_sound_source(),

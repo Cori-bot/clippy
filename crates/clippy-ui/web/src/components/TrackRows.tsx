@@ -33,7 +33,7 @@ export function TrackRows({
   };
 
   return (
-    <section aria-label="Pistes audio" className="mt-2 grid gap-1" onKeyDown={stopArrows}>
+    <section aria-label="Pistes audio" className="editor-audio-tracks" onKeyDown={stopArrows}>
       {(loading || error) && (
         <p className="text-xs text-tertiary">
           {loading
@@ -44,9 +44,8 @@ export function TrackRows({
       {tracks.map((t, i) => {
         const s = states[i] ?? { muted: false, gain: 100 };
         return (
-          <div key={t.index} className="flex items-center gap-3">
-            <span className="w-8 shrink-0" aria-hidden="true" />
-            <span className="w-40 shrink-0 truncate text-sm text-secondary" title={t.name}>
+          <div key={t.index} className="editor-audio-track">
+            <span className="min-w-0 truncate text-xs text-secondary" title={t.name}>
               {t.name}
             </span>
             <Button
@@ -64,8 +63,8 @@ export function TrackRows({
             <div
               role="group"
               aria-label={`Volume de la piste ${t.name}`}
-              title="Au-delà de 100 %, le gain n’est appliqué qu’à l’export (l’aperçu est limité à 100 %)."
-              className={`w-64 max-w-full ${s.muted ? 'opacity-50' : ''}`}>
+              title="Gain de la piste, appliqué à l’aperçu et à l’export."
+              className={`col-span-2 min-w-0 ${s.muted ? 'opacity-50' : ''}`}>
               <Slider
                 value={s.gain}
                 min={0}

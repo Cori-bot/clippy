@@ -23,7 +23,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 
 use crate::{
     capture::audio::{
-        AudioGains, TrackMixer, ENCODER_BLOCK_ALIGN, SAMPLE_RATE, SILENCE_GRACE_100NS,
+        AudioGains, ENCODER_BLOCK_ALIGN, SAMPLE_RATE, SILENCE_GRACE_100NS, TrackMixer,
         dur_100ns_to_frames, frames_to_100ns,
     },
     capture::source::{CaptureHandle, Flow, FrameSink, SourceFrame},
@@ -152,6 +152,8 @@ struct ReplaySession {
     /// The frame staged on the tick after a clip request, waiting for
     /// `save_clip` to encode it.
     thumb_staged: Option<StagedFrame>,
+    /// Auto-clip's view of part of the screen; None while nobody watches.
+    probe: Option<crate::capture::probe::RegionProbe>,
 
     /// Wall time spent inside the capture callback per frame (convert +
     /// encode submit + drain) — the gameplay-impact number.
@@ -388,6 +390,26 @@ impl ReplaySession {
     fn take_staged_thumbnail(&mut self) -> Option<StagedFrame> {
         self.thumb_staged.take()
     }
+
+    /// Watches `region` (None stops) and hands over its newest read-back.
+    fn probe(&mut self, region: Option<crate::capture::probe::ProbeRegion>) -> Option<StagedFrame> {
+        match region {
+            None => {
+                self.probe = None;
+                None
+            }
+            Some(region) => {
+                let probe = match &mut self.probe {
+                    Some(probe) if probe.region() == region => probe,
+                    slot => slot.insert(crate::capture::probe::RegionProbe::new(
+                        region,
+                        Duration::from_millis(200),
+                    )),
+                };
+                probe.take()
+            }
+        }
+    }
 }
 
 impl FrameSink for ReplaySession {
@@ -434,6 +456,7 @@ impl FrameSink for ReplaySession {
             input_size: (flags.settings.src_width, flags.settings.src_height),
             thumb_wanted: false,
             thumb_staged: None,
+            probe: None,
             frame_latency: LatencyHistogram::new(),
             stage_pump: LatencyHistogram::new(),
             stage_convert: LatencyHistogram::new(),
@@ -508,6 +531,14 @@ impl FrameSink for ReplaySession {
                 // A thumbnail is a nicety; the clip is the product. This must
                 // never fail a capture callback.
                 Err(e) => tracing::warn!(error = %format!("{e:#}"), "could not stage a thumbnail"),
+            }
+        }
+
+        if let Some(probe) = &mut self.probe {
+            if let Err(e) = probe.tick(frame.texture) {
+                // Like the thumbnail: never fail the capture over it.
+                tracing::warn!(error = %format!("{e:#}"), "screen probe stopped");
+                self.probe = None;
             }
         }
 
@@ -1212,6 +1243,9 @@ fn run_session(
                 }
                 // The daemon reads this; `clippy replay` never sends the command.
                 let _ = reply.send(result);
+            }
+            Ok(EngineCommand::Probe { region, reply }) => {
+                let _ = reply.send(Ok(capture.sink().lock().probe(region)));
             }
             Ok(EngineCommand::Stop) => break,
             Err(RecvTimeoutError::Timeout) => {

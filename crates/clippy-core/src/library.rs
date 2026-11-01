@@ -249,6 +249,14 @@ pub fn scan(dir: &Path) -> Result<Vec<ClipMeta>> {
                 tracing::warn!(clip = id, error = %e, "unreadable sidecar, adopting the clip");
                 adopt(dir, id)
             }
+            // The sidecar is written after the MP4 is finalized, so a writer
+            // killed mid-file (power cut, task manager, `panic = "abort"`)
+            // leaves an MP4 with no sidecar and no `moov`: unplayable, and
+            // adopting it shows a 0:00 card that cannot be opened or trimmed.
+            Err(_) if unfinished_mp4(&path) => {
+                tracing::debug!(clip = id, "skipping an unfinished mp4");
+                continue;
+            }
             Err(_) => adopt(dir, id),
         };
         clips.push(meta);
@@ -256,6 +264,48 @@ pub fn scan(dir: &Path) -> Result<Vec<ClipMeta>> {
     // Ids are zero-padded timestamps, so lexicographic order is chronological.
     clips.sort_by(|a, b| b.id.cmp(&a.id));
     Ok(clips)
+}
+
+/// An MP4 that starts like one (`ftyp` first) but whose top-level boxes end
+/// without a `moov`: what Media Foundation leaves when the writer dies before
+/// `Finalize`. Anything that does not start with `ftyp` is not judged (a
+/// hand-dropped file is adopted as before), and a read error counts as
+/// finished: hiding a clip is the worse mistake.
+fn unfinished_mp4(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return false };
+    let mut at = 0u64;
+    for index in 0..1024 {
+        let mut head = [0u8; 8];
+        if at + 8 > len || file.seek(SeekFrom::Start(at)).is_err() || file.read_exact(&mut head).is_err() {
+            return index > 0;
+        }
+        let kind = &head[4..8];
+        if index == 0 && kind != b"ftyp" {
+            return false;
+        }
+        if kind == b"moov" {
+            return false;
+        }
+        let size = match u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as u64 {
+            1 => {
+                let mut large = [0u8; 8];
+                if file.read_exact(&mut large).is_err() {
+                    return true;
+                }
+                u64::from_be_bytes(large)
+            }
+            size => size,
+        };
+        // 0 means "to the end of the file"; below 8 is not a box. Either way
+        // nothing after it can be a `moov`.
+        if size < 8 {
+            return true;
+        }
+        at = at.saturating_add(size);
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +322,9 @@ pub fn scan(dir: &Path) -> Result<Vec<ClipMeta>> {
 pub const DESKTOP_FOLDER: &str = "Bureau";
 
 /// A folder name no game may take: the screenshots' own folder.
-const RESERVED_FOLDERS: &[&str] = &["screenshots"];
+/// Rebuildable editor audio, never a user-visible game folder.
+pub const TRACK_CACHE_DIR: &str = ".clippy-cache";
+const RESERVED_FOLDERS: &[&str] = &["screenshots", TRACK_CACHE_DIR];
 
 /// Longest folder name used; Windows allows far more, but a game's name is not
 /// worth a path that approaches MAX_PATH once an id is added.
@@ -288,10 +340,13 @@ const MAX_FOLDER_LEN: usize = 60;
 pub fn sanitize_folder(name: &str) -> Option<String> {
     let cleaned: String = name
         .chars()
-        .filter(|c| !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        .filter(|c| {
+            !c.is_control() && !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        })
         .collect();
     let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-    let trimmed: String = collapsed.trim_matches(|c| c == '.' || c == ' ').chars().take(MAX_FOLDER_LEN).collect();
+    let trimmed: String =
+        collapsed.trim_matches(|c| c == '.' || c == ' ').chars().take(MAX_FOLDER_LEN).collect();
     let trimmed = trimmed.trim_end_matches(|c| c == '.' || c == ' ').to_string();
     is_valid_folder(&trimmed).then_some(trimmed)
 }
@@ -309,7 +364,9 @@ pub fn is_valid_folder(folder: &str) -> bool {
     if folder == "." || folder == ".." || folder.starts_with(' ') || folder.ends_with([' ', '.']) {
         return false;
     }
-    if folder.chars().any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')) {
+    if folder.chars().any(|c| {
+        c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+    }) {
         return false;
     }
     let lower = folder.to_lowercase();
@@ -319,7 +376,10 @@ pub fn is_valid_folder(folder: &str) -> bool {
     // DOS device names are files, not folders, whatever the extension.
     let stem = lower.split('.').next().unwrap_or("");
     const DEVICES: &[&str] = &["con", "prn", "aux", "nul"];
-    let numbered = |p: &str| stem.strip_prefix(p).is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit() && n != "0");
+    let numbered = |p: &str| {
+        stem.strip_prefix(p)
+            .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit() && n != "0")
+    };
     !(DEVICES.contains(&stem) || numbered("com") || numbered("lpt"))
 }
 
@@ -371,7 +431,9 @@ pub fn scan_all(clip_dir: &Path) -> Result<Vec<ClipMeta>> {
                 all.append(&mut clips);
             }
             Err(e) if folder.is_empty() => return Err(e),
-            Err(e) => tracing::warn!(folder = %folder, error = %format!("{e:#}"), "skipping an unreadable clips sub-folder"),
+            Err(e) => {
+                tracing::warn!(folder = %folder, error = %format!("{e:#}"), "skipping an unreadable clips sub-folder")
+            }
         }
     }
     all.sort_by(|a, b| b.id.cmp(&a.id));
@@ -399,17 +461,29 @@ pub fn allocate_clip_id_in(clip_dir: &Path, folder: &str) -> Result<String> {
     bail!("aucun identifiant de clip libre pour {stamp}")
 }
 
-/// Removes the per-track audio files the editor asked for next to a clip
-/// (`<id>.t<n>.m4a`, and a half-written `<id>.t<n>.part.m4a`). Best effort:
-/// they are rebuilt from the clip on demand, so a stuck one is only litter.
+/// Removes only this clip's editor audio, from the private cache and the
+/// legacy loose-file location. The master MP4 and neighboring clips survive.
 pub fn remove_track_files(dir: &Path, id: &str) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let prefix = format!("{id}.t");
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if name.starts_with(&prefix) && name.ends_with(".m4a") {
-            let _ = std::fs::remove_file(entry.path());
+    if !is_valid_id(id) {
+        return;
+    }
+    let cache = dir.join(TRACK_CACHE_DIR);
+    for location in [dir, cache.as_path()] {
+        let Ok(entries) = std::fs::read_dir(location) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(track) = name.strip_prefix(&format!("{id}.t")) else { continue };
+            let Some(ordinal) =
+                track.strip_suffix(".part.m4a").or_else(|| track.strip_suffix(".m4a"))
+            else {
+                continue;
+            };
+            if !ordinal.is_empty() && ordinal.bytes().all(|c| c.is_ascii_digit()) {
+                if let Err(error) = std::fs::remove_file(entry.path()) {
+                    tracing::warn!(path = %entry.path().display(), %error, "could not remove cached editor audio");
+                }
+            }
         }
     }
 }
@@ -736,10 +810,25 @@ mod tests {
         // would look like.
         std::fs::write(dir.join("20260726_120000.mp4"), b"").unwrap();
         write_sidecar(&dir, &sample_meta("20260726_120000")).unwrap();
+        // An MP4 whose writer died before `Finalize`: `ftyp` and an open
+        // `mdat`, no `moov`, no sidecar. The exact bytes Media Foundation left
+        // when a 9:16 export was killed.
+        let mut unfinished = Vec::new();
+        unfinished.extend_from_slice(&[0, 0, 0, 0x18]);
+        unfinished.extend_from_slice(b"ftypmp42\0\0\0\0mp41isom");
+        unfinished.extend_from_slice(&[0, 0, 0, 1]);
+        unfinished.extend_from_slice(b"mdat");
+        unfinished.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0x10]);
+        std::fs::write(dir.join("20260726_130000.mp4"), &unfinished).unwrap();
+        // The same start, finalized: adopted.
+        let mut finished = unfinished[..24].to_vec();
+        finished.extend_from_slice(&[0, 0, 0, 8]);
+        finished.extend_from_slice(b"moov");
+        std::fs::write(dir.join("20260726_140000.mp4"), &finished).unwrap();
 
         let clips = scan(&dir).unwrap();
         let ids: Vec<&str> = clips.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, ["20260726_110000", "20260726_100000"], "newest first");
+        assert_eq!(ids, ["20260726_140000", "20260726_110000", "20260726_100000"], "newest first");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -817,11 +906,18 @@ mod tests {
     fn folder_names_are_cleaned_into_one_safe_component() {
         assert_eq!(sanitize_folder("VALORANT").as_deref(), Some("VALORANT"));
         assert_eq!(sanitize_folder("Counter-Strike 2").as_deref(), Some("Counter-Strike 2"));
-        assert_eq!(sanitize_folder("Tom Clancy's: R6 / Siege?").as_deref(), Some("Tom Clancy's R6 Siege"));
+        assert_eq!(
+            sanitize_folder("Tom Clancy's: R6 / Siege?").as_deref(),
+            Some("Tom Clancy's R6 Siege")
+        );
         assert_eq!(sanitize_folder("  Game...  ").as_deref(), Some("Game"));
         assert_eq!(sanitize_folder("..\\..\\Windows").as_deref(), Some("Windows"));
         assert_eq!(sanitize_folder("???"), None);
-        assert_eq!(sanitize_folder("Screenshots"), None, "that name is the screenshots' own folder");
+        assert_eq!(
+            sanitize_folder("Screenshots"),
+            None,
+            "that name is the screenshots' own folder"
+        );
         assert_eq!(sanitize_folder("CON"), None);
         let long = "x".repeat(200);
         assert_eq!(sanitize_folder(&long).map(|f| f.len()), Some(MAX_FOLDER_LEN));
@@ -829,11 +925,28 @@ mod tests {
 
     #[test]
     fn a_folder_that_could_leave_the_clips_folder_is_never_valid() {
-        for bad in ["", ".", "..", "a/b", "a\\b", "C:", "..\\x", "x.", " x", "nul", "COM1", "lpt3.txt", "Screenshots", "a|b"] {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "C:",
+            "..\\x",
+            "x.",
+            " x",
+            "nul",
+            "COM1",
+            "lpt3.txt",
+            "Screenshots",
+            "a|b",
+        ] {
             assert!(!is_valid_folder(bad), "{bad:?} must be rejected");
             assert!(folder_dir(Path::new("C:\\clips"), bad).is_none() || bad.is_empty());
         }
-        for good in ["Bureau", "VALORANT", "Rocket League", "Chained Together", "Counter-strike 2", "COM0"] {
+        for good in
+            ["Bureau", "VALORANT", "Rocket League", "Chained Together", "Counter-strike 2", "COM0"]
+        {
             assert!(is_valid_folder(good), "{good:?} must be accepted");
         }
         assert_eq!(folder_dir(Path::new("C:\\clips"), ""), Some(PathBuf::from("C:\\clips")));
@@ -846,13 +959,60 @@ mod tests {
         std::fs::create_dir_all(&valorant).unwrap();
         std::fs::create_dir_all(dir.join("Screenshots")).unwrap();
         std::fs::create_dir_all(valorant.join("deeper")).unwrap();
-        for (d, id) in [(&dir, "20260101_100000"), (&valorant, "20260102_100000"), (&valorant.join("deeper"), "20260103_100000")] {
+        for (d, id) in [
+            (&dir, "20260101_100000"),
+            (&valorant, "20260102_100000"),
+            (&valorant.join("deeper"), "20260103_100000"),
+        ] {
             std::fs::write(mp4_path(d, id), b"x").unwrap();
         }
         std::fs::write(mp4_path(&dir.join("Screenshots"), "20260104_100000"), b"x").unwrap();
         let all = scan_all(&dir).unwrap();
-        let found: Vec<(&str, &str)> = all.iter().map(|c| (c.id.as_str(), c.folder.as_str())).collect();
+        let found: Vec<(&str, &str)> =
+            all.iter().map(|c| (c.id.as_str(), c.folder.as_str())).collect();
         assert_eq!(found, [("20260102_100000", "VALORANT"), ("20260101_100000", "")]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn editor_cache_is_reserved_and_never_scanned_as_a_game() {
+        let dir = scratch("reserved-cache");
+        let cache = dir.join(TRACK_CACHE_DIR);
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(mp4_path(&cache, "20260101_100000"), b"not a library clip").unwrap();
+        assert!(!is_valid_folder(TRACK_CACHE_DIR));
+        assert!(!is_valid_folder(".CLIPPY-CACHE"));
+        assert!(scan_all(&dir).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn deleting_editor_audio_removes_cache_and_legacy_but_preserves_neighbors() {
+        let dir = scratch("remove-track-cache");
+        let cache = dir.join(TRACK_CACHE_DIR);
+        std::fs::create_dir_all(&cache).unwrap();
+        let id = "20260101_100000";
+        for location in [&dir, &cache] {
+            for suffix in ["t0.m4a", "t1.m4a", "t2.part.m4a"] {
+                std::fs::write(location.join(format!("{id}.{suffix}")), b"derived audio").unwrap();
+            }
+            for name in
+                [format!("{id}.mp4"), format!("{id}.title.m4a"), "20260101_100001.t0.m4a".into()]
+            {
+                std::fs::write(location.join(name), b"keep").unwrap();
+            }
+        }
+        remove_track_files(&dir, id);
+        for location in [&dir, &cache] {
+            for suffix in ["t0.m4a", "t1.m4a", "t2.part.m4a"] {
+                assert!(!location.join(format!("{id}.{suffix}")).exists());
+            }
+            for name in
+                [format!("{id}.mp4"), format!("{id}.title.m4a"), "20260101_100001.t0.m4a".into()]
+            {
+                assert_eq!(std::fs::read(location.join(name)).unwrap(), b"keep");
+            }
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -37,6 +37,19 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 const { app, wireDaemon, UpdateStore, trimRangeError } = await import('./state');
+
+describe('notification deduplication', () => {
+  it('shows one error for the IPC rejection and its daemon event, then allows a retry after dismissal', () => {
+    app.toasts = [];
+    app.toast('error', 'Capture refusée');
+    app.toast('error', 'Capture refusée');
+    expect(app.toasts).toHaveLength(1);
+    app.dismissToast(app.toasts[0].id);
+    app.toast('error', 'Capture refusée');
+    expect(app.toasts).toHaveLength(1);
+    app.toasts = [];
+  });
+});
 const { onConnected, onDaemonEvent } = await import('./ipc');
 
 /**
@@ -115,6 +128,9 @@ beforeEach(() => {
   app.clipsLoadError = null;
   app.selected = 0;
   app.favoriteIds = null;
+  app.searchQuery = '';
+  app.gameFilter = null;
+  app.sortOrder = 'newest';
   app.shots = [];
   app.shotTotal = 0;
   app.shotSelected = 0;
@@ -126,6 +142,111 @@ beforeEach(() => {
   // ran earlier (or wireDaemon()'s own daemonConnected() bootstrap) must not
   // leave it set for the next one.
   app.connected = false;
+});
+
+describe('library discovery', () => {
+  const library = () => [
+    { ...clip('a'), title: 'Évasion finale', game: 'Apex', created: '2026-01-01', duration_ms: 3000, bytes: 20, favorite: true },
+    { ...clip('b'), title: 'Finale clutch', game: 'Valorant', created: '2026-01-03', duration_ms: 2000, bytes: 30, favorite: true },
+    { ...clip('c'), title: 'Finale ranked', game: 'Apex', created: '2026-01-02', duration_ms: 4000, bytes: 10 },
+  ];
+
+  it('combines search words across game/title, accents, game and favorites', () => {
+    app.clips = library();
+    app.setSearchQuery('  APEX eVAsion ');
+    expect(app.visible.map(c => c.id)).toEqual(['a']);
+    app.setSearchQuery('finale');
+    app.setGameFilter('Apex');
+    app.setFavoritesOnly(true);
+    expect(app.visible.map(c => c.id)).toEqual(['a']);
+    app.resetLibraryFilters();
+    expect(app.visible.map(c => c.id)).toEqual(['b', 'c', 'a']);
+    expect(app.current?.id).toBe('a');
+  });
+
+  it('keeps selection by ID through each sort and selects first after filtering it out', () => {
+    app.clips = library();
+    app.selected = 1;
+    expect(app.current?.id).toBe('c');
+    for (const [sort, ids] of [
+      ['oldest', ['a', 'c', 'b']], ['duration', ['c', 'a', 'b']], ['size', ['b', 'a', 'c']],
+    ] as const) {
+      app.setSortOrder(sort);
+      expect(app.visible.map(c => c.id)).toEqual(ids);
+      expect(app.current?.id).toBe('c');
+    }
+    app.setGameFilter('Valorant');
+    expect(app.current?.id).toBe('b');
+    app.setSearchQuery('missing');
+    expect(app.selected).toBe(0);
+    expect(app.current).toBeNull();
+  });
+
+  it('preserves the favorite snapshot and selected clip during mutations', async () => {
+    app.clips = library();
+    app.setFavoritesOnly(true);
+    app.selected = 1;
+    callMock.mockResolvedValueOnce({ ...library()[0], favorite: false });
+    await app.setFavorite('a', false);
+    expect(app.current?.id).toBe('a');
+    expect(app.visible.map(c => c.id)).toEqual(['b', 'a']);
+    app.setSearchQuery('finale');
+    callMock.mockResolvedValueOnce({ ...library()[0], title: 'Évasion', favorite: false });
+    await app.rename('a', 'Évasion');
+    expect(app.current?.id).toBe('b');
+    app.setFavoritesOnly(true);
+    expect(app.visible.map(c => c.id)).toEqual(['b']);
+  });
+
+  it('reuses visible derivation across stats updates and invalidates on metadata replacement', () => {
+    app.clips = library();
+    const visible = app.visible;
+    app.ringUsed = 23;
+    expect(app.visible).toBe(visible);
+    app.clips = [...app.clips];
+    expect(app.visible).not.toBe(visible);
+  });
+
+  it('keeps filtered selection when reload and new recordings reorder the library', async () => {
+    app.clips = library();
+    app.setGameFilter('Apex');
+    app.setSortOrder('oldest');
+    app.selected = 1;
+    callMock.mockResolvedValue({ clips: [...library()].reverse(), total: 3, offset: 0 });
+    await app.loadClips();
+    expect(app.current?.id).toBe('c');
+    const handler = registerDaemonEventHandler();
+    handler({ event: 'clip_saved', data: { ...clip('d'), game: 'Apex', created: '2025-01-01' } } as DaemonEvent);
+    expect(app.visible.map(c => c.id)).toEqual(['d', 'a', 'c']);
+    expect(app.current?.id).toBe('c');
+  });
+
+  it('deletes within filtered sort order without selecting an unrelated hidden clip', async () => {
+    app.clips = library();
+    app.total = 3;
+    app.setGameFilter('Apex');
+    app.setSortOrder('size');
+    callMock.mockResolvedValue({});
+    await app.remove('a');
+    expect(app.current?.id).toBe('c');
+    expect(app.clips.map(c => c.id)).toEqual(['b', 'c']);
+  });
+
+  it('resets folder-specific criteria when the daemon changes clip directory', async () => {
+    app.clips = library();
+    app.setSearchQuery('finale');
+    app.setGameFilter('Apex');
+    app.setSortOrder('size');
+    app.setFavoritesOnly(true);
+    callMock.mockImplementation((method: string) => Promise.resolve(method === 'status' ? statusPayload() : libraryListPayload()));
+    const handler = registerDaemonEventHandler();
+    handler({ event: 'config_changed', data: { clip_dir_resolved: 'D:\\Other' } } as DaemonEvent);
+    expect(app.searchQuery).toBe('');
+    expect(app.gameFilter).toBeNull();
+    expect(app.sortOrder).toBe('newest');
+    expect(app.favoritesOnly).toBe(false);
+    await Promise.resolve();
+  });
 });
 
 describe('AppState.remove', () => {
@@ -490,6 +611,19 @@ describe('AppState.keyframesFor', () => {
 });
 
 describe('AppState.exportTrim', () => {
+  it('requests a single mixed output explicitly without changing the legacy master default', async () => {
+    callMock.mockResolvedValue(clip('shared'));
+    await app.exportTrim('source', 0, 1000, undefined, 'share');
+    expect(callMock).toHaveBeenLastCalledWith('library.export', {
+      clip_id: 'source', start_ms: 0, end_ms: 1000, mode: 'fast', output: 'share',
+    });
+    callMock.mockClear();
+    await app.exportTrim('source', 0, 1000);
+    expect(callMock).toHaveBeenLastCalledWith('library.export', {
+      clip_id: 'source', start_ms: 0, end_ms: 1000, mode: 'fast',
+    });
+  });
+
   it('exportTrim refuses a range whose out point is not after its in point', async () => {
     const calls: string[] = [];
     callMock.mockImplementation((cmd: string) => {
@@ -603,6 +737,12 @@ describe('AppState.exportTrim', () => {
 });
 
 describe('trimRangeError', () => {
+  it('allows a single-frame precise range and rejects nonfinite points', () => {
+    expect(trimRangeError(17, 33, 'precise')).toBeNull();
+    expect(trimRangeError(17, 17, 'precise')).not.toBeNull();
+    expect(trimRangeError(NaN, 1000, 'precise')).not.toBeNull();
+    expect(trimRangeError(0, Infinity)).not.toBeNull();
+  });
   // The clip page disables Export on this and prints the reason under the
   // bar, and `exportTrim` refuses on the same call -- so the two can only
   // agree because they ask one function. It is also the only part of the trim

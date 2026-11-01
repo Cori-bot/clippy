@@ -5,6 +5,7 @@ import { Toasts } from './components/Toasts';
 import { updates, useApp, useUpdates } from './lib/app';
 import { isTypingTarget } from './lib/keys';
 import { wireDaemon, wireUpdates } from './lib/state';
+import { diag } from './lib/diag';
 import { ClipPage } from './views/ClipPage';
 import { DaemonDown } from './views/DaemonDown';
 import { FirstRun } from './views/FirstRun';
@@ -64,6 +65,12 @@ export function App() {
   const a = useApp();
   const u = useUpdates();
 
+  // Diagnostics: which page and which clip, each time either changes.
+  const currentId = a.current?.id;
+  useEffect(() => {
+    diag('view', { view: a.view, clip: currentId });
+  }, [a.view, currentId]);
+
   useEffect(() => {
     wireDaemon();
     wireUpdates();
@@ -96,13 +103,15 @@ export function App() {
           <FirstRun />
         ) : (
           <div className="flex min-h-0 flex-1">
-            <Rail />
-            <main className="relative flex-1 overflow-auto px-5 py-[18px]">
-              {a.view === 'grid' && <Grid />}
-              {a.view === 'clip' && <ClipPage />}
-              {a.view === 'shots' && <Shots />}
-              {a.view === 'games' && <Games />}
-              {a.view === 'settings' && <Settings />}
+            {a.view !== 'clip' && <Rail />}
+            <main className={a.view === 'clip' ? 'relative min-h-0 min-w-0 flex-1 overflow-hidden' : 'relative min-w-0 flex-1 overflow-auto px-6 py-6'}>
+              <div key={a.view} className={`view-enter ${a.view === 'clip' ? 'h-full min-h-0' : ''}`}>
+                {a.view === 'grid' && <Grid />}
+                {a.view === 'clip' && <ClipPage />}
+                {a.view === 'shots' && <Shots />}
+                {a.view === 'games' && <Games />}
+                {a.view === 'settings' && <Settings />}
+              </div>
             </main>
           </div>
         )}

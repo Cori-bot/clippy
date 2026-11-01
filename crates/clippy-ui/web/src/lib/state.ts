@@ -2,9 +2,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { call, daemonConnected, onConnected, onDaemonEvent, onDisconnected } from './ipc';
 import { mergeSaved } from './clips';
+import { diag, setDiagnostics } from './diag';
 import { reactive } from './reactive';
+import { ExportJobStore } from './export-jobs';
 import { mergeGame, sortGames } from './games';
-import type { ClipMeta, GameEntry, LibraryPage, RunningWindow, ShotMeta, Status } from './types';
+import { createLibraryQuery, type ClipSort } from './library-query';
+export type { ClipSort } from './library-query';
+import type { ClipMeta, ExportMode, ExportOutput, GameEntry, LibraryPage, RunningWindow, ShotMeta, Status } from './types';
 
 export type View = 'grid' | 'clip' | 'shots' | 'games' | 'settings' | 'firstrun';
 export type Toast = { id: number; kind: 'error' | 'info'; text: string };
@@ -37,9 +41,10 @@ const MIN_TRIM_MS = 200;
  * component: this is the one piece of the trim UI a test can execute, since
  * the suite runs on node with no DOM.
  */
-export function trimRangeError(startMs: number, endMs: number): string | null {
+export function trimRangeError(startMs: number, endMs: number, mode: ExportMode = 'fast'): string | null {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return 'Les points de coupe sont invalides.';
   if (endMs <= startMs) return 'Le point de sortie doit être après le point d’entrée.';
-  if (endMs - startMs < MIN_TRIM_MS) return `Un rognage doit durer au moins ${MIN_TRIM_MS} ms.`;
+  if (mode === 'fast' && endMs - startMs < MIN_TRIM_MS) return `Un rognage doit durer au moins ${MIN_TRIM_MS} ms.`;
   return null;
 }
 
@@ -47,6 +52,9 @@ export function trimRangeError(startMs: number, endMs: number): string | null {
 function favoriteIdsOf(clips: ClipMeta[]): Set<string> {
   return new Set(clips.filter((c) => c.favorite).map((c) => c.id));
 }
+
+// Kept outside the reactive proxy: reading a getter must never publish a change.
+const visibleQueries = new WeakMap<object, ReturnType<typeof createLibraryQuery>>();
 
 class AppState {
   connected = false;
@@ -88,6 +96,9 @@ class AppState {
    * Clippy to find most of their clips apparently gone.
    */
   favoriteIds: Set<string> | null = null;
+  searchQuery = '';
+  gameFilter: string | null = null;
+  sortOrder: ClipSort = 'newest';
   toasts: Toast[] = [];
   /** Live ring seconds while armed, from `stats`; falls back to `status`. */
   ringUsed = 0;
@@ -134,10 +145,14 @@ class AppState {
     return this.favoriteIds !== null;
   }
 
-  /** The clips the grid shows and the clip page steps through, newest first. */
+  /** The same filtered, ordered list drives the grid and clip navigation. */
   get visible(): ClipMeta[] {
-    const ids = this.favoriteIds;
-    return ids ? this.clips.filter((c) => ids.has(c.id)) : this.clips;
+    let query = visibleQueries.get(this);
+    if (!query) {
+      query = createLibraryQuery();
+      visibleQueries.set(this, query);
+    }
+    return query(this.clips, this);
   }
 
   get current(): ClipMeta | null {
@@ -160,7 +175,42 @@ class AppState {
     this.selected = index < 0 ? 0 : index;
   }
 
+  private keepSelection(id: string | undefined) {
+    this.selected = Math.max(0, this.visible.findIndex(c => c.id === id));
+  }
+
+  setSearchQuery(query: string) {
+    const keep = this.current?.id;
+    this.searchQuery = query;
+    this.keepSelection(keep);
+  }
+
+  setGameFilter(game: string | null) {
+    const keep = this.current?.id;
+    this.gameFilter = game;
+    this.keepSelection(keep);
+  }
+
+  setSortOrder(order: ClipSort) {
+    const keep = this.current?.id;
+    this.sortOrder = order;
+    this.keepSelection(keep);
+  }
+
+  resetLibraryFilters() {
+    const keep = this.current?.id;
+    this.searchQuery = '';
+    this.gameFilter = null;
+    this.sortOrder = 'newest';
+    this.favoriteIds = null;
+    this.keepSelection(keep);
+  }
+
   toast(kind: Toast['kind'], text: string) {
+    diag('toast', { kind, text });
+    // A command rejection and its daemon error event can describe the same
+    // failure. Keep one visible message regardless of their arrival order.
+    if (this.toasts.some(toast => toast.kind === kind && toast.text === text)) return;
     const toast = { id: nextToastId++, kind, text };
     this.toasts = [...this.toasts, toast];
     // An error is read slowly and often has to be copied, so it stays twice as long.
@@ -392,8 +442,10 @@ class AppState {
   async rename(id: string, title: string) {
     try {
       const updated = await call<ClipMeta>('library.rename', { clip_id: id, title });
+      const keep = this.current?.id;
       this.clipMutation++;
       this.clips = mergeSaved(this.clips, updated);
+      this.keepSelection(keep);
     } catch (e) {
       this.toast('error', String(e));
     }
@@ -402,8 +454,20 @@ class AppState {
   async setFavorite(id: string, favorite: boolean) {
     try {
       const updated = await call<ClipMeta>('library.favorite', { clip_id: id, favorite });
+      const keep = this.current?.id;
       this.clipMutation++;
       this.clips = mergeSaved(this.clips, updated);
+      this.keepSelection(keep);
+    } catch (e) {
+      this.toast('error', String(e));
+    }
+  }
+
+  /** Puts the clip file on the clipboard, for a Ctrl+V into Discord or a folder. */
+  async copyClip(id: string) {
+    try {
+      await call('library.copy', { clip_id: id });
+      this.toast('info', 'Clip copié. Collez-le dans Discord avec Ctrl + V.');
     } catch (e) {
       this.toast('error', String(e));
     }
@@ -447,7 +511,7 @@ class AppState {
    * actually makes with two sliders, and they deserve a sentence that says
    * what to do about it.
    */
-  async exportTrim(id: string, startMs: number, endMs: number, tracks?: { index: number; gain: number }[]) {
+  async exportTrim(id: string, startMs: number, endMs: number, tracks?: { index: number; gain: number }[], output: ExportOutput = 'master') {
     // Kept here even though the clip page now disables the button for these
     // two: Ctrl+E has no button to grey out, and this is also the entry point
     // any future caller reaches.
@@ -473,6 +537,7 @@ class AppState {
         start_ms: Math.round(startMs),
         end_ms: Math.round(endMs),
         mode: 'fast',
+        ...(output === 'share' ? { output } : {}),
         // Only present when the user changed a track: absent means "keep
         // every stream untouched", exactly what was sent before.
         ...(tracks ? { tracks } : {}),
@@ -575,6 +640,7 @@ class AppState {
 }
 
 export const app = reactive(new AppState());
+export const exportJobs = reactive(new ExportJobStore(call, () => void app.loadClips(true)));
 
 /**
  * Everything the app does the moment it has a daemon to talk to.
@@ -602,6 +668,7 @@ async function onDaemonUp() {
     app.hotkey = String(config['clip_hotkey'] ?? 'alt+f10');
     app.shotHotkey = String(config['screenshot_hotkey'] ?? 'alt+f8');
     if (config['config_file_exists'] === false) app.view = 'firstrun';
+    setDiagnostics(config['diagnostics'] === true);
     // Reached only once config.get has actually resolved, which is what
     // makes "skip the automatic check when config.get fails" automatic --
     // the catch below never reaches this line at all. checkOnceAtLaunch
@@ -615,6 +682,7 @@ async function onDaemonUp() {
     // is already wrong, and a background check is the least important thing
     // on screen.
   }
+  void exportJobs.resume();
   await app.loadClips();
   // A daemon restart while the Screenshots tab is open is the same stale-list
   // hole `loadClips` closes above: `Shots.tsx` only loads on mount, so
@@ -637,6 +705,7 @@ export function wireDaemon() {
   onConnected(() => void onDaemonUp());
 
   onDisconnected(() => {
+    exportJobs.disconnect();
     app.invalidateClips();
     app.connected = false;
     app.status = null;
@@ -661,6 +730,9 @@ export function wireDaemon() {
     const data = event.data as Record<string, unknown>;
     if (event.event === 'config_changed' && typeof event.data['clip_hotkey'] === 'string') {
       app.hotkey = event.data['clip_hotkey'];
+    }
+    if (event.event === 'config_changed' && typeof event.data['diagnostics'] === 'boolean') {
+      setDiagnostics(event.data['diagnostics']);
     }
     if (event.event === 'config_changed' && typeof event.data['screenshot_hotkey'] === 'string') {
       app.shotHotkey = event.data['screenshot_hotkey'];
@@ -707,6 +779,7 @@ export function wireDaemon() {
         if (moved) {
           app.invalidateClips();
           app.clips = [];
+          app.resetLibraryFilters();
           app.total = 0;
           app.totalBytes = null;
           void app.loadClips();

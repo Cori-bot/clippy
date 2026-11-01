@@ -31,6 +31,12 @@ export type LibraryPage = {
   snapshot?: string;
 };
 
+/** Audio layout of the new MP4; the source is always preserved. */
+export type ExportOutput = 'master' | 'share';
+export type ExportMode = 'fast' | 'precise';
+/** Actual presentation timestamps, in 100 ns units; end is exclusive. */
+export type FrameIndex = { timestamps_100ns: number[]; end_100ns: number };
+
 /**
  * Mirrors `clippy_proto::ShotMeta`. No sidecar exists, so every field is
  * recovered from the file itself, and `created` carries no UTC offset —

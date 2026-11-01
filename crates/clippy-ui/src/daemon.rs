@@ -20,6 +20,8 @@ use crate::pipe_reader::open_halves;
 /// current user (spec §4.1). Opening it takes more than a plain `File`, though
 /// — see [`crate::pipe_reader::open_halves`], which this module's `connect`
 /// uses, for why a bare open deadlocks the app on its first command.
+// Fixed cache child only; keep capture engine out of the UI dependency graph.
+const TRACK_CACHE_DIR: &str = ".clippy-cache";
 const PIPE_PATH: &str = r"\\.\pipe\clippy-control";
 
 /// First reconnect delay. Short enough that the app is back before the user
@@ -239,12 +241,16 @@ fn grant_clip_dir(app: &AppHandle, dir: &str) {
     let root = PathBuf::from(dir);
     let scope = app.asset_protocol_scope();
     let _ = scope.allow_directory(&root, false);
+    let _ = scope.allow_directory(root.join(TRACK_CACHE_DIR), false);
     // Only the folders that exist now. A game's folder appears with its first
     // clip, and `grant_clip_folder` covers that one when the event arrives.
     if let Ok(entries) = std::fs::read_dir(&root) {
         for entry in entries.flatten() {
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 let _ = scope.allow_directory(entry.path(), false);
+                if entry.file_name() != TRACK_CACHE_DIR {
+                    let _ = scope.allow_directory(entry.path().join(TRACK_CACHE_DIR), false);
+                }
             }
         }
     }
@@ -267,7 +273,10 @@ fn grant_clip_folder(app: &AppHandle, folder: &str) {
     }
     let root = CLIP_ROOT.lock().ok().and_then(|last| last.clone());
     if let Some(root) = root {
-        let _ = app.asset_protocol_scope().allow_directory(root.join(folder), false);
+        let scope = app.asset_protocol_scope();
+        let folder = root.join(folder);
+        let _ = scope.allow_directory(&folder, false);
+        let _ = scope.allow_directory(folder.join(TRACK_CACHE_DIR), false);
     }
 }
 

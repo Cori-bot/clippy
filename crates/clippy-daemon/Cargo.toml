@@ -16,3 +16,6 @@ tracing-subscriber.workspace = true
 clippy-core = { path = "../clippy-core" }
 clippy-proto = { path = "../clippy-proto" }
 windows.workspace = true
+# Loopback-only HTTPS to League's Live Client Data API (self-signed); schannel,
+# as in clippy-ui.
+ureq = { version = "3", default-features = false, features = ["native-tls"] }

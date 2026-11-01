@@ -73,7 +73,16 @@ describe('trackVolume', () => {
     expect(trackVolume({ muted: true, gain: 100 }, 100, false)).toBe(0);
     expect(trackVolume({ muted: false, gain: 100 }, 100, true)).toBe(0);
   });
-  it('caps boosted tracks at full volume in the preview', () => {
-    expect(trackVolume({ muted: false, gain: 200 }, 100, false)).toBe(1);
+  it('previews the full source gain used by export', () => {
+    expect(trackVolume({ muted: false, gain: 200 }, 100, false)).toBe(2);
+    expect(trackVolume({ muted: false, gain: 150 }, 50, false)).toBe(0.75);
+    const tracks = editableTracks(['Mix', 'Micro']);
+    const states = [{ muted: false, gain: 175 }];
+    expect(trackVolume(states[0], 100, false)).toBe(buildExportTracks(tracks, states)![0].gain / 100);
+  });
+  it('bounds invalid master and source levels without producing an invalid audio gain', () => {
+    expect(trackVolume({ muted: false, gain: 250 }, 120, false)).toBe(2);
+    expect(trackVolume({ muted: false, gain: 100 }, -10, false)).toBe(0);
+    expect(trackVolume({ muted: false, gain: 100 }, NaN, false)).toBe(0);
   });
 });

@@ -232,6 +232,14 @@ pub struct Config {
     /// Clippy has a real one.
     #[serde(default)]
     pub check_for_updates: bool,
+    /// Whether in-game moments (kills, aces) save a clip by themselves, from
+    /// the games' official local feeds (CS2 game state integration, League
+    /// of Legends live client data). Off until the user turns it on: it
+    /// writes a config file into the CS2 install.
+    pub auto_clip: bool,
+    /// Kills a burst needs before it is saved (a named feat always is).
+    #[serde(default = "default_auto_clip_min_kills")]
+    pub auto_clip_min_kills: u32,
     /// Whether the daemon plays a sound when it saves a clip.
     ///
     /// Defaulted `true` for the same reason as `check_for_updates`: a config
@@ -280,6 +288,15 @@ pub struct Config {
     /// times a session.
     #[serde(default = "default_true")]
     pub screenshot_sound: bool,
+    /// Whether a saved clip or screenshot shows the on-screen banner (top
+    /// right, over the game, never recorded).
+    #[serde(default = "default_true")]
+    pub clip_banner: bool,
+    /// Detailed diagnostics: a debug-level daemon log, a log of what is done
+    /// in the window, and app + PC metrics every few seconds, all under
+    /// `%APPDATA%\clippy\logs`. Off by default; meant for testing builds.
+    #[serde(default)]
+    pub diagnostics: bool,
     /// How both hotkeys are listened for: `"standard"` (the default) or
     /// `"low_level"`. Unknown values fall back to `"standard"`.
     ///
@@ -411,11 +428,15 @@ impl Default for Config {
             autostart: false,
             auto_arm: false,
             check_for_updates: false,
+            auto_clip: false,
+            auto_clip_min_kills: default_auto_clip_min_kills(),
             clip_sound: true,
             clip_sound_path: String::new(),
             discord_presence: true,
             screenshot_hotkey: default_screenshot_hotkey(),
             screenshot_sound: true,
+            clip_banner: true,
+            diagnostics: false,
             hotkey_mode: default_hotkey_mode(),
         }
     }
@@ -424,7 +445,11 @@ impl Default for Config {
 /// `serde(default)` for a bool yields `false`, which would silently turn the
 /// update check off for every user upgrading from a config file written before
 /// this key existed.
-const fn default_true() -> bool {
+const fn default_auto_clip_min_kills() -> u32 {
+    1
+}
+
+fn default_true() -> bool {
     true
 }
 
@@ -534,7 +559,10 @@ impl Config {
         let sound = if self.audio_apps.is_empty() {
             TrackSpec { name: "Son du PC".into(), kind: TrackKind::System }
         } else {
-            TrackSpec { name: "Applications".into(), kind: TrackKind::Apps(self.audio_apps.clone()) }
+            TrackSpec {
+                name: "Applications".into(),
+                kind: TrackKind::Apps(self.audio_apps.clone()),
+            }
         };
         vec![sound, TrackSpec { name: "Micro".into(), kind: TrackKind::Mic }]
     }

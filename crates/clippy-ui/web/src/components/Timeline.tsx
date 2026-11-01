@@ -1,6 +1,7 @@
 import { useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
-import { formatClock, keyframeStep, msFromRatio, ratioFromMs, seekKeyTarget, snapStart } from '../lib/timeline';
+import { formatClock, formatPreciseClock, frameStep, keyframeStep, msFromRatio, nearestFrameBoundary, ratioFromMs, seekKeyTarget, snapStart, type FrameIndex } from '../lib/timeline';
 import { clamp } from '../lib/ui';
+import { Filmstrip, Waveform } from './TimelineMedia';
 
 type Drag = 'in' | 'out' | 'seek' | null;
 
@@ -22,22 +23,32 @@ export function Timeline({
   durationMs,
   playheadMs,
   keyframes,
+  frameIndex,
   inMs,
   outMs,
   trimmable = true,
+  src,
+  trackUrls = [],
+  trackNames = [],
   onChange,
   onSeek,
 }: {
   durationMs: number;
   playheadMs: number;
   keyframes: number[];
+  /** Provided only in precise mode; keyframes remain the sparse visual ticks. */
+  frameIndex?: FrameIndex;
   inMs: number;
   outMs: number;
   trimmable?: boolean;
+  src?: string;
+  trackUrls?: string[];
+  trackNames?: string[];
   onChange: (inMs: number, outMs: number) => void;
   onSeek: (ms: number) => void;
 }) {
   const band = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
   /** Which handle a pointer is currently dragging, or `seek` for the track. */
   const [drag, setDrag] = useState<Drag>(null);
   // Mirrors `drag` for the handlers below, which can run twice before React
@@ -49,6 +60,7 @@ export function Timeline({
   };
 
   const pct = (ms: number) => `${ratioFromMs(ms, durationMs) * 100}%`;
+  const clock = frameIndex?.timestamps_100ns.length ? formatPreciseClock : formatClock;
 
   const msAt = (clientX: number): number => {
     const el = band.current;
@@ -70,9 +82,9 @@ export function Timeline({
     if (d === 'seek') onSeek(ms);
     // Snapped at the moment of the drag, so the handle sits where the export
     // will really cut, not where the pointer was.
-    else if (d === 'in') onChange(snapStart(ms, keyframes), outMs);
+    else if (d === 'in') onChange(frameIndex ? nearestFrameBoundary(ms, frameIndex) : snapStart(ms, keyframes), outMs);
     // Out is reported raw: fast mode cuts the end where it is asked to.
-    else onChange(inMs, ms);
+    else onChange(inMs, frameIndex ? nearestFrameBoundary(ms, frameIndex, true) : ms);
   };
 
   const grab = (which: 'in' | 'out' | 'seek', e: PointerEvent) => {
@@ -97,10 +109,14 @@ export function Timeline({
     const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
     let next: number;
     if (dir !== 0) {
-      if (which === 'in') next = keyframeStep(inMs, keyframes, dir);
+      if (frameIndex?.timestamps_100ns.length) {
+        next = frameStep(which === 'in' ? inMs : outMs, frameIndex, dir, which === 'out');
+      } else if (which === 'in') next = keyframeStep(inMs, keyframes, dir);
       else next = clamp(outMs + dir * (e.shiftKey ? 1000 : 100), 0, durationMs);
-    } else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = durationMs;
+    } else if (e.key === 'Home') next = frameIndex?.timestamps_100ns[0] !== undefined ? frameIndex.timestamps_100ns[0] / 10_000 : 0;
+    else if (e.key === 'End') next = frameIndex?.timestamps_100ns.length
+      ? (which === 'out' ? frameIndex.end_100ns : frameIndex.timestamps_100ns.at(-1)!) / 10_000
+      : durationMs;
     else return;
     // Stopped as well as prevented: `ClipPage` listens on the window and would
     // otherwise also step to the next clip.
@@ -120,8 +136,7 @@ export function Timeline({
   };
 
   const handle = (which: 'in' | 'out', label: string, ms: number) => (
-    // 32px hit area around a 24px visible knob; the knob is the focus target's
-    // visual, the wrapper is the slider so both clicks and focus land on it.
+    // A generous hit area surrounds the narrow trim edge without obscuring frames.
     <span
       role="slider"
       tabIndex={0}
@@ -129,18 +144,16 @@ export function Timeline({
       aria-valuemin={0}
       aria-valuemax={durationMs}
       aria-valuenow={ms}
-      aria-valuetext={formatClock(ms)}
-      className="group/h absolute top-1/2 grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize place-items-center rounded-full outline-none"
+      aria-valuetext={clock(ms)}
+      className={`timeline-trim timeline-trim--${which}${drag === which ? ' is-dragging' : ''}`}
       style={{ left: pct(ms) }}
       onPointerDown={(e) => grab(which, e)}
       onPointerMove={move}
       onPointerUp={drop}
+      onPointerCancel={() => setDragBoth(null)}
+      onLostPointerCapture={() => setDragBoth(null)}
       onKeyDown={(e) => onHandleKey(which, e)}>
-      <span
-        className={`size-6 rounded-full border-2 border-[var(--color-text)] bg-[var(--color-background-primary-solid)] shadow-sm transition-[transform,box-shadow] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/h:scale-110 group-focus-visible/h:ring-2 group-focus-visible/h:ring-[var(--color-border-strong)] ${
-          drag === which ? 'scale-110 ring-4 ring-[var(--color-background-primary-soft-alpha)]' : ''
-        }`}
-      />
+      <span className="timeline-trim-grip" />
     </span>
   );
 
@@ -149,28 +162,57 @@ export function Timeline({
   // not pointer-only: a keyboard moves it in 5s steps, 1s with Shift, and
   // jumps to either end. The band cannot take the slider role itself: `slider`
   // is a leaf role and this element already contains one.
+  const targetTick = durationMs / (8 * zoom);
+  const tick = [100, 200, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000, 600000].find((value) => value >= targetTick) ?? Math.max(600000, targetTick);
+  const tickCount = Math.min(200, Math.floor(durationMs / tick));
   return (
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+    <section className="editor-timeline" aria-label="Timeline du clip">
+      <div className="timeline-toolbar">
+        <h2>Timeline</h2>
+        <span className="timeline-shortcut">Glisser les bords pour découper</span>
+        <label className="timeline-zoom">Zoom
+          <input type="range" min="1" max="8" step="0.5" value={zoom}
+            aria-label="Zoom de la timeline" aria-valuetext={`${zoom} fois`}
+            onChange={(e) => setZoom(Number(e.target.value))}
+            onKeyDown={(e) => e.stopPropagation()} />
+          <output>{zoom}×</output>
+        </label>
+      </div>
+      <div className="timeline-lanes">
+        <div className="timeline-labels" aria-hidden="true">
+          <div className="timeline-ruler-label" />
+          <div className="timeline-video-label">Vidéo</div>
+          {trackUrls.map((url, i) => <div key={`${url}-${i}`} className="timeline-audio-label" title={trackNames[i]}>{trackNames[i] ?? `Audio ${i + 1}`}</div>)}
+        </div>
+        <div className="timeline-scroll">
     <div
       ref={band}
-      className="relative h-10 cursor-pointer touch-none rounded-lg border border-subtle bg-surface-secondary"
+      className="timeline-band"
+      style={{ width: `${zoom * 100}%` }}
       onPointerDown={(e) => grab('seek', e)}
       onPointerMove={move}
-      onPointerUp={drop}>
-      {keyframes.map((k) => (
+      onPointerUp={drop}
+      onPointerCancel={() => setDragBoth(null)}
+      onLostPointerCapture={() => setDragBoth(null)}>
+      <div className="timeline-ruler" aria-hidden="true">
+        {Array.from({ length: tickCount + 1 }, (_, i) => <span key={i} style={{ left: pct(i * tick) }}>{formatClock(i * tick)}</span>)}
+      </div>
+      <Filmstrip src={src} />
+      {trackUrls.map((url, i) => <Waveform key={`${url}-${i}`} src={url} durationMs={durationMs} />)}
+      {keyframes.filter((k) => k >= 0 && k <= durationMs).map((k) => (
         <span
           key={k}
-          className="absolute inset-y-0 w-px bg-[var(--color-border-strong)]"
+          className="timeline-keyframe"
           style={{ left: pct(k) }}
         />
       ))}
 
       {trimmable && (
         <>
-          <span className="pointer-events-none absolute inset-y-0 left-0 bg-black/40" style={{ width: pct(inMs) }} />
-          <span className="pointer-events-none absolute inset-y-0 right-0 bg-black/40" style={{ left: pct(outMs) }} />
+          <span className="timeline-outside timeline-outside--before" style={{ width: pct(inMs) }} />
+          <span className="timeline-outside timeline-outside--after" style={{ left: pct(outMs) }} />
           <span
-            className="pointer-events-none absolute inset-y-0 border-x-2 border-[var(--color-background-primary-solid)] bg-[var(--color-background-primary-soft-alpha)]"
+            className="timeline-selection"
             style={{
               left: pct(inMs),
               width: `${ratioFromMs(Math.max(0, outMs - inMs), durationMs) * 100}%`,
@@ -186,8 +228,8 @@ export function Timeline({
         aria-valuemin={0}
         aria-valuemax={durationMs}
         aria-valuenow={playheadMs}
-        aria-valuetext={formatClock(playheadMs)}
-        className="pointer-events-none absolute inset-y-0 w-0.5 bg-[var(--color-text)] outline-none before:absolute before:-top-px before:-left-[3px] before:h-[5px] before:w-2 before:rounded-b-sm before:bg-[var(--color-text)] focus-visible:shadow-[0_0_0_3px_var(--color-border-strong)]"
+        aria-valuetext={clock(playheadMs)}
+        className="timeline-playhead"
         style={{ left: pct(playheadMs) }}
         onKeyDown={onSeekKey}
       />
@@ -199,5 +241,9 @@ export function Timeline({
         </>
       )}
     </div>
+        </div>
+      </div>
+      <div className="timeline-footer"><span><kbd>,</kbd> / <kbd>.</kbd> Image par image</span><span><kbd>I</kbd> Entrée <kbd>O</kbd> Sortie</span></div>
+    </section>
   );
 }

@@ -25,7 +25,7 @@ impl ClientHandler for StubHandler {
 
     fn client_disconnected(&self, _client: u64) {}
 
-    fn dispatch(&self, _client: u64, request: &Request) -> Response {
+    fn dispatch(self: &Arc<Self>, _client: u64, request: &Request) -> Response {
         Response::ok(request.id, serde_json::Value::Null)
     }
 

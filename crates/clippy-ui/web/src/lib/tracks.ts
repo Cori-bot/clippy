@@ -18,8 +18,6 @@ export type ExportTrack = { index: number; gain: number };
 
 export const DEFAULT_GAIN = 100;
 export const MAX_GAIN = 200;
-/** Above this a media element cannot go: `audio.volume` stops at 1.0. */
-export const PREVIEW_MAX_GAIN = 100;
 /** How far an audio element may drift from the video before it is re-synced. */
 export const DRIFT_LIMIT_S = 0.08;
 
@@ -66,11 +64,13 @@ export function needsResync(audioTime: number, videoTime: number, limit = DRIFT_
 }
 
 /**
- * The element volume (0..1) for one track: its own level times the master.
- * Capped at 1 -- levels above 100% only exist in the export.
+ * The Web Audio gain (0..2) for one track: its own level times the master.
+ * Keep the same source gain as export; HTMLMediaElement.volume alone cannot
+ * represent amplification above unity.
  */
 export function trackVolume(state: TrackState, masterLevel: number, masterMuted: boolean): number {
   if (state.muted || masterMuted) return 0;
-  const own = clamp(clampGain(state.gain), 0, PREVIEW_MAX_GAIN) / 100;
-  return clamp((masterLevel / 100) * own, 0, 1);
+  const own = clampGain(state.gain) / 100;
+  const master = Number.isFinite(masterLevel) ? clamp(masterLevel, 0, 100) / 100 : 0;
+  return master * own;
 }
