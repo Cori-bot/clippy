@@ -4,6 +4,7 @@ import { Select } from '@openai/apps-sdk-ui/components/Select';
 import { Slider } from '@openai/apps-sdk-ui/components/Slider';
 import { Switch } from '@openai/apps-sdk-ui/components/Switch';
 import { onDaemonEvent } from '../lib/ipc';
+import { MonitorPicker } from './MonitorPicker';
 import {
   CUSTOM_TIER,
   comboFromEvent,
@@ -256,11 +257,6 @@ export function Field({
     onset(field.key, Number(next));
   }
 
-  const monitorOptions = monitors.map((m) => ({
-    value: String(m.index),
-    label: `${m.name} – ${m.width}×${m.height} (${m.adapter})`,
-  }));
-
   const left = (
     <>
       <span>{field.help}</span>
@@ -293,12 +289,11 @@ export function Field({
       control = (
         <div role="group" aria-label={field.label}>
           {field.dynamic === 'monitors' ? (
-            <Select
-              block={false}
-              size="sm"
-              value={String(value ?? 0)}
-              options={monitorOptions}
-              onChange={(o) => onset(field.key, Number(o.value))}
+            <MonitorPicker
+              monitors={monitors}
+              value={Number(value ?? 0)}
+              label={field.label}
+              onchange={(index) => onset(field.key, index)}
             />
           ) : (
             <Select

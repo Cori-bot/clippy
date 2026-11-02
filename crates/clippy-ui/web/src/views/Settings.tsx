@@ -166,18 +166,19 @@ export function Settings() {
   return (
     <div className="mx-auto max-w-[860px]">
       <h1 className="heading-lg mb-1">Paramètres</h1>
-      <p className="mb-3 text-sm text-secondary">
+      <p className="text-sm text-secondary">
         Les modifications s’appliquent au prochain clip. Certaines demandent de réactiver le replay, et Clippy indique lesquelles.
       </p>
 
       {/* Sticky at the top of the scrollport, the re-arm notice parked just
           under it: the page is long and the headings are its only landmarks.
           Opaque, so the page does not show through -- including the strip above
-          it: sticky `top-0` sits below <main>'s 24 px padding (`py-6`), so the `before`
-          covers that strip. */}
+          it: it sticks 24 px up, into <main>'s padding (`py-6`), and its own
+          `pt-6` fills that strip. (A `before` cover reaching above the bar hid
+          the end of the intro text before anything was scrolled.) */}
       <nav
         aria-label="Sections des paramètres"
-        className="sticky top-0 z-[4] mb-3.5 flex min-h-9 flex-wrap items-center gap-1 border-b border-subtle bg-surface-tertiary before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-surface-tertiary"
+        className="sticky -top-6 z-[4] mb-3.5 flex min-h-[52px] flex-wrap items-center gap-1 border-b border-subtle bg-surface-tertiary pt-4"
       >
         {SECTIONS.map((section) => (
           <button
@@ -195,7 +196,7 @@ export function Settings() {
         // Sticky: the keys that need a re-arm are scattered down a long page,
         // so a notice at the top of the document would have to be scrolled
         // back to. Nothing between here and <main> sets transform/filter.
-        <div className="sticky top-9 z-[3] mb-4 bg-surface-tertiary pb-1">
+        <div className="sticky top-7 z-[3] mb-4 bg-surface-tertiary pb-1">
           <Alert
             color="success"
             variant="soft"
