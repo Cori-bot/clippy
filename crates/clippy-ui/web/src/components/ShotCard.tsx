@@ -30,7 +30,8 @@ export function ShotCard({
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   // The thumbnail, falling back to the full image when its encode failed.
   const [full, setFull] = useState(false);
-  const src = !dir ? '' : full ? shotUrl(dir, shot.id) : shotThumbUrl(dir, shot.id);
+  const cache = a.cacheDir;
+  const src = !dir ? '' : full || !cache ? shotUrl(dir, shot.id) : shotThumbUrl(cache, shot.id);
 
   function onContextMenu(e: MouseEvent) {
     e.preventDefault();

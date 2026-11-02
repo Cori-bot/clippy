@@ -21,9 +21,8 @@ describe('screenshot URLs', () => {
     expect(shotUrl('D:\\Videos\\Clippy', '20260827_143012')).toBe(
       'D:\\Videos\\Clippy\\Screenshots\\20260827_143012.jpg',
     );
-    expect(shotThumbUrl('D:\\Videos\\Clippy', '20260827_143012')).toBe(
-      'D:\\Videos\\Clippy\\Screenshots\\20260827_143012.thumb.jpg',
-    );
+    // The grid thumbnail is in the library cache, so the folder keeps images only.
+    expect(shotThumbUrl('C:\\cache\\', '20260827_143012')).toBe('C:\\cache\\shots\\20260827_143012.jpg');
   });
 
   it('strips a trailing separator, including on a drive root', () => {

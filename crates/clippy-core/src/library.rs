@@ -271,7 +271,7 @@ pub fn scan(dir: &Path) -> Result<Vec<ClipMeta>> {
 /// `Finalize`. Anything that does not start with `ftyp` is not judged (a
 /// hand-dropped file is adopted as before), and a read error counts as
 /// finished: hiding a clip is the worse mistake.
-fn unfinished_mp4(path: &Path) -> bool {
+pub(crate) fn unfinished_mp4(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut file) = std::fs::File::open(path) else { return false };
     let Ok(len) = file.metadata().map(|m| m.len()) else { return false };

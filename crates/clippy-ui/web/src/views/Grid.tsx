@@ -454,6 +454,7 @@ export function Grid() {
                 <ClipCard
                   clip={clip}
                   clipDir={a.clipDir}
+                  cacheDir={a.cacheDir}
                   selected={index === a.selected}
                   selectable={selecting}
                   checked={checked.has(clip.id)}

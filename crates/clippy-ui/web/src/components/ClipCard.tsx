@@ -3,7 +3,7 @@ import { Menu } from '@openai/apps-sdk-ui/components/Menu';
 import { Button } from '@openai/apps-sdk-ui/components/Button';
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox';
 import { Input } from '@openai/apps-sdk-ui/components/Input';
-import { formatBytes, formatDuration, thumbUrl } from '../lib/clips';
+import { clipUrl, formatBytes, formatDuration, thumbUrl } from '../lib/clips';
 import type { ClipMeta } from '../lib/types';
 import { Copy, Dots, Folder, Pencil, Star, StarFilled, Trash } from './icons';
 
@@ -14,6 +14,7 @@ type ItemId = 'favorite' | 'rename' | 'copy' | 'reveal' | 'delete';
 export function ClipCard({
   clip,
   clipDir,
+  cacheDir = '',
   selected = false,
   selectable = false,
   checked = false,
@@ -27,6 +28,8 @@ export function ClipCard({
 }: {
   clip: ClipMeta;
   clipDir: string;
+  /** The library cache the thumbnail is read from; empty falls back to the video. */
+  cacheDir?: string;
   selected?: boolean;
   selectable?: boolean;
   checked?: boolean;
@@ -38,6 +41,7 @@ export function ClipCard({
   onreveal: () => void;
   ondelete: () => void;
 }) {
+  const [noThumb, setNoThumb] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   /** Where the card was right-clicked, while its right-click menu is open. */
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
@@ -157,16 +161,29 @@ export function ClipCard({
         className={`thumb relative aspect-[16/10] cursor-pointer overflow-hidden rounded-xl border-0 bg-surface-secondary p-0 transition-shadow duration-200 ${EASE} active:scale-[0.99] ${ringShadow}`}
         aria-label={clip.title}
         onClick={(event) => onselect(event)}>
-        <img
-          className="block size-full object-cover"
-          src={thumbUrl(clipDir, clip)}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          // A clip can exist before its thumbnail does (a still desktop sends no
-          // frame to stage one); show the empty tile, not a broken-image glyph.
-          onError={(e) => (e.currentTarget.style.visibility = 'hidden')}
-        />
+        {cacheDir && !noThumb ? (
+          <img
+            className="block size-full object-cover"
+            src={thumbUrl(cacheDir, clip)}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            // No thumbnail (a still desktop sent no frame, or the cache was
+            // cleared): the video's own frame takes its place.
+            onError={() => setNoThumb(true)}
+          />
+        ) : (
+          <video
+            className="pointer-events-none block size-full object-cover"
+            src={`${clipUrl(clipDir, clip)}#t=1`}
+            preload="metadata"
+            muted
+            playsInline
+            tabIndex={-1}
+            aria-hidden="true"
+            onError={(e) => (e.currentTarget.style.visibility = 'hidden')}
+          />
+        )}
         <span className="absolute right-1.5 bottom-1.5 rounded-sm bg-black/70 px-1.5 py-px text-[10px] text-white tabular-nums">
           {formatDuration(clip.duration_ms)}
         </span>

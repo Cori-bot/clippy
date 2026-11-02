@@ -619,11 +619,19 @@ fn write_clip(snapshot: &ClipSnapshot, path: &Path) -> Result<()> {
     muxer.finish()
 }
 
-/// What one save produced: the metadata that goes on the wire and on disk,
-/// plus the numbers only the console line cares about.
-pub(crate) struct SavedClip {
+/// What one save produced: the clip's file and metadata, its thumbnail for the
+/// library cache, plus the numbers only the console line cares about.
+///
+/// The clips folder gets the `.mp4` and nothing else; recording the clip in
+/// the library index ([`crate::store`]) is the caller's job.
+#[derive(Debug, Clone)]
+pub struct SavedClip {
+    /// `meta.id` is the clip's stamp; the index may file it under the next
+    /// free one.
     pub meta: ClipMeta,
     pub path: PathBuf,
+    /// JPEG, when a frame arrived in time.
+    pub thumb: Option<Vec<u8>>,
     pub audio_secs: f64,
     pub packets: usize,
     pub mux_ms: u128,
@@ -698,19 +706,21 @@ fn save_clip(
     );
     let Some(snapshot) = snapshot? else { return Ok(None) };
 
-    // `allocate_clip_id` reserves the name by creating the .mp4 empty, so no
-    // other saver -- or export -- can be handed the same wall-clock id. That
+    // `reserve_clip_file` reserves the name by creating the .mp4 empty, so no
+    // other saver -- or export -- can be handed the same file name. That
     // makes the file ours: `write_clip` overwrites it (`ClipMuxer::new` goes
     // through `MFCreateSinkWriterFromURL`, which creates *and* truncates), and
     // if the mux fails we take the reservation back down with us rather than
     // leaving a zero-byte .mp4 sitting on an id.
     // The clip's own directory: the clips folder, or the game's sub-folder.
-    // `allocate_clip_id_in` creates it and refuses a name that is not one safe
+    // `folder_dir` refuses a folder name that is not one safe
     // path component, so a hostile game name cannot place a clip elsewhere.
-    let id = library::allocate_clip_id_in(clip_dir, folder)?;
+    // Named the way a person would ("VALORANT 2026-11-02 14-27-22.mp4"); the
+    // id stays the stamp, kept in the library index rather than the name.
+    let id = library::now_id_stamp();
     let clip_dir = &library::folder_dir(clip_dir, folder)
         .ok_or_else(|| anyhow!("nom de dossier de clips invalide : {folder:?}"))?;
-    let path = library::mp4_path(clip_dir, &id);
+    let path = crate::store::reserve_clip_file(clip_dir, &crate::store::new_clip_stem(game, folder, &id))?;
     if let Err(e) = write_clip(&snapshot, &path) {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
@@ -745,17 +755,10 @@ fn save_clip(
         std::thread::sleep(Duration::from_millis(10));
     };
 
+    let mut thumb_jpeg = None;
     if let Some(staged) = staged {
         match thumb::encode_jpeg(&staged.bgra, staged.width, staged.height, staged.stride) {
-            Ok(jpeg) => {
-                let thumb_path = library::thumb_path(clip_dir, &id);
-                match std::fs::write(&thumb_path, &jpeg) {
-                    Ok(()) => tracing::debug!(clip = %id, bytes = jpeg.len(), "thumbnail written"),
-                    Err(e) => {
-                        tracing::warn!(path = %thumb_path.display(), %e, "thumbnail not written")
-                    }
-                }
-            }
+            Ok(jpeg) => thumb_jpeg = Some(jpeg),
             Err(e) => tracing::warn!(error = %format!("{e:#}"), "thumbnail encode failed"),
         }
     } else {
@@ -772,7 +775,7 @@ fn save_clip(
 
     let meta = ClipMeta {
         id: id.clone(),
-        title: format!("clip_{id}"),
+        title: path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         created: library::now_rfc3339_local(),
         duration_ms: (video_100ns / 10_000).max(0) as u64,
         bytes,
@@ -786,17 +789,12 @@ fn save_clip(
         game: game.to_string(),
         folder: folder.to_string(),
     };
-    // A clip with no sidecar is still a clip — the next scan adopts it — so a
-    // sidecar failure is logged, not propagated over the freshly written MP4.
-    if let Err(e) = library::write_sidecar(clip_dir, &meta) {
-        tracing::warn!(clip = %id, error = %format!("{e:#}"), "clip saved without a sidecar");
-    }
-
     tracing::debug!(clip = %id, bytes, "clip written");
 
     Ok(Some(SavedClip {
         meta,
         path,
+        thumb: thumb_jpeg,
         audio_secs,
         packets: snapshot.video.len(),
         mux_ms: started.elapsed().as_millis(),
@@ -810,7 +808,11 @@ fn save_clip(
 /// on the same [`THUMB_STAGE_WAIT`] budget. Nothing is retained speculatively:
 /// a screenshot costs one staged frame at the moment it is asked for, and
 /// nothing at all the rest of the time.
-fn take_screenshot(capture: &CaptureHandle<ReplaySession>, clip_dir: &Path) -> Result<ShotMeta> {
+fn take_screenshot(
+    capture: &CaptureHandle<ReplaySession>,
+    clip_dir: &Path,
+    thumbs: Option<&Path>,
+) -> Result<ShotMeta> {
     let callback = capture.sink();
     callback.lock().request_thumbnail();
 
@@ -831,7 +833,7 @@ fn take_screenshot(capture: &CaptureHandle<ReplaySession>, clip_dir: &Path) -> R
         bail!("aucune image reçue en {THUMB_STAGE_WAIT:?} — l’écran est-il figé\u{a0}?");
     };
 
-    let meta = write_screenshot(&shot::shots_dir(clip_dir), &staged)?;
+    let meta = write_screenshot(&shot::shots_dir(clip_dir), thumbs, &staged)?;
 
     // The clipboard lives here rather than inside `write_screenshot`, and the
     // reason is the test suite: `write_screenshot` is the part a unit test
@@ -847,12 +849,13 @@ fn take_screenshot(capture: &CaptureHandle<ReplaySession>, clip_dir: &Path) -> R
     Ok(meta)
 }
 
-/// Encodes an already-staged frame and writes both files.
+/// Encodes an already-staged frame and writes it, plus its grid thumbnail in
+/// `thumbs` when given.
 ///
 /// Split from [`take_screenshot`] so everything below the capture session is
 /// testable without hardware — and so the tested half touches no machine
 /// state beyond the scratch directory it is given.
-fn write_screenshot(shots: &Path, staged: &StagedFrame) -> Result<ShotMeta> {
+fn write_screenshot(shots: &Path, thumbs: Option<&Path>, staged: &StagedFrame) -> Result<ShotMeta> {
     // Encoded *before* the id is reserved, so an encode that fails leaves no
     // zero-byte reservation behind for `scan` to skip forever.
     let full = thumb::encode_jpeg_sized(
@@ -876,14 +879,15 @@ fn write_screenshot(shots: &Path, staged: &StagedFrame) -> Result<ShotMeta> {
 
     // Everything from here is a nicety over a screenshot already safely on
     // disk, and none of it may become an error the user sees.
-    match thumb::encode_jpeg(&staged.bgra, staged.width, staged.height, staged.stride) {
-        Ok(jpeg) => {
-            let path = shot::thumb_path(shots, &id);
-            if let Err(e) = std::fs::write(&path, &jpeg) {
+    match thumbs.map(|dir| (dir, thumb::encode_jpeg(&staged.bgra, staged.width, staged.height, staged.stride))) {
+        None => {}
+        Some((dir, Ok(jpeg))) => {
+            let path = dir.join(format!("{id}.jpg"));
+            if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, &jpeg)) {
                 tracing::warn!(shot = %id, path = %path.display(), %e, "screenshot thumbnail not written");
             }
         }
-        Err(e) => tracing::warn!(error = %format!("{e:#}"), "screenshot thumbnail encode failed"),
+        Some((_, Err(e))) => tracing::warn!(error = %format!("{e:#}"), "screenshot thumbnail encode failed"),
     }
 
     let bytes = std::fs::metadata(&image).map(|m| m.len()).unwrap_or(0);
@@ -1238,10 +1242,10 @@ fn run_session(
                     }
                 }
                 // The hotkey forwarder drops its receiver; the daemon reads it.
-                let _ = reply.send(result.map(|opt| opt.map(|saved| saved.meta)));
+                let _ = reply.send(result);
             }
-            Ok(EngineCommand::Screenshot { reply }) => {
-                let result = take_screenshot(&capture, &clip_dir);
+            Ok(EngineCommand::Screenshot { reply, thumbs }) => {
+                let result = take_screenshot(&capture, &clip_dir, thumbs.as_deref());
                 if let Err(e) = &result {
                     tracing::warn!(error = %format!("{e:#}"), "screenshot failed");
                 }
@@ -1404,10 +1408,12 @@ mod tests {
         let stride = 20usize;
         let staged = StagedFrame { bgra: vec![255u8; stride * 2], width: 4, height: 2, stride };
 
-        let meta = write_screenshot(&shots, &staged).expect("screenshot written");
+        let cache = clips.join("cache");
+        let meta = write_screenshot(&shots, Some(&cache), &staged).expect("screenshot written");
 
         assert!(crate::shot::image_path(&shots, &meta.id).exists(), "the full-size image");
-        assert!(crate::shot::thumb_path(&shots, &meta.id).exists(), "the grid thumbnail");
+        assert!(cache.join(format!("{}.jpg", meta.id)).exists(), "the grid thumbnail, in the cache");
+        assert_eq!(std::fs::read_dir(&shots).unwrap().count(), 1, "nothing but the image beside it");
         assert_eq!((meta.width, meta.height), (4, 2));
         assert!(meta.bytes > 0, "bytes must come off the file, not be assumed");
         assert_eq!(meta.created, crate::library::created_from_id(&meta.id));

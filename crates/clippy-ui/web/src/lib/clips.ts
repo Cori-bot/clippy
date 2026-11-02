@@ -1,29 +1,27 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { ClipMeta } from './types';
 
+/** What locates a clip's files: its id, its file name (the title) and the
+ * sub-folder it lives in. */
+export type ClipRef = Pick<ClipMeta, 'id' | 'folder' | 'title'>;
+
 /**
- * Every sidecar is the id plus a suffix, in the clip's folder.
- *
- * The trailing separator is stripped first because `clip_dir` is a config key
- * a person types. A drive root (`D:\`) has one by necessity and a hand-typed
- * path often picks one up, and either produced `D:\\20260726_143012.jpg` —
- * which can miss the asset-scope glob Tauri builds from the same directory, and
- * then every thumbnail in the grid is a broken image with nothing logged and
- * nothing on screen to say why. `D:\` strips to `D:`, which rejoins to
- * `D:\<id>.jpg`, so the drive root stays correct rather than becoming a special
- * case.
+ * Strips the trailing separator a typed path (or a drive root, `D:\`) carries:
+ * a doubled one can miss the asset-scope glob Tauri builds from the same
+ * directory, and then every image is broken with nothing logged.
  */
-function clipFile(clipDir: string, clip: ClipRef, ext: string): string {
-  return siblingFile(clipDir, clip, `${clip.id}.${ext}`);
+function trimDir(dir: string): string {
+  return dir.replace(/[\\/]+$/, '');
 }
 
-/** What locates a clip's files: its id and the sub-folder it lives in. */
-export type ClipRef = Pick<ClipMeta, 'id' | 'folder'>;
-
-/** `name` inside the clip's folder (the clips folder itself when it has none). */
-function siblingFile(clipDir: string, clip: ClipRef, name: string): string {
-  const base = clipDir.replace(/[\\/]+$/, '');
+/**
+ * The clip's own file: its title is its name, in its folder ("VALORANT
+ * 2026-11-02 14-27-22.mp4"). The folder holds the videos and nothing else.
+ */
+function clipFile(clipDir: string, clip: ClipRef): string {
+  const base = trimDir(clipDir);
   const folder = (clip.folder ?? '').replace(/^[\\/]+|[\\/]+$/g, '');
+  const name = `${clip.title}.mp4`;
   return folder ? `${base}\\${folder}\\${name}` : `${base}\\${name}`;
 }
 
@@ -36,16 +34,18 @@ function siblingFile(clipDir: string, clip: ClipRef, name: string): string {
  * webview before the first frame.
  */
 export function clipUrl(clipDir: string, clip: ClipRef): string {
-  return convertFileSrc(clipFile(clipDir, clip, 'mp4'));
+  return convertFileSrc(clipFile(clipDir, clip));
 }
 
-export function thumbUrl(clipDir: string, clip: ClipRef): string {
-  return convertFileSrc(clipFile(clipDir, clip, 'jpg'));
+/** The grid thumbnail, kept in the library cache (`status.cache_dir`). */
+export function thumbUrl(cacheDir: string, clip: Pick<ClipMeta, 'id'>): string {
+  return convertFileSrc(`${trimDir(cacheDir)}\\thumbs\\${clip.id}.jpg`);
 }
 
-/** A per-track audio file the daemon remuxed next to the clip. */
-export function trackUrl(clipDir: string, clip: ClipRef, file: string): string {
-  return convertFileSrc(siblingFile(clipDir, clip, file));
+/** A per-track audio file the daemon extracted; `library.tracks` gives its
+ * absolute path in the library cache. */
+export function trackUrl(file: string): string {
+  return convertFileSrc(file);
 }
 
 export function formatDuration(ms: number): string {

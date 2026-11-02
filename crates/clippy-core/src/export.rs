@@ -767,6 +767,42 @@ pub fn audio_track_count(source: &Path) -> Result<usize> {
     Ok(audio_stream_indices(&open_reader(source)?)?.len())
 }
 
+/// What an MP4 says about itself: enough to list a clip the library has no
+/// record of (dropped in by hand, or its record lost). Reads the headers only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Probe {
+    pub duration_ms: u64,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub audio_tracks: usize,
+}
+
+pub fn probe(source: &Path) -> Result<Probe> {
+    use windows::Win32::Media::MediaFoundation::{
+        MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_PD_DURATION, MF_SOURCE_READER_MEDIASOURCE,
+    };
+    let reader = open_reader(source)?;
+    let duration = unsafe {
+        reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE.0 as u32, &MF_PD_DURATION)
+    }
+    .context("durée du fichier")?;
+    let duration_100ns = u64::try_from(&duration).unwrap_or(0);
+    let mut found = Probe { duration_ms: duration_100ns / 10_000, ..Probe::default() };
+    if let Ok(video) = unsafe { reader.GetNativeMediaType(video_stream(), 0) } {
+        let split = |packed: u64| ((packed >> 32) as u32, packed as u32);
+        if let Ok(size) = unsafe { video.GetUINT64(&MF_MT_FRAME_SIZE) } {
+            (found.width, found.height) = split(size);
+        }
+        if let Ok(rate) = unsafe { video.GetUINT64(&MF_MT_FRAME_RATE) } {
+            let (num, den) = split(rate);
+            found.fps = if den == 0 { 0 } else { (f64::from(num) / f64::from(den)).round() as u32 };
+        }
+    }
+    found.audio_tracks = audio_stream_indices(&reader)?.len();
+    Ok(found)
+}
+
 /// A reader that delivers only `stream`, compressed as stored or -- with
 /// `decode` -- decoded to the engine's PCM format.
 fn open_single_stream(source: &Path, stream: u32, decode: bool) -> Result<IMFSourceReader> {

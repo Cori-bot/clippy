@@ -18,4 +18,5 @@ pub mod replay;
 pub mod shot;
 pub mod sound;
 pub mod stats;
+pub mod store;
 pub mod thumb;

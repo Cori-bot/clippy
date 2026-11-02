@@ -349,7 +349,7 @@ export function ClipPage() {
           ref={player}
           frameIndex={frameIndex}
           src={clipUrl(a.clipDir, clip)}
-          trackUrls={separateTracks ? tracks.map((t) => trackUrl(a.clipDir, clip, trackFiles[t.index])) : []}
+          trackUrls={separateTracks ? tracks.map((t) => trackUrl(trackFiles[t.index])) : []}
           trackStates={trackStates}
           onTime={setPlayheadMs}
           verticalCenter={verticalCenter}
@@ -408,7 +408,7 @@ export function ClipPage() {
           timeline={(playerDurationMs) => (
             <Timeline
               src={clipUrl(a.clipDir, clip)}
-              trackUrls={waveTracks.map((t) => trackUrl(a.clipDir, clip, trackFiles[t.index]))}
+              trackUrls={waveTracks.map((t) => trackUrl(trackFiles[t.index]))}
               trackNames={waveTracks.map(t => t.name)}
               durationMs={canTrim ? mode === 'precise' && frameIndex ? frameIndex.end_100ns / 10000 : clip.duration_ms : playerDurationMs}
               trimmable={canTrim}

@@ -30,6 +30,7 @@ use clippy_core::{
     engine::EngineHandle,
     engine::EngineStatus,
     export, library, shot, stats,
+    store::Store,
 };
 use clippy_proto::{ClipMeta, Event, ShotMeta};
 use serde_json::{Map, Value};
@@ -99,6 +100,9 @@ pub struct DaemonStatus {
     pub ring_seconds_used: f64,
     pub ring_seconds_total: u32,
     pub clip_dir: String,
+    /// The library cache: `thumbs`, `tracks` and `shots` under it hold the
+    /// thumbnails and editor audio kept out of the clips folder.
+    pub cache_dir: String,
     /// Whether the clip combination is actually listening — `None` until the
     /// pump has tried, which is a real answer and not a defaulted one.
     ///
@@ -152,6 +156,7 @@ impl DaemonStatus {
         fields.insert("ring_seconds_total".to_string(), Value::from(self.ring_seconds_total));
         fields.insert("version".to_string(), Value::from(env!("CARGO_PKG_VERSION")));
         fields.insert("clip_dir".to_string(), Value::from(self.clip_dir.as_str()));
+        fields.insert("cache_dir".to_string(), Value::from(self.cache_dir.as_str()));
         // `null` for "not tried yet", the same three-way shape `encoder` above
         // already uses, and for the same reason: a client must be able to tell
         // "no" from "not known", because only one of them is worth telling the
@@ -226,81 +231,54 @@ pub struct LibraryPage {
 mod clip_paths {
     use std::path::{Path, PathBuf};
 
-    use anyhow::{Result, bail};
-    use clippy_core::library;
+    use anyhow::{Context as _, Result, bail};
+    use clippy_core::{library, store::Store};
 
     /// Already-built, already-validated paths for one clip id.
     ///
-    /// The only way anywhere in this crate to end up holding one of these is
-    /// [`ClipPaths::for_id`], which calls `library::is_valid_id` before it
-    /// builds a single path. So holding a `ClipPaths` *is* the proof that the
-    /// id it came from passed validation — a method that wants a clip's
-    /// `.mp4`, sidecar, or thumbnail path has to call `for_id` and use the
-    /// accessors below, and cannot get there by calling `library::mp4_path`
-    /// (or its siblings) directly, because there is no other route to a path
-    /// this type will hand out. Those `library` functions are still `pub` and
-    /// still validate nothing on their own — that has not changed, and could
-    /// not without touching `clippy-core`, which is out of scope here — but a
-    /// caller now has to go out of its way to reach them instead of through
-    /// this door.
+    /// The only way to get one is [`ClipPaths::for_id`], which checks the id
+    /// before building a single path and finds the clip's file in the library
+    /// index: the file is named freely ("VALORANT 2026-11-02 14-27-22.mp4"),
+    /// so its path comes from the record, never from the id. The thumbnail and
+    /// the editor's audio live in the library cache.
     pub struct ClipPaths {
-        dir: PathBuf,
+        id: String,
         mp4: PathBuf,
-        sidecar: PathBuf,
-        thumb: PathBuf,
+        store: Store,
     }
 
     impl ClipPaths {
-        /// The one and only constructor. Validates `id` first; builds nothing
-        /// if it is not a valid clip id, so a rejected id has caused no I/O
-        /// and produced no path at all.
-        pub(super) fn for_id(dir: PathBuf, id: &str) -> Result<Self> {
+        pub(super) fn for_id(store: &Store, id: &str) -> Result<Self> {
             if !library::is_valid_id(id) {
                 bail!("{id:?} n’est pas un identifiant de clip valide");
             }
-            Ok(Self {
-                mp4: library::mp4_path(&dir, id),
-                sidecar: library::sidecar_path(&dir, id),
-                thumb: library::thumb_path(&dir, id),
-                dir,
-            })
+            let entry = store.entry(id).with_context(|| format!("clip {id} introuvable"))?;
+            Ok(Self { id: id.to_string(), mp4: entry.path, store: store.clone() })
         }
 
-        /// The clip directory itself — needed by `edit_meta`, which hands it
-        /// to `library::write_sidecar` (that function derives the sidecar
-        /// path internally, so it wants the directory, not a pre-built path).
+        /// The folder the clip's file is in.
         pub(super) fn dir(&self) -> &Path {
-            &self.dir
+            self.mp4.parent().unwrap_or(Path::new(""))
         }
 
         pub(super) fn mp4(&self) -> &Path {
             &self.mp4
         }
 
-        pub(super) fn sidecar(&self) -> &Path {
-            &self.sidecar
-        }
-
-        pub(super) fn thumb(&self) -> &Path {
-            &self.thumb
+        pub(super) fn thumb(&self) -> PathBuf {
+            self.store.thumb(&self.id)
         }
 
         pub(super) fn track_cache(&self) -> PathBuf {
-            self.dir.join(library::TRACK_CACHE_DIR)
+            self.store.tracks_dir()
         }
 
-        /// Editor derivatives stay separate from the user's master MP4s.
         pub(super) fn track(&self, ordinal: usize) -> PathBuf {
-            self.track_cache()
-                .join(self.mp4.with_extension(format!("t{ordinal}.m4a")).file_name().unwrap())
-        }
-
-        pub(super) fn legacy_track(&self, ordinal: usize) -> PathBuf {
-            self.mp4.with_extension(format!("t{ordinal}.m4a"))
+            self.store.track(&self.id, ordinal)
         }
 
         pub(super) fn track_partial(&self, ordinal: usize) -> PathBuf {
-            self.track(ordinal).with_extension("part.m4a")
+            self.store.track_partial(&self.id, ordinal)
         }
     }
 }
@@ -538,6 +516,8 @@ pub struct Daemon {
     /// The library, scanned once at startup and updated incrementally.
     /// `library.list` never touches the disk after that (spec §5.2).
     pub library: Mutex<Vec<ClipMeta>>,
+    /// The library index and caches, outside the clips folder.
+    store: Store,
     /// The capture levels, owned for the daemon's whole lifetime and cloned
     /// into each armed session.
     ///
@@ -584,9 +564,9 @@ pub struct Daemon {
 /// path that actually runs, without a benchmark harness that would measure
 /// something else. `elapsed_ms` is an integer field rather than a formatted
 /// `Duration` so the answer can be grepped straight out of the daemon log.
-fn scan_and_log(dir: &Path) -> Result<Vec<ClipMeta>> {
+fn scan_and_log(dir: &Path, store: &Store) -> Result<Vec<ClipMeta>> {
     let started = std::time::Instant::now();
-    let clips = library::scan_all(dir)?;
+    let clips = clippy_core::store::scan_all(dir, store)?;
     tracing::info!(
         clips = clips.len(),
         elapsed_ms = started.elapsed().as_millis() as u64,
@@ -703,9 +683,21 @@ impl Daemon {
                 "the clip directory is not usable yet; arming will refuse until it is"
             );
         }
+        // The user's index under %APPDATA%; a test's beside its scratch config;
+        // with no config at all, a private scratch one, so nothing reaches the
+        // user's.
+        let store = match &config_path {
+            Some(path) if Config::path().as_ref() == Some(path) => Store::for_user().unwrap_or_else(|| Store::beside(path)),
+            Some(path) => Store::beside(path),
+            None => {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Store::beside(&std::env::temp_dir().join(format!("clippy-store-{}-{n}", std::process::id())).join("config.toml"))
+            }
+        };
         // One scan, at startup. A failure here is not fatal: an unreadable clip
         // directory must not stop the daemon from arming and capturing.
-        let library = match scan_and_log(&clip_dir) {
+        let library = match scan_and_log(&clip_dir, &store) {
             Ok(clips) => clips,
             Err(e) => {
                 tracing::warn!(
@@ -729,6 +721,7 @@ impl Daemon {
             clients: Arc::new(Clients::default()),
             armed: Mutex::new(None),
             library: Mutex::new(library),
+            store,
             gains,
             game: Mutex::new(GameWatch::default()),
             games: Mutex::new(registry),
@@ -1161,6 +1154,7 @@ impl Daemon {
             };
             state.engine.clip_in(place)?
         };
+        let saved = saved.map(|saved| self.file_saved_clip(saved));
         if let Some(meta) = &saved {
             // The one path the chime belongs to: something was captured off
             // the live ring, and the user may well be mid-game with no window
@@ -1168,6 +1162,21 @@ impl Daemon {
             self.record_saved_clip(meta, PlaySound::Yes);
         }
         Ok(saved)
+    }
+
+    /// Records a clip the engine just wrote in the library index, and its
+    /// thumbnail in the cache. A record that will not write costs the clip's
+    /// track names, not the clip: the next scan adopts the file.
+    fn file_saved_clip(&self, saved: clippy_core::engine::SavedClip) -> ClipMeta {
+        let mut meta = saved.meta;
+        match self.store.insert(&meta, &saved.path) {
+            Ok(id) => meta.id = id,
+            Err(e) => tracing::warn!(clip = %meta.id, error = %format!("{e:#}"), "clip saved without a library record"),
+        }
+        if let Some(jpeg) = &saved.thumb {
+            self.store.write_thumb(&meta.id, jpeg);
+        }
+        meta
     }
 
     /// Watches `region` of the live picture (None stops) and returns its
@@ -1196,7 +1205,7 @@ impl Daemon {
             let Some(state) = armed.as_ref() else {
                 bail!("le replay n’est pas activé — activez-le pour prendre une capture d’écran");
             };
-            state.engine.screenshot()?
+            state.engine.screenshot(Some(self.store.shots_dir()))?
         };
         // After the `armed` lock is released, mirroring `record_saved_clip`
         // below: Task 7's hotkey path calls this function directly, the same
@@ -1231,7 +1240,15 @@ impl Daemon {
     }
 
     pub fn shots_delete(&self, id: &str) -> Result<()> {
-        shot::delete(&shot::shots_dir(&self.clip_dir()), id)
+        shot::delete(&shot::shots_dir(&self.clip_dir()), id)?;
+        let _ = std::fs::remove_file(self.store.shot_thumb(id));
+        Ok(())
+    }
+
+    /// The library cache (`thumbs`, `tracks`, `shots`), for the window to
+    /// read thumbnails from.
+    pub fn cache_dir(&self) -> PathBuf {
+        self.store.cache_dir().to_path_buf()
     }
 
     pub fn shots_reveal(&self, id: &str) -> Result<()> {
@@ -1436,6 +1453,7 @@ impl Daemon {
     fn status_of(&self, armed: Option<&Armed>) -> DaemonStatus {
         let config = self.lock_config();
         let clip_dir = config.clip_dir_path().to_string_lossy().into_owned();
+        let cache_dir = self.store.cache_dir().to_string_lossy().into_owned();
         // Read from the pump rather than carried on `Daemon`: the pump is what
         // binds them and the only thing that knows the outcome, and it is
         // forbidden from calling into `Daemon` to push it here (see
@@ -1469,6 +1487,7 @@ impl Daemon {
                     ring_seconds_used: engine.ring_seconds_used,
                     ring_seconds_total: engine.ring_seconds_total,
                     clip_dir,
+                    cache_dir,
                     clip_hotkey_bound,
                     screenshot_hotkey_bound,
                     waiting_for_game: false,
@@ -1488,6 +1507,7 @@ impl Daemon {
                 ring_seconds_used: 0.0,
                 ring_seconds_total: config.replay_seconds,
                 clip_dir,
+                cache_dir,
                 clip_hotkey_bound,
                 screenshot_hotkey_bound,
                 waiting_for_game: wanted,
@@ -2082,7 +2102,7 @@ impl Daemon {
             let config = self.lock_config();
             (config.clip_dir_path(), config.max_library_gb)
         };
-        match library::prune_to_ceiling(&dir, max_gb) {
+        match clippy_core::store::prune_to_ceiling(&dir, &self.store, max_gb) {
             Ok(removed) if removed.is_empty() => removed,
             Ok(removed) => {
                 self.lock_library().retain(|clip| !removed.contains(&clip.id));
@@ -2109,7 +2129,7 @@ impl Daemon {
     /// than a new code path.
     pub fn rescan_library(&self) -> Result<()> {
         let dir = self.lock_config().clip_dir_path();
-        let clips = scan_and_log(&dir)?;
+        let clips = scan_and_log(&dir, &self.store)?;
         *self.lock_library() = clips;
         Ok(())
     }
@@ -2147,19 +2167,15 @@ impl Daemon {
         }
     }
 
-    /// Removes a clip's `.mp4`, `.json`, and `.jpg`, then drops it from the
-    /// cache.
+    /// Removes a clip's `.mp4`, its record and its cached thumbnail and audio,
+    /// then drops it from the list.
     ///
     /// The `.mp4` is the clip: if it is not there, there is nothing to delete
-    /// and that is an error. The sidecar and the thumbnail are derived files —
-    /// nothing writes a `.jpg` yet, and a sidecar can legitimately be missing
-    /// on an adopted clip — so their absence is not.
+    /// and that is an error — but the record and the row still go, since no
+    /// client could ever name this id again otherwise (the user deleting the
+    /// file in Explorer is exactly how that arises).
     pub fn delete(&self, id: &str) -> Result<()> {
         let paths = self.paths_for(id)?;
-
-        // A missing `.mp4` is still an error, but it is not a reason to stop:
-        // the companion cleanup and the cache eviction below both have to run
-        // either way. See the two comments on those steps.
         let mp4_was_missing = match std::fs::remove_file(paths.mp4()) {
             Ok(()) => false,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
@@ -2167,67 +2183,39 @@ impl Daemon {
                 return Err(e).with_context(|| format!("impossible de supprimer le clip {id}"));
             }
         };
-
-        // The clip is gone whatever happens next, so a stuck sidecar or
-        // thumbnail is logged rather than propagated: reporting a failed delete
-        // for a clip that no longer exists would leave a UI showing a row whose
-        // file it cannot open.
-        //
-        // This runs on the missing-`.mp4` path too, and that is the point. Once
-        // the eviction below drops the row, no client can ever name this id
-        // again — `library.list` reads the cache, and `library::scan` skips a
-        // `.json` with no `.mp4` forever — so anything left here would be
-        // unreachable litter the daemon could never be asked to remove. The
-        // user deleting the `.mp4` in Explorer is exactly how that arises.
-        for path in [paths.sidecar(), paths.thumb()] {
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "the clip was deleted but one of its companion files was not"
-                ),
+        {
+            let _tracks = self.track_files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Err(e) = self.store.forget(id) {
+                tracing::warn!(clip = %id, error = %format!("{e:#}"), "the clip was deleted but its record was not");
             }
         }
-
-        library::remove_track_files(paths.dir(), id);
-
-        // The cache can be stale — the user may have deleted this clip in
-        // Explorer while the daemon kept running. `library.list` still shows it
-        // (cache-only reads are by design, spec §5.2), so without evicting here
-        // the row would be stuck forever: there is no `library.refresh` in this
-        // build, `total` would stay wrong until the daemon restarts, and a
-        // `rename` on the ghost row would happily write an orphan `.json` next
-        // to an `.mp4` that no longer exists. The brief only requires that a
-        // missing `.mp4` be an error, not that the cache entry survive it, so
-        // evicting does not contradict the plan — and
-        // `an_unknown_but_wellformed_id_is_a_clean_error` still holds: that id
-        // was never in the cache, so this is a no-op for it.
         self.lock_library().retain(|clip| clip.id != id);
-
         if mp4_was_missing {
             bail!("clip {id} introuvable dans la bibliothèque")
         }
         Ok(())
     }
 
-    /// Retitles a clip. The file never moves — the id is the filename stem and
-    /// the title is metadata, so renaming cannot collide, cannot break a handle
-    /// an open player is holding, and cannot invalidate the id a client is
-    /// still using in other requests.
+    /// Renames a clip: its title is its file name, so the `.mp4` is renamed
+    /// in its folder. The id does not change, so drafts and selections keyed
+    /// on it survive. Refused when another clip already has the name.
     pub fn rename(&self, id: &str, title: &str) -> Result<ClipMeta> {
         let title = title.trim();
         if title.is_empty() {
             bail!("le titre d’un clip ne peut pas être vide");
         }
-        self.edit_meta(id, |meta| meta.title = title.to_string())
+        let _ = self.paths_for(id)?;
+        let stem = self.store.rename(id, title)?;
+        self.edit_listed(id, |meta| meta.title = stem)
     }
 
-    /// The same write path as [`Daemon::rename`], with the star instead of the
-    /// title.
+    /// The star, kept in the library index.
     pub fn set_favorite(&self, id: &str, favorite: bool) -> Result<ClipMeta> {
-        self.edit_meta(id, |meta| meta.favorite = favorite)
+        let _ = self.paths_for(id)?;
+        self.store
+            .set_favorite(id, favorite)
+            .with_context(|| format!("impossible de mettre à jour le clip {id}"))?;
+        self.edit_listed(id, |meta| meta.favorite = favorite)
     }
 
     /// Shows the clip in Explorer, reusing a window that is already open on
@@ -2334,7 +2322,7 @@ impl Daemon {
         if !matches!(mode, "fast" | "precise") { bail!("mode d’export inconnu : \"{mode}\" ; choisissez \"fast\" ou \"precise\""); }
         let paths = self.paths_for(clip_id)?;
         if !paths.mp4().is_file() { bail!("clip {clip_id} introuvable"); }
-        let meta = library::read_sidecar(paths.sidecar())?;
+        let meta = self.source_meta(clip_id, paths.mp4())?;
         Self::export_range(meta.duration_ms, start_ms, end_ms, mode)?;
         Ok(())
     }
@@ -2376,10 +2364,9 @@ impl Daemon {
         if !paths.mp4().is_file() {
             bail!("clip {clip_id} introuvable");
         }
-        // The source sidecar supplies dimensions, nominal fps and the duration
-        // against which the requested range is validated.
-        let source_meta = library::read_sidecar(paths.sidecar())
-            .with_context(|| format!("{clip_id} has no readable metadata"))?;
+        // The source's record supplies dimensions, nominal fps and the
+        // duration against which the requested range is validated.
+        let source_meta = self.source_meta(clip_id, paths.mp4())?;
         let (start_ms, end_ms) = Self::export_range(source_meta.duration_ms, start_ms, end_ms, mode)?;
 
         // Validate before reserving a destination: a refused track choice
@@ -2402,31 +2389,23 @@ impl Daemon {
             None => None,
         };
 
+        // Next to the clip it was cut from, named after it: "VALORANT
+        // 2026-11-02 14-27-22 (découpé).mp4".
         let dir = paths.dir();
-        // Same folder as the source, found from the directory the source was
-        // resolved to, so the new clip sits next to the one it was cut from.
-        let root = self.lock_config().clip_dir_path();
-        let folder = dir
-            .strip_prefix(&root)
-            .ok()
-            .and_then(|rel| rel.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let new_id = library::allocate_clip_id_in(&root, &folder)?;
-        // The destination goes through the same sealed constructor as the
-        // source, over the *same* directory. `allocate_clip_id` returns an id
-        // `is_valid_id` accepts, so this cannot fail in practice — but routing
-        // it through `ClipPaths` anyway keeps that type the only thing in this
-        // crate that ever turns an id into a clip path, which is the whole
-        // point of the seal. Reusing `dir` rather than re-reading the config
-        // also means a `config.set` landing mid-export cannot allocate an id
-        // against one folder and write the file into another.
-        let new_paths = ClipPaths::for_id(dir.to_path_buf(), &new_id)?;
+        let title = match (shaping.size_limit_mb, shaping.vertical_center.is_some()) {
+            (Some(mb), true) => format!("{} (9:16, {mb} Mo)", source_meta.title),
+            (Some(mb), false) => format!("{} ({mb} Mo)", source_meta.title),
+            (None, true) => format!("{} (9:16)", source_meta.title),
+            (None, false) => format!("{} (découpé)", source_meta.title),
+        };
+        let stem = clippy_core::store::sanitize_file_stem(&title).unwrap_or_else(|| library::now_id_stamp());
+        let dest = clippy_core::store::reserve_clip_file(dir, &stem)?;
+        let new_id = library::now_id_stamp();
 
-        // `allocate_clip_id` reserved `new_id` by creating the .mp4 empty, so
-        // that a clip taken with the hotkey mid-export cannot be handed the
-        // same wall-clock id and have its footage truncated out from under it.
-        // The reservation is ours, so cleaning it up is ours too.
+        // `reserve_clip_file` claimed `dest` by creating it empty, so that a
+        // clip taken with the hotkey mid-export cannot be handed the same name
+        // and have its footage truncated out from under it. The reservation
+        // is ours, so cleaning it up is ours too.
         //
         // This does *not* violate `export.rs`'s `BeforeCreating` rule, and the
         // distinction is the crux of why it is safe. That rule says: when an
@@ -2442,7 +2421,7 @@ impl Daemon {
         };
         let exported = if mode == "precise" {
             export::export_precise_with_control(export::PreciseExport {
-                source: paths.mp4(), dest: new_paths.mp4(), start_ms, end_ms,
+                source: paths.mp4(), dest: dest.as_path(), start_ms, end_ms,
                 tracks: kept.as_deref(), output: remix_output,
                 size_limit_bytes: shaping.size_limit_mb.map(|mb| u64::from(mb) * 1_000_000),
                 vertical_center: shaping.vertical_center,
@@ -2450,13 +2429,13 @@ impl Daemon {
         } else { match &kept {
             None => export::export_fast_with_control(export::FastExport {
                 source: paths.mp4(),
-                dest: new_paths.mp4(),
+                dest: dest.as_path(),
                 start_ms,
                 end_ms,
             }, control),
             Some(kept) => export::export_remix_with_control(export::RemixExport {
                 source: paths.mp4(),
-                dest: new_paths.mp4(),
+                dest: dest.as_path(),
                 start_ms,
                 end_ms,
                 tracks: kept,
@@ -2469,7 +2448,7 @@ impl Daemon {
                 // `NotFound` is the ordinary case, not a problem: an attempt
                 // that got as far as creating `dest` deletes it on the way out
                 // (the core export cleans up), so there is usually nothing left.
-                match std::fs::remove_file(new_paths.mp4()) {
+                match std::fs::remove_file(dest.as_path()) {
                     Ok(()) => {}
                     Err(remove) if remove.kind() == std::io::ErrorKind::NotFound => {}
                     // Worth a line rather than a silent `let _`: a reservation
@@ -2488,31 +2467,19 @@ impl Daemon {
         };
 
         if control.is_cancelled() {
-            if let Err(error) = std::fs::remove_file(new_paths.mp4()) {
+            if let Err(error) = std::fs::remove_file(dest.as_path()) {
                 if error.kind() != std::io::ErrorKind::NotFound { tracing::warn!(%error, "could not remove cancelled export"); }
             }
             return Err(export::ExportCancelled.into());
         }
 
-        // The source's thumbnail, copied. It is the source's first frame rather
-        // than the trim's, which is wrong in the strict sense — but a grid card
-        // with no image at all reads as a broken clip, and this export has no
-        // decoder to pull the real frame from. Best-effort: a clip without a
-        // preview is still a clip.
-        let _ = std::fs::copy(paths.thumb(), new_paths.thumb());
-
-        let meta = ClipMeta {
+        let mut meta = ClipMeta {
             id: new_id.clone(),
-            title: match (shaping.size_limit_mb, shaping.vertical_center.is_some()) {
-                (Some(mb), true) => format!("{} (9:16, {mb} Mo)", source_meta.title),
-                (Some(mb), false) => format!("{} ({mb} Mo)", source_meta.title),
-                (None, true) => format!("{} (9:16)", source_meta.title),
-                (None, false) => format!("{} (trimmed)", source_meta.title),
-            },
+            title: dest.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
             created: library::now_rfc3339_local(),
             // Measured from written samples, including any boundary snapping.
             duration_ms: outcome.duration_ms,
-            bytes: std::fs::metadata(new_paths.mp4()).map(|m| m.len()).unwrap_or(0),
+            bytes: std::fs::metadata(dest.as_path()).map(|m| m.len()).unwrap_or(0),
             width: outcome.frame_size.map_or(source_meta.width, |(w, _)| w),
             height: outcome.frame_size.map_or(source_meta.height, |(_, h)| h),
             fps: source_meta.fps,
@@ -2528,11 +2495,19 @@ impl Daemon {
             game: source_meta.game.clone(),
             folder: source_meta.folder.clone(),
         };
-        // A sidecar that will not write is not a failed export: the `.mp4` is
-        // on disk and `library::scan` synthesizes metadata for a bare clip, so
-        // the user keeps their trim and loses only its title.
-        if let Err(e) = library::write_sidecar(dir, &meta) {
-            tracing::warn!(clip = %new_id, error = %format!("{e:#}"), "export saved without a sidecar");
+        // A record that will not write is not a failed export: the `.mp4` is
+        // on disk and the next scan adopts it, losing only its track names.
+        match self.store.insert(&meta, &dest) {
+            Ok(id) => meta.id = id,
+            Err(e) => tracing::warn!(clip = %new_id, error = %format!("{e:#}"), "export saved without a record"),
+        }
+        // The source's thumbnail, copied. It is the source's first frame rather
+        // than the trim's, which is wrong in the strict sense — but a grid card
+        // with no image at all reads as a broken clip, and this export has no
+        // decoder to pull the real frame from. Best-effort: the UI falls back to
+        // the video itself.
+        if let Ok(jpeg) = std::fs::read(paths.thumb()) {
+            self.store.write_thumb(&meta.id, &jpeg);
         }
 
         // The same call `Daemon::clip` makes, which is what puts the export
@@ -2582,7 +2557,7 @@ impl Daemon {
 
     /// `library.tracks`: each audio track of a clip as a file of its own, for
     /// the editor to play side by side. Rebuildable derivatives live in the
-    /// reserved cache; the library retains one master MP4 per clip.
+    /// library cache, outside the clips folder.
     pub(crate) fn clip_tracks(&self, clip_id: &str) -> Result<Value> {
         let paths = self.paths_for(clip_id)?;
         if !paths.mp4().is_file() {
@@ -2599,22 +2574,6 @@ impl Daemon {
             self.track_files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         std::fs::create_dir_all(paths.track_cache())
             .context("création du cache audio de l’éditeur")?;
-        // Relocate old derivatives even when the Mix is no longer requested.
-        // Only exact files derived from this validated clip id are touched.
-        for ordinal in 0..count {
-            let legacy = paths.legacy_track(ordinal);
-            if legacy.is_file() {
-                let cached = paths.track(ordinal);
-                if cached.exists() {
-                    std::fs::remove_file(&legacy).with_context(|| {
-                        format!("nettoyage de l’ancienne piste audio {ordinal}")
-                    })?;
-                } else {
-                    std::fs::rename(&legacy, &cached)
-                        .with_context(|| format!("migration de la piste audio {ordinal}"))?;
-                }
-            }
-        }
         let mut out = Vec::new();
         // Mix is already in the MP4 and is not an editable stem.
         let first = usize::from(count > 1);
@@ -2648,11 +2607,8 @@ impl Daemon {
             );
             entry.insert(
                 "file".to_string(),
-                Value::from(format!(
-                    "{}/{}",
-                    library::TRACK_CACHE_DIR,
-                    file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
-                )),
+                // Absolute: the cache is outside the clips folder.
+                Value::from(file.to_string_lossy().into_owned()),
             );
             out.push(Value::Object(entry));
         }
@@ -2662,94 +2618,48 @@ impl Daemon {
         Ok(Value::Object(reply))
     }
 
-    /// The choke point every id-taking command goes through, and — because
-    /// [`ClipPaths`] is sealed in its own submodule and [`ClipPaths::for_id`]
-    /// is the only function anywhere that can build one — genuinely the only
-    /// way to get a clip's paths from an id.
-    ///
-    /// Ids arrive from the socket and are concatenated into filesystem paths,
-    /// so `for_id` validates *before* building any of them: a caller cannot
-    /// get a `ClipPaths` without having passed the check, and a command added
-    /// later cannot forget it without also having nowhere to get one from.
-    /// That is a real, compiler-checked guarantee now, not just a hopeful
-    /// comment — see the `mod clip_paths` doc comment above for why the
-    /// struct had to move into its own module to make it one. It is also not
-    /// a claim that the only way to *touch a clip file* changed:
-    /// `Config::clip_dir_path` and `library::{mp4_path, sidecar_path,
-    /// thumb_path}` are all still `pub` and still validate nothing on their
-    /// own — `status_of`, `new`, and `rescan_library` call `clip_dir_path`
-    /// directly, deliberately, because none of them take an id to validate in
-    /// the first place. What changed is narrower, and stating it precisely
-    /// matters more than stating it strongly: **no path a `ClipPaths` hands
-    /// out can have come from an unvalidated id**, and no code in this crate
-    /// currently reaches a clip file by any other route. Someone determined
-    /// could still write `library::mp4_path(&self.lock_config().clip_dir_path(),
-    /// id)` in two lines and it would compile — the seal makes the safe road
-    /// the obvious one and the unsafe road a visible detour, which is what a
-    /// compiler can buy here. It does not make the unsafe road impossible. The
-    /// check itself is `clippy_core::library::is_valid_id` — a whitelist of
-    /// digits and underscores, which cannot express `..`, a separator, a
-    /// drive letter, or a UNC prefix — and nothing here touches the disk, so
-    /// a rejected id has caused no I/O at all.
+    /// The choke point every id-taking command goes through: [`ClipPaths`] is
+    /// sealed in its own submodule and [`ClipPaths::for_id`] — which validates
+    /// the id with `library::is_valid_id` before anything else, then takes the
+    /// file from the library index — is the only way to build one. No path it
+    /// hands out can have come from the request itself.
     fn paths_for(&self, id: &str) -> Result<ClipPaths> {
-        let root = self.lock_config().clip_dir_path();
-        // The folder comes from the cache -- our own scan of the disk, which
-        // only ever lists valid folder names -- never from the request. An
-        // unknown id looks in the clips folder itself, as it always did.
-        let folder = self
-            .lock_library()
-            .iter()
-            .find(|clip| clip.id == id)
-            .map(|clip| clip.folder.clone())
-            .unwrap_or_default();
-        let dir = library::folder_dir(&root, &folder)
-            .with_context(|| format!("le dossier {folder:?} du clip {id} n’est pas valide"))?;
-        ClipPaths::for_id(dir, id)
+        ClipPaths::for_id(&self.store, id)
     }
 
-    /// Disk first, then cache. Shared by `rename` and `set_favorite` so the two
-    /// cannot drift on validation, on ordering, or on what a failed write
-    /// leaves behind.
-    ///
-    /// The lock is taken twice — once to copy the entry out, once to put the
-    /// edited one back — rather than held across `write_sidecar`, so a slow or
-    /// hung disk cannot block every other client's `list`. The window that
-    /// opens is a concurrent edit of the *same clip*, whose loser is simply the
-    /// earlier write; there is one desktop user behind this socket, and the
-    /// alternative costs every reader.
-    ///
-    /// The same window has a second shape: `edit_meta` racing `delete` on the
-    /// same id. If `delete` wins first, this function's cache lookup above
-    /// already fails it cleanly. If `edit_meta` wins the read and `delete`
-    /// removes the `.mp4` before `write_sidecar` below runs, this call still
-    /// returns `Ok` — it writes a fresh orphan `.json` for a clip whose `.mp4`
-    /// is already gone, and the final `iter_mut().find` silently no-ops
-    /// because `delete` has already evicted the cache entry. No behaviour
-    /// change here either — one desktop user, acceptable — but worth knowing
-    /// if `delete` is ever made to hold this lock across its own write.
-    fn edit_meta(&self, id: &str, edit: impl FnOnce(&mut ClipMeta)) -> Result<ClipMeta> {
-        let paths = self.paths_for(id)?;
-
-        let mut meta = {
-            let library = self.lock_library();
-            let Some(found) = library.iter().find(|clip| clip.id == id) else {
-                bail!("clip {id} introuvable dans la bibliothèque");
-            };
-            found.clone()
-        };
-        edit(&mut meta);
-
-        // The sidecar is rewritten before the cache is touched: if this fails,
-        // the client gets an error and the cache still matches the disk. The
-        // other order would answer "renamed" about a title that vanishes at the
-        // next scan.
-        library::write_sidecar(paths.dir(), &meta)
-            .with_context(|| format!("impossible de mettre à jour le clip {id}"))?;
-
-        if let Some(entry) = self.lock_library().iter_mut().find(|clip| clip.id == id) {
-            *entry = meta.clone();
+    /// What the library knows of a clip, or what its file says when the index
+    /// has nothing (a record lost with a broken index).
+    fn source_meta(&self, id: &str, mp4: &Path) -> Result<ClipMeta> {
+        if let Some(entry) = self.store.entry(id) {
+            return Ok(entry.meta);
         }
-        Ok(meta)
+        let probe = export::probe(mp4).with_context(|| format!("{id} has no readable metadata"))?;
+        Ok(ClipMeta {
+            id: id.to_string(),
+            title: mp4.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+            duration_ms: probe.duration_ms,
+            width: probe.width,
+            height: probe.height,
+            fps: probe.fps,
+            has_audio: probe.audio_tracks > 0,
+            created: library::created_from_id(id),
+            bytes: std::fs::metadata(mp4).map(|m| m.len()).unwrap_or(0),
+            encoder: String::new(),
+            favorite: false,
+            audio_tracks: (1..=probe.audio_tracks).map(|n| format!("Piste {n}")).collect(),
+            game: String::new(),
+            folder: String::new(),
+        })
+    }
+
+    /// Applies `edit` to the listed row of `id`, after the disk has changed.
+    fn edit_listed(&self, id: &str, edit: impl FnOnce(&mut ClipMeta)) -> Result<ClipMeta> {
+        let mut library = self.lock_library();
+        let Some(found) = library.iter_mut().find(|clip| clip.id == id) else {
+            bail!("clip {id} introuvable dans la bibliothèque");
+        };
+        edit(found);
+        Ok(found.clone())
     }
 
     // Poisoning is recovered from rather than unwrapped: `lock().unwrap()` is a
@@ -2983,15 +2893,26 @@ mod tests {
     }
 
     #[test]
-    fn editor_derivatives_stay_in_the_reserved_cache() {
-        let dir = std::path::PathBuf::from(r"D:\clips\VALORANT");
-        let paths = super::ClipPaths::for_id(dir.clone(), "20260101_100000").unwrap();
-        assert_eq!(paths.track(2), dir.join(".clippy-cache").join("20260101_100000.t2.m4a"));
-        assert_eq!(
-            paths.track_partial(2),
-            dir.join(".clippy-cache").join("20260101_100000.t2.part.m4a")
-        );
-        assert_eq!(paths.legacy_track(2), dir.join("20260101_100000.t2.m4a"));
+    fn editor_derivatives_stay_in_the_library_cache() {
+        let root = std::env::temp_dir().join(format!("clippy-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = super::Store::new(root.join("library.json"), root.join("cache"));
+        let mp4 = root.join("clips").join("VALORANT 2026-01-01 10-00-00.mp4");
+        let meta = clippy_proto::ClipMeta {
+            id: "20260101_100000".into(), title: String::new(), created: String::new(), duration_ms: 0,
+            bytes: 0, width: 0, height: 0, fps: 0, encoder: String::new(), has_audio: true,
+            favorite: false, audio_tracks: Vec::new(), game: String::new(), folder: String::new(),
+        };
+        store.insert(&meta, &mp4).unwrap();
+        let paths = super::ClipPaths::for_id(&store, "20260101_100000").unwrap();
+        let tracks = root.join("cache").join("tracks");
+        assert_eq!(paths.mp4(), mp4);
+        assert_eq!(paths.track(2), tracks.join("20260101_100000.t2.m4a"));
+        assert_eq!(paths.track_partial(2), tracks.join("20260101_100000.t2.part.m4a"));
+        assert_eq!(paths.thumb(), root.join("cache").join("thumbs").join("20260101_100000.jpg"));
+        assert!(super::ClipPaths::for_id(&store, "20260101_100001").is_err(), "not in the index");
+        assert!(super::ClipPaths::for_id(&store, "../x").is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -3037,6 +2958,10 @@ mod tests {
             game: String::new(),
             folder: String::new(),
         }
+    }
+
+    fn path_of(daemon: &Daemon, id: &str) -> PathBuf {
+        daemon.store.entry(id).expect("a recorded clip").path
     }
 
     fn fixture(name: &str) -> (Daemon, PathBuf) {
@@ -3239,21 +3164,17 @@ mod tests {
     }
 
     #[test]
-    fn rename_edits_the_title_and_never_moves_the_file() {
+    fn rename_renames_the_file_and_keeps_the_id() {
         let (daemon, dir) = fixture("rename");
         let id = "20260726_110000";
+        let before = path_of(&daemon, id);
 
         daemon.rename(id, "Ace on Ascent").unwrap();
 
-        let on_disk =
-            clippy_core::library::read_sidecar(&clippy_core::library::sidecar_path(&dir, id))
-                .unwrap();
-        assert_eq!(on_disk.title, "Ace on Ascent");
-        assert_eq!(on_disk.id, id, "the id is the file stem and never changes");
-        assert!(
-            clippy_core::library::mp4_path(&dir, id).exists(),
-            "renaming edits metadata only — no collision logic, no broken handles"
-        );
+        assert!(dir.join("Ace on Ascent.mp4").is_file(), "the title is the file name");
+        assert!(!before.exists());
+        assert_eq!(path_of(&daemon, id), dir.join("Ace on Ascent.mp4"), "same id, new file");
+        assert!(daemon.rename("20260726_120000", "ace on ascent").is_err(), "never over another clip");
 
         let cached = daemon.list(0, 50);
         let entry = cached.clips.iter().find(|c| c.id == id).unwrap();
@@ -3265,17 +3186,17 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_all_three_sidecar_files_and_the_cache_entry() {
+    fn delete_removes_the_file_its_record_and_its_thumbnail() {
         let (daemon, dir) = fixture("delete");
         let id = "20260726_100000";
-        // Nothing writes thumbnails yet; deletion must already handle one.
-        std::fs::write(clippy_core::library::thumb_path(&dir, id), b"jpeg").unwrap();
+        daemon.store.write_thumb(id, b"jpeg");
+        let mp4 = path_of(&daemon, id);
 
         daemon.delete(id).unwrap();
 
-        assert!(!clippy_core::library::mp4_path(&dir, id).exists());
-        assert!(!clippy_core::library::sidecar_path(&dir, id).exists());
-        assert!(!clippy_core::library::thumb_path(&dir, id).exists());
+        assert!(!mp4.exists());
+        assert!(!daemon.store.thumb(id).exists());
+        assert!(daemon.store.entry(id).is_none(), "the record goes with it");
         assert_eq!(daemon.list(0, 50).total, 2);
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -3306,8 +3227,8 @@ mod tests {
     fn a_clip_missing_behind_the_daemons_back_is_evicted_by_a_failed_delete() {
         let (daemon, dir) = fixture("ghost");
         let id = "20260726_100000";
-        std::fs::write(clippy_core::library::thumb_path(&dir, id), b"jpeg").unwrap();
-        std::fs::remove_file(clippy_core::library::mp4_path(&dir, id)).unwrap();
+        daemon.store.write_thumb(id, b"jpeg");
+        std::fs::remove_file(path_of(&daemon, id)).unwrap();
 
         assert_eq!(daemon.list(0, 50).total, 3, "the cache does not know yet — by design");
 
@@ -3323,14 +3244,8 @@ mod tests {
         // name this id again — `list` reads the cache and `scan` skips a
         // sidecar with no `.mp4` — so anything left here is litter the daemon
         // could never be asked to clean up.
-        assert!(
-            !clippy_core::library::sidecar_path(&dir, id).exists(),
-            "the orphaned sidecar must not be left behind unreachable"
-        );
-        assert!(
-            !clippy_core::library::thumb_path(&dir, id).exists(),
-            "the orphaned thumbnail must not be left behind unreachable"
-        );
+        assert!(daemon.store.entry(id).is_none(), "the orphaned record must not be left behind");
+        assert!(!daemon.store.thumb(id).exists(), "the orphaned thumbnail must not be left behind");
 
         // A second delete of the same id is still a clean error, not a panic
         // and not a different message because the entry is now gone from the
@@ -3353,11 +3268,10 @@ mod tests {
         daemon.rename(id, "Clutch").unwrap();
         daemon.set_favorite(id, true).unwrap();
 
-        let on_disk =
-            clippy_core::library::read_sidecar(&clippy_core::library::sidecar_path(&dir, id))
-                .unwrap();
-        assert!(on_disk.favorite);
-        assert_eq!(on_disk.title, "Clutch", "favoriting must not undo a rename");
+        assert!(daemon.store.entry(id).unwrap().meta.favorite, "kept in the index");
+        assert_eq!(path_of(&daemon, id), dir.join("Clutch.mp4"), "favoriting must not undo a rename");
+        let listed = daemon.list(0, 50);
+        assert_eq!(listed.clips.iter().find(|c| c.id == id).unwrap().title, "Clutch");
 
         daemon.set_favorite(id, false).unwrap();
         let page = daemon.list(0, 50);
@@ -3433,6 +3347,7 @@ mod tests {
             keys,
             [
                 "armed",
+                "cache_dir",
                 "clip_dir",
                 "clip_hotkey_bound",
                 "encoder",
@@ -3548,6 +3463,7 @@ mod tests {
             ring_seconds_used: 0.0,
             ring_seconds_total: 15,
             clip_dir: String::new(),
+            cache_dir: String::new(),
             clip_hotkey_bound: clip,
             screenshot_hotkey_bound: shot,
             waiting_for_game: false,
@@ -3733,13 +3649,15 @@ mod tests {
     fn saved_clip_event_reports_automatic_pruning_and_remaining_bytes() {
         let (daemon, dir) = fixture("clip-prune-broadcast");
         daemon.lock_config().max_library_gb = 1;
+        // Sizes come off the files: 700 MB each, allocated but never written.
         for clip in daemon.lock_library().iter_mut() {
             clip.bytes = 700_000_000;
-            library::write_sidecar(&dir, clip).unwrap();
+            std::fs::File::options().write(true).open(path_of(&daemon, &clip.id)).unwrap().set_len(700_000_000).unwrap();
         }
         let saved = meta("20260726_130000");
-        std::fs::write(library::mp4_path(&dir, &saved.id), b"video").unwrap();
-        library::write_sidecar(&dir, &saved).unwrap();
+        let path = dir.join("new.mp4");
+        std::fs::write(&path, b"video").unwrap();
+        daemon.store.insert(&saved, &path).unwrap();
         let (tx, rx) = std::sync::mpsc::sync_channel(crate::clients::OUTBOUND_QUEUE_DEPTH);
         daemon.clients.register(tx);
 

@@ -26,47 +26,36 @@ const clip = (id: string, favorite = false): ClipMeta => ({
   favorite,
 });
 
-describe('clipUrl and thumbUrl', () => {
+describe('clipUrl, thumbUrl and trackUrl', () => {
   const id = '20260726_143012';
-  const ref = { id };
+  const title = 'VALORANT 2026-07-26 14-30-12';
+  const ref = { id, title };
 
-  it('put the sidecar beside its clip, flat', () => {
+  it('names the video after its title, in its folder', () => {
     expect(clipUrl('C:\\Users\\me\\Videos\\Clippy', ref)).toBe(
-      `C:\\Users\\me\\Videos\\Clippy\\${id}.mp4`,
+      `C:\\Users\\me\\Videos\\Clippy\\${title}.mp4`,
     );
-    expect(thumbUrl('C:\\Users\\me\\Videos\\Clippy', ref)).toBe(
-      `C:\\Users\\me\\Videos\\Clippy\\${id}.jpg`,
-    );
+    expect(clipUrl('D:\\clips\\', { id, title, folder: 'VALORANT' })).toBe(`D:\\clips\\VALORANT\\${title}.mp4`);
+    expect(clipUrl('D:\\clips', { id, title, folder: '' })).toBe(`D:\\clips\\${title}.mp4`);
   });
 
-  it('does not double the separator on a clip_dir that ends in one', () => {
-    // `clip_dir` is typed into settings, and a doubled separator can miss the
-    // asset-scope glob -- which shows up as every thumbnail in the grid being
-    // broken, with no error anywhere.
-    expect(thumbUrl('D:\\clips\\', ref)).toBe(`D:\\clips\\${id}.jpg`);
-    expect(thumbUrl('D:/clips/', ref)).toBe(`D:/clips\\${id}.jpg`);
-    expect(clipUrl('D:\\clips\\', ref)).toBe(`D:\\clips\\${id}.mp4`);
+  it('does not double the separator on a dir that ends in one', () => {
+    // A doubled separator can miss the asset-scope glob -- which shows up as
+    // every thumbnail in the grid being broken, with no error anywhere.
+    expect(clipUrl('D:\\clips\\', ref)).toBe(`D:\\clips\\${title}.mp4`);
+    expect(clipUrl('D:\\', ref)).toBe(`D:\\${title}.mp4`);
+    expect(thumbUrl('C:\\cache\\', ref)).toBe(`C:\\cache\\thumbs\\${id}.jpg`);
   });
 
-  it('looks inside the clip folder when there is one', () => {
-    expect(clipUrl('D:\\clips\\', { id, folder: 'Valorant' })).toBe(`D:\\clips\\Valorant\\${id}.mp4`);
-    expect(thumbUrl('D:\\clips', { id, folder: '' })).toBe(`D:\\clips\\${id}.jpg`);
-    expect(trackUrl('D:\\clips', { id, folder: 'Valorant' }, `${id}.t1.m4a`)).toBe(
-      `D:\\clips\\Valorant\\${id}.t1.m4a`,
+  it('reads thumbnails from the library cache, never the clips folder', () => {
+    expect(thumbUrl('C:\\Users\\me\\AppData\\Local\\Clippy\\cache', ref)).toBe(
+      `C:\\Users\\me\\AppData\\Local\\Clippy\\cache\\thumbs\\${id}.jpg`,
     );
   });
 
-  it('resolves private editor audio within root and game folders', () => {
-    const file = `.clippy-cache/${id}.t1.m4a`;
-    expect(trackUrl('D:\\clips', ref, file)).toBe(`D:\\clips\\${file}`);
-    expect(trackUrl('D:\\clips', { id, folder: 'Valorant' }, file)).toBe(
-      `D:\\clips\\Valorant\\${file}`,
-    );
-  });
-
-  it('handles a drive root, whose trailing separator is not optional', () => {
-    expect(thumbUrl('D:\\', ref)).toBe(`D:\\${id}.jpg`);
-    expect(clipUrl('D:\\', ref)).toBe(`D:\\${id}.mp4`);
+  it('plays the absolute track path the daemon answers with', () => {
+    const file = `C:\\cache\\tracks\\${id}.t1.m4a`;
+    expect(trackUrl(file)).toBe(file);
   });
 });
 

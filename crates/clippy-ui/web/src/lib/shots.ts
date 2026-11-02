@@ -30,12 +30,13 @@ export function shotUrl(clipDir: string, id: string): string {
 }
 
 /**
- * The 640 px copy the grid draws.
+ * The 640 px copy the grid draws, kept in the library cache
+ * (`status.cache_dir`) so the screenshots folder holds the images only.
  *
  * Not an optimisation to skip: fifty full-size screenshots decode to roughly
  * 450 MB of bitmap in the webview, the measured hazard `thumb.rs` already
  * records for the clip grid.
  */
-export function shotThumbUrl(clipDir: string, id: string): string {
-  return convertFileSrc(shotFile(clipDir, id, '.thumb.jpg'));
+export function shotThumbUrl(cacheDir: string, id: string): string {
+  return convertFileSrc(`${cacheDir.replace(/[\\/]+$/, '')}\\shots\\${id}.jpg`);
 }

@@ -128,7 +128,7 @@ fn engine_handle_is_public() {
         std::sync::Arc<clippy_core::capture::audio::AudioGains>,
     ) -> anyhow::Result<EngineHandle> = EngineHandle::spawn;
     let _: fn(&EngineHandle) -> EngineStatus = EngineHandle::status;
-    let _: fn(&EngineHandle) -> anyhow::Result<Option<clippy_proto::ClipMeta>> = EngineHandle::clip;
+    let _: fn(&EngineHandle) -> anyhow::Result<Option<clippy_core::engine::SavedClip>> = EngineHandle::clip;
     let _: fn(EngineHandle) -> anyhow::Result<()> = EngineHandle::stop;
     // The readiness channel carries the first session's `EngineStatus`, not a
     // unit: `EngineHandle::spawn` publishes it before returning so an `arm`

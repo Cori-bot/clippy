@@ -141,6 +141,11 @@ class AppState {
     return this.status?.clip_dir ?? '';
   }
 
+  /** The library cache (thumbnails, editor audio); empty from an older daemon. */
+  get cacheDir() {
+    return this.status?.cache_dir ?? '';
+  }
+
   get favoritesOnly(): boolean {
     return this.favoriteIds !== null;
   }

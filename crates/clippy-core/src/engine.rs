@@ -14,10 +14,12 @@ use std::sync::{
     mpsc::{Receiver, RecvTimeoutError, Sender, channel},
 };
 use std::thread::JoinHandle;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
-use clippy_proto::{ClipMeta, ShotMeta};
+use clippy_proto::ShotMeta;
+pub use crate::replay::SavedClip;
 
 use crate::{capture::audio::AudioGains, config::Config, replay};
 
@@ -36,14 +38,14 @@ pub struct ClipPlace {
 pub enum EngineCommand {
     /// Save a clip now. `Ok(None)` means nothing is buffered yet. `place`
     /// files it somewhere else than the session's own folder.
-    Clip { reply: Sender<Result<Option<ClipMeta>>>, place: Option<ClipPlace> },
+    Clip { reply: Sender<Result<Option<SavedClip>>>, place: Option<ClipPlace> },
     /// Write a screenshot now.
     ///
     /// No `Option` in the reply, unlike `Clip`. A clip can legitimately have
     /// nothing to save because the ring is still filling; a screenshot needs
     /// one frame, so a session that cannot produce one within the wait is a
     /// frozen screen — an error, not an empty success.
-    Screenshot { reply: Sender<Result<ShotMeta>> },
+    Screenshot { reply: Sender<Result<ShotMeta>>, thumbs: Option<PathBuf> },
     /// Watch a region of the picture (None stops) and answer with its newest
     /// read-back, if one finished since the last call. Never waits for one.
     Probe {
@@ -154,12 +156,12 @@ impl EngineHandle {
 
     /// Saves a clip, blocking until the mux completes. `Ok(None)` means
     /// nothing is buffered yet.
-    pub fn clip(&self) -> Result<Option<ClipMeta>> {
+    pub fn clip(&self) -> Result<Option<SavedClip>> {
         self.clip_in(None)
     }
 
     /// [`Self::clip`], filed in `place` when given.
-    pub fn clip_in(&self, place: Option<ClipPlace>) -> Result<Option<ClipMeta>> {
+    pub fn clip_in(&self, place: Option<ClipPlace>) -> Result<Option<SavedClip>> {
         let (reply, answer) = channel();
         self.tx
             .send(EngineCommand::Clip { reply, place })
@@ -171,10 +173,13 @@ impl EngineHandle {
     }
 
     /// Writes a screenshot from the live session, answering with its metadata.
-    pub fn screenshot(&self) -> Result<ShotMeta> {
+    ///
+    /// `thumbs` is where its grid thumbnail goes (the library cache), so the
+    /// screenshots folder keeps the images only.
+    pub fn screenshot(&self, thumbs: Option<PathBuf>) -> Result<ShotMeta> {
         let (reply, answer) = channel();
         self.tx
-            .send(EngineCommand::Screenshot { reply })
+            .send(EngineCommand::Screenshot { reply, thumbs })
             .map_err(|_| anyhow!("le moteur de capture n’est plus actif"))?;
         recv_bounded(&answer)
     }

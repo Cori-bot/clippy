@@ -59,6 +59,8 @@ export type Status = {
   ring_seconds_total: number;
   version: string;
   clip_dir: string;
+  /** The library cache: `thumbs`, `tracks` and `shots` under it. */
+  cache_dir?: string;
   /** Replay on, idle until a game is in front. Absent from an older daemon. */
   waiting_for_game?: boolean;
   /** The program of the game in front or still running, if any. */
