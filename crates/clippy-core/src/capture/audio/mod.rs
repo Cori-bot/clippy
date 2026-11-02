@@ -1,6 +1,7 @@
 //! System-audio and microphone capture.
 
 mod apps;
+mod downmix;
 mod mixer;
 mod source;
 mod timeline;

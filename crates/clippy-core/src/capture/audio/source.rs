@@ -22,7 +22,7 @@ use wasapi::{
     WaveFormat,
 };
 
-use super::{AudioPacket, CHANNELS, SAMPLE_RATE};
+use super::{AudioPacket, CHANNELS, SAMPLE_RATE, downmix::Downmix};
 
 /// Which device a capture session reads.
 ///
@@ -72,23 +72,93 @@ struct WasapiSession {
     capture: AudioCaptureClient,
     block_align: usize,
     scratch: Vec<u8>,
+    /// Set when the stream runs in the device's surround layout (f32): its
+    /// packets are folded to stereo here, see [`super::downmix`].
+    downmix: Option<Downmix>,
+    /// The caller's sample format, which a folded packet is written back in.
+    out_float: bool,
 }
 
 impl WasapiSession {
+    /// `format` is what the caller reads: stereo at [`SAMPLE_RATE`]. On a
+    /// surround device the stream is opened in the device's own layout
+    /// instead and folded to that, because the engine's own downmix costs
+    /// ~13.5 dB (see [`super::downmix`]).
     fn open(kind: AudioSourceKind, format: &WaveFormat) -> Result<Self> {
-        let mut client = if let AudioSourceKind::Application { pid } = kind {
+        let out_float = matches!(format.get_subformat(), Ok(SampleType::Float));
+        if !matches!(kind, AudioSourceKind::Application { .. }) {
+            let mix = Self::client(kind)?.get_mixformat().ok();
+            if let Some(mix) = mix.filter(|m| usize::from(m.get_nchannels()) > CHANNELS) {
+                let channels = usize::from(mix.get_nchannels());
+                let downmix = Downmix::new(channels, mix.get_dwchannelmask());
+                let native = WaveFormat::new(
+                    32,
+                    32,
+                    &SampleType::Float,
+                    SAMPLE_RATE,
+                    channels,
+                    Some(mix.get_dwchannelmask()),
+                );
+                match Self::init(kind, &native) {
+                    Ok(mut session) => {
+                        tracing::debug!(
+                            source = kind.label(),
+                            channels,
+                            mask = mix.get_dwchannelmask(),
+                            "capturing the surround layout and folding it to stereo"
+                        );
+                        session.downmix = Some(downmix);
+                        session.out_float = out_float;
+                        return Ok(session);
+                    }
+                    Err(e) => {
+                        tracing::warn!(source = kind.label(), channels, error = %format!("{e:#}"), "surround capture refused; letting Windows downmix (quieter)")
+                    }
+                }
+            }
+        }
+        let mut session = Self::init(kind, format)?;
+        session.out_float = out_float;
+        Ok(session)
+    }
+
+    /// The caller's samples from one packet: as read, or folded to stereo.
+    fn samples(&self, frames: usize) -> Vec<u8> {
+        let raw = &self.scratch[..frames * self.block_align];
+        let Some(downmix) = &self.downmix else { return raw.to_vec() };
+        let input: Vec<f32> =
+            raw.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let mut stereo = Vec::with_capacity(frames * CHANNELS);
+        downmix.fold(&input[..frames * downmix.channels()], &mut stereo);
+        if self.out_float {
+            stereo.iter().flat_map(|s| s.to_le_bytes()).collect()
+        } else {
+            // Same rounding as the engine's own float-to-PCM conversion.
+            stereo
+                .iter()
+                .flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes())
+                .collect()
+        }
+    }
+
+    fn client(kind: AudioSourceKind) -> Result<AudioClient> {
+        if let AudioSourceKind::Application { pid } = kind {
             // Include the process tree: Spotify and every browser play their
             // sound from a child of the process the user knows.
             AudioClient::new_application_loopback_client(pid, true)
-                .map_err(|e| anyhow!("application audio client (pid {pid}): {e}"))?
+                .map_err(|e| anyhow!("application audio client (pid {pid}): {e}"))
         } else {
             let enumerator =
                 DeviceEnumerator::new().map_err(|e| anyhow!("device enumerator: {e}"))?;
             let device = enumerator
                 .get_default_device(&kind.direction())
                 .map_err(|e| anyhow!("no default {} device: {e}", kind.label()))?;
-            device.get_iaudioclient().map_err(|e| anyhow!("audio client: {e}"))?
-        };
+            Ok(device.get_iaudioclient().map_err(|e| anyhow!("audio client: {e}"))?)
+        }
+    }
+
+    fn init(kind: AudioSourceKind, format: &WaveFormat) -> Result<Self> {
+        let mut client = Self::client(kind)?;
         client
             .initialize_client(
                 format,
@@ -103,7 +173,7 @@ impl WasapiSession {
         let block_align = format.get_blockalign() as usize;
         let buffer_frames = client.get_buffer_size().map_err(|e| anyhow!("buffer size: {e}"))?;
         let scratch = vec![0u8; (buffer_frames as usize).max(4096) * block_align];
-        Ok(Self { client, event, capture, block_align, scratch })
+        Ok(Self { client, event, capture, block_align, scratch, downmix: None, out_float: false })
     }
 }
 
@@ -169,7 +239,7 @@ fn capture_loop(kind: AudioSourceKind, stop: &AtomicBool, tx: &Sender<AudioPacke
             }
             let packet = AudioPacket {
                 qpc_100ns: info.timestamp as i64,
-                data: session.scratch[..read_frames as usize * session.block_align].to_vec(),
+                data: session.samples(read_frames as usize),
             };
             if tx.send(packet).is_err() {
                 return Ok(()); // consumer gone — recording ended
@@ -190,7 +260,7 @@ pub fn record_wav(seconds: u64, path: &Path) -> Result<()> {
     // device mix format is, so downstream code sees exactly one format.
     let format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE, CHANNELS, None);
     let mut session = WasapiSession::open(AudioSourceKind::SystemAudio, &format)?;
-    let block_align = session.block_align;
+    let block_align = format.get_blockalign() as usize;
     let mut pcm: Vec<u8> = Vec::with_capacity(SAMPLE_RATE * block_align * seconds as usize);
 
     let mut packets = 0u64;
@@ -230,7 +300,7 @@ pub fn record_wav(seconds: u64, path: &Path) -> Result<()> {
                 first_qpc_100ns = Some(info.timestamp);
             }
             last_qpc_100ns = info.timestamp;
-            pcm.extend_from_slice(&session.scratch[..read_frames as usize * block_align]);
+            pcm.extend_from_slice(&session.samples(read_frames as usize));
         }
     }
     session.client.stop_stream().map_err(|e| anyhow!("stop stream: {e}"))?;
