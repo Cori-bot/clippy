@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { call, daemonConnected, onConnected, onDaemonEvent, onDisconnected } from './ipc';
+import { call, daemonConnected, logDaemonEvent, onConnected, onDaemonEvent, onDisconnected } from './ipc';
 import { mergeSaved } from './clips';
 import { diag, setDiagnostics } from './diag';
 import { reactive } from './reactive';
@@ -397,6 +397,26 @@ class AppState {
     }
   }
 
+  /** Looks for the games installed on this PC; returns how many were added, or null on failure. */
+  async scanGames(): Promise<number | null> {
+    try {
+      const data = await call<{ games: GameEntry[]; added: number }>('games.scan');
+      this.games = sortGames(data.games);
+      this.toast(
+        'info',
+        data.added === 0
+          ? 'Aucun nouveau jeu installé trouvé.'
+          : data.added === 1
+            ? '1 jeu installé ajouté.'
+            : `${data.added} jeux installés ajoutés.`,
+      );
+      return data.added;
+    } catch (e) {
+      this.toast('error', String(e));
+      return null;
+    }
+  }
+
   async listWindows(): Promise<RunningWindow[]> {
     try {
       return (await call<{ windows: RunningWindow[] }>('windows.list')).windows;
@@ -727,6 +747,7 @@ export function wireDaemon() {
     });
 
   onDaemonEvent((event) => {
+    logDaemonEvent(event);
     const data = event.data as Record<string, unknown>;
     if (event.event === 'config_changed' && typeof event.data['clip_hotkey'] === 'string') {
       app.hotkey = event.data['clip_hotkey'];

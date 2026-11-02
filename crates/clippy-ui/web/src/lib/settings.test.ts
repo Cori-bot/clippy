@@ -11,6 +11,7 @@ describe('FIELDS', () => {
       'screenshot_hotkey', 'screenshot_sound',
       'hotkey_mode', 'audio_apps', 'capture_mode',
       'auto_clip', 'auto_clip_min_kills', 'clip_banner', 'diagnostics',
+      'video_quality', 'banner_position', 'notification_volume',
     ];
     const covered = FIELDS.map((f) => f.key);
     for (const key of shipped) expect(covered).toContain(key);

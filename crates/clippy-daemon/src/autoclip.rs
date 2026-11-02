@@ -64,14 +64,25 @@ pub struct Debouncer {
     /// Longest a burst may stay open, counted from its first moment, so that
     /// moment is still inside the replay buffer when the clip is cut.
     span: Duration,
+    /// When the last clip was cut: moments seen before it are in that clip
+    /// already and never count towards a later one.
+    saved: Option<Instant>,
 }
 
 impl Debouncer {
     pub fn new(after: Duration, span: Duration) -> Self {
-        Self { pending: None, after, span: span.max(after) }
+        Self { pending: None, after, span: span.max(after), saved: None }
+    }
+
+    /// A clip was cut at `at`: what came before is in it.
+    pub fn saved(&mut self, at: Instant) {
+        self.saved = Some(at);
     }
 
     pub fn push(&mut self, moment: Moment, now: Instant) {
+        if self.saved.is_some_and(|cut| now <= cut) {
+            return;
+        }
         match &mut self.pending {
             Some(burst) if burst.game == moment.game => {
                 burst.kills += moment.kills;
@@ -175,10 +186,17 @@ fn saver(daemon: Weak<Daemon>, moments: Receiver<Stamped>) {
         }
         let Some(burst) = debouncer.due(Instant::now()) else { continue };
         if burst.kills < settings.min_kills && burst.feat.is_none() {
+            tracing::debug!(
+                game = burst.game,
+                kills = burst.kills,
+                "burst below the clip threshold"
+            );
             continue;
         }
+        let cut = Instant::now();
         match daemon.clip() {
             Ok(Some(meta)) => {
+                debouncer.saved(cut);
                 match daemon.rename(&meta.id, &burst.title()) {
                     // Replaces the plain "Clip enregistré" banner the save
                     // just raised with the moment's name.
@@ -429,9 +447,11 @@ fn steam_path() -> Option<PathBuf> {
 const VALORANT_GAME: &str = "Valorant";
 
 fn watch_valorant(daemon: Weak<Daemon>, moments: Sender<Stamped>) {
-    use crate::valorant::{EXE, REGION, RowTracker, feed_rows};
+    use crate::valorant::{EXE, FeedReading, REGION, RowTracker, feed_rows};
     let mut watching = false;
     let mut rows = RowTracker::default();
+    // The last reading logged: the log shows every change, not every read.
+    let mut last = FeedReading::default();
     // End-to-end tests play recorded footage in a stand-in program.
     let exe = std::env::var("CLIPPY_VALORANT_EXE").unwrap_or_else(|_| EXE.to_owned());
     loop {
@@ -459,6 +479,16 @@ fn watch_valorant(daemon: Weak<Daemon>, moments: Sender<Stamped>) {
         let reading =
             feed_rows(&frame.bgra, frame.width as usize, frame.height as usize, frame.stride);
         let new = rows.push(&reading.kills);
+        if new > 0 || reading != last {
+            tracing::debug!(
+                rows = reading.rows,
+                own_kill_rows = ?reading.kills,
+                own_deaths = reading.deaths,
+                new_kills = new,
+                "Valorant kill feed"
+            );
+            last = reading;
+        }
         let moment = Moment { game: VALORANT_GAME, kills: new, feat: None };
         if new > 0 && moments.send((moment, Instant::now())).is_err() {
             return;
@@ -604,6 +634,22 @@ mod tests {
             d.push(kill(CS2_GAME), t0 + Duration::from_secs(s));
         }
         assert!(d.due(t0 + Duration::from_secs(10)).is_some());
+    }
+
+    #[test]
+    fn kills_already_in_a_saved_clip_never_count_again() {
+        let t0 = Instant::now();
+        let s = |n| t0 + Duration::from_secs(n);
+        let mut d = Debouncer::new(Duration::from_secs(3), Duration::from_secs(10));
+        d.push(kill(VALORANT_GAME), s(0));
+        d.push(kill(VALORANT_GAME), s(1));
+        assert_eq!(d.due(s(4)).unwrap().kills, 2);
+        d.saved(s(4));
+        // Seen before the cut but handed over while the clip was saving.
+        d.push(kill(VALORANT_GAME), s(3));
+        assert_eq!(d.due(s(10)), None);
+        d.push(kill(VALORANT_GAME), s(5));
+        assert_eq!(d.due(s(8)).unwrap().title(), "Kill · Valorant");
     }
 
     #[test]

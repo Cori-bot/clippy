@@ -42,6 +42,7 @@ fn init_tracing() {
     let file = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .with_thread_names(true)
+        .with_timer(clippy_daemon::diag::LocalTimer)
         .with_writer(|| clippy_daemon::diag::LogWriter)
         // Checked per event, so nothing is even formatted while it is off.
         .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
@@ -253,6 +254,7 @@ fn main() -> anyhow::Result<()> {
 
     let config = Config::load();
     clippy_daemon::diag::set_enabled(config.diagnostics);
+    clippy_daemon::banner::set_corner(config.banner_corner());
     tracing::debug!(?config, "loaded configuration");
     // What the tray menu ticks until the first `config.set` publishes again.
     window::publish_prefs(&config);

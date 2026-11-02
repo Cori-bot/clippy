@@ -130,6 +130,13 @@ impl ClientHandler for Daemon {
                     Err(e) => Response::err(request.id, format!("{e:#}")),
                 }
             }
+            Ok(Command::GamesScan) => {
+                let (games, added) = self.games_scan();
+                let mut fields = Map::new();
+                fields.insert("games".to_string(), serde_json::to_value(&games).unwrap_or_else(|_| Value::Array(Vec::new())));
+                fields.insert("added".to_string(), Value::from(added));
+                Response::ok(request.id, Value::Object(fields))
+            }
             Ok(Command::GamesRemove { exe }) => match self.games_remove(&exe) {
                 Ok(()) => {
                     let mut fields = Map::new();
@@ -260,7 +267,8 @@ impl ClientHandler for Daemon {
                 // Plays whatever is configured, whether or not `clip_sound` is
                 // on: this answers "what does this file sound like", and the
                 // toggle is a separate question the settings page already shows.
-                crate::sound::play(self.custom_sound_source().as_deref());
+                let volume = self.lock_config().notification_volume;
+                crate::sound::play(self.custom_sound_source().as_deref(), volume);
                 Response::ok(request.id, Value::Object(Map::new()))
             }
             // No catch-all arm. Every `Command` variant is answered here now,

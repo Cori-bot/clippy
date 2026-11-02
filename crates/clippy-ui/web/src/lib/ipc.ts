@@ -27,10 +27,12 @@ export async function daemonConnected(): Promise<boolean> {
 }
 
 export function onDaemonEvent(handler: (event: DaemonEvent) => void) {
-  return listen<DaemonEvent>('clippy-event', (e) => {
-    if (diagEnabled()) diag('event', { event: e.payload.event, data: e.payload.event === 'stats' ? e.payload.data : summarizeArgs((e.payload.data ?? {}) as Record<string, unknown>) });
-    handler(e.payload);
-  });
+  return listen<DaemonEvent>('clippy-event', (e) => handler(e.payload));
+}
+
+/** One diagnostics line per daemon event, from the app's single permanent listener. */
+export function logDaemonEvent(event: DaemonEvent) {
+  if (diagEnabled()) diag('event', { event: event.event, data: event.event === 'stats' ? event.data : summarizeArgs((event.data ?? {}) as Record<string, unknown>) });
 }
 
 export function onConnected(handler: (status: unknown) => void) {

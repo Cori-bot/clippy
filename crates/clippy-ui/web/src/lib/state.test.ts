@@ -15,6 +15,7 @@ vi.mock('./ipc', () => ({
   daemonConnected: vi.fn().mockResolvedValue(false),
   onConnected: vi.fn(),
   onDaemonEvent: vi.fn(),
+  logDaemonEvent: vi.fn(),
   onDisconnected: vi.fn(),
 }));
 
@@ -1530,6 +1531,19 @@ describe('games slice', () => {
     await app.removeGame('a.exe');
     expect(callMock).toHaveBeenLastCalledWith('games.remove', { exe: 'a.exe' });
     expect(app.games.map((g) => g.exe)).toEqual(['b.exe']);
+  });
+
+  it('scanGames replaces the list and says how many games it added', async () => {
+    app.games = [] as never;
+    callMock.mockResolvedValueOnce({ games: [gameEntry('cs2.exe'), gameEntry('aimlab_tb.exe')], added: 2 });
+    expect(await app.scanGames()).toBe(2);
+    expect(callMock).toHaveBeenLastCalledWith('games.scan');
+    expect(app.games).toHaveLength(2);
+    expect(app.toasts.at(-1)?.text).toBe('2 jeux installés ajoutés.');
+    callMock.mockRejectedValueOnce('boom');
+    expect(await app.scanGames()).toBeNull();
+    expect(app.games).toHaveLength(2);
+    expect(app.toasts.at(-1)?.kind).toBe('error');
   });
 
   it('listWindows returns the windows, or nothing on failure', async () => {

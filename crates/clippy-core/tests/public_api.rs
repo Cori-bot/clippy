@@ -33,10 +33,10 @@ fn session_option_structs_are_publicly_constructible() {
 #[test]
 fn bitrate_helpers_are_public() {
     let config = Config::default();
-    assert_eq!(config.resolved_bitrate_bps(1920, 1080), 8_000_000, "auto = 8 Mbps at 1080p60");
+    assert_eq!(config.resolved_bitrate_bps(1920, 1080), 30_000_000, "High = 30 Mbps at 1080p60");
     assert_eq!(
         config.resolved_max_bitrate_bps(1920, 1080),
-        12_000_000,
+        45_000_000,
         "0 means auto = 1.5x target"
     );
 }

@@ -96,8 +96,18 @@ pub struct Config {
     /// preset is the short side; the long side follows the monitor's aspect
     /// ratio, so nothing is stretched. See [`encode_size`].
     pub resolution: String,
-    /// Target (average) video bitrate in kbit/s. `0` = auto: derived from the
-    /// output resolution and fps by [`auto_bitrate_kbps`].
+    /// Quality level: `"low"`, `"medium"`, `"high"`, `"very_high"` or
+    /// `"custom"`. A level follows the output resolution and fps (see
+    /// [`VideoQuality::reference_kbps`]); `"custom"` uses `bitrate_kbps`.
+    ///
+    /// Empty in a file written before this key existed: the level is then
+    /// read back out of `bitrate_kbps` ([`Config::video_quality`]), so an old
+    /// fixed tier becomes the level of the same name.
+    #[serde(default)]
+    pub video_quality: String,
+    /// Target (average) video bitrate in kbit/s, used when `video_quality` is
+    /// `"custom"`. `0` = auto: derived from the output resolution and fps by
+    /// [`auto_bitrate_kbps`].
     pub bitrate_kbps: u32,
     /// VBR peak-bitrate cap in kbit/s. `0` = auto (1.5× the target). Ignored
     /// in CBR mode. This cap is also the replay ring's worst-case RAM bound.
@@ -292,6 +302,13 @@ pub struct Config {
     /// right, over the game, never recorded).
     #[serde(default = "default_true")]
     pub clip_banner: bool,
+    /// Where the banner shows: `"top_right"` (default) or `"top_left"`.
+    /// Unknown values fall back to top right.
+    #[serde(default = "default_banner_position")]
+    pub banner_position: String,
+    /// Volume of the clip and screenshot sounds, 0..=100 (100 = as recorded).
+    #[serde(default = "default_notification_volume")]
+    pub notification_volume: u32,
     /// Detailed diagnostics: a debug-level daemon log, a log of what is done
     /// in the window, and app + PC metrics every few seconds, all under
     /// `%APPDATA%\clippy\logs`. Off by default; meant for testing builds.
@@ -318,6 +335,14 @@ pub struct Config {
     /// it, and [`HotkeyMode::LowLevel`] carries the rest of the reasoning.
     #[serde(default = "default_hotkey_mode")]
     pub hotkey_mode: String,
+}
+
+/// Corner of the screen the on-screen banner shows in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BannerCorner {
+    #[default]
+    TopRight,
+    TopLeft,
 }
 
 /// How many applications [`Config::audio_apps`] can name. Each one is an
@@ -394,6 +419,47 @@ pub fn auto_bitrate_kbps(width: u32, height: u32, fps: u32) -> u32 {
     (kbps.round() as u32).clamp(2_500, 50_000)
 }
 
+/// The quality levels of `video_quality`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoQuality {
+    Low,
+    Medium,
+    High,
+    VeryHigh,
+    /// `bitrate_kbps` decides (0 = [`auto_bitrate_kbps`]).
+    Custom,
+}
+
+impl VideoQuality {
+    /// The level's bitrate at 1920x1080 and 60 fps, in kbit/s. The fixed
+    /// tiers it replaces (5/8/14/20 Mbit/s whatever the fps) starved fast
+    /// games at 120 fps; these sit near what NVIDIA's own presets spend.
+    pub fn reference_kbps(self) -> Option<u32> {
+        match self {
+            Self::Low => Some(8_000),
+            Self::Medium => Some(15_000),
+            Self::High => Some(30_000),
+            Self::VeryHigh => Some(50_000),
+            Self::Custom => None,
+        }
+    }
+}
+
+/// Highest bitrate a quality level resolves to, in kbit/s. Keeps the 1.5x
+/// VBR peak under the 200 Mbit/s bound `config.set` accepts.
+pub const MAX_LEVEL_KBPS: u32 = 130_000;
+
+/// A level's bitrate for an output of `width` x `height` at `fps`: the same
+/// scaling as [`auto_bitrate_kbps`] (linear in pixels, 0.8 power of the frame
+/// rate) from the level's own reference.
+pub fn level_bitrate_kbps(level: VideoQuality, width: u32, height: u32, fps: u32) -> Option<u32> {
+    let reference = f64::from(level.reference_kbps()?);
+    let pixels = f64::from(width) * f64::from(height);
+    let kbps =
+        reference * (pixels / (1920.0 * 1080.0)) * (f64::from(fps.max(1)) / 60.0).powf(0.8);
+    Some((kbps.round() as u32).clamp(2_500, MAX_LEVEL_KBPS))
+}
+
 /// One frame period in 100 ns units, rounded to nearest. Truncating (what the
 /// engine did before) is up to 1 unit short, which for fps that do not divide
 /// 10^7 (31, 33, 112...) biases the pacer slightly early.
@@ -407,6 +473,7 @@ impl Default for Config {
         Self {
             fps: 60,
             resolution: "native".into(),
+            video_quality: "high".into(),
             bitrate_kbps: 0,
             max_bitrate_kbps: 0,
             rate_control: "vbr".into(),
@@ -436,6 +503,8 @@ impl Default for Config {
             screenshot_hotkey: default_screenshot_hotkey(),
             screenshot_sound: true,
             clip_banner: true,
+            banner_position: default_banner_position(),
+            notification_volume: default_notification_volume(),
             diagnostics: false,
             hotkey_mode: default_hotkey_mode(),
         }
@@ -451,6 +520,14 @@ const fn default_auto_clip_min_kills() -> u32 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_banner_position() -> String {
+    "top_right".into()
+}
+
+const fn default_notification_volume() -> u32 {
+    100
 }
 
 fn default_screenshot_hotkey() -> String {
@@ -579,9 +656,46 @@ impl Config {
         }
     }
 
+    /// The quality level. An empty value (a file from before the key) is
+    /// read out of `bitrate_kbps`: the old fixed tiers map onto the level of
+    /// the same name, the old auto (0) onto High, anything else is Custom so
+    /// a typed bitrate is kept.
+    pub fn video_quality(&self) -> VideoQuality {
+        match self.video_quality.trim().to_ascii_lowercase().as_str() {
+            "low" => VideoQuality::Low,
+            "medium" => VideoQuality::Medium,
+            "high" => VideoQuality::High,
+            "very_high" => VideoQuality::VeryHigh,
+            "custom" => VideoQuality::Custom,
+            "" => match self.bitrate_kbps {
+                0 | 14_000 => VideoQuality::High,
+                5_000 => VideoQuality::Low,
+                8_000 => VideoQuality::Medium,
+                20_000 => VideoQuality::VeryHigh,
+                _ => VideoQuality::Custom,
+            },
+            other => {
+                tracing::warn!(video_quality = other, "unknown video_quality, using high");
+                VideoQuality::High
+            }
+        }
+    }
+
+    /// Where the on-screen banner shows.
+    pub fn banner_corner(&self) -> BannerCorner {
+        match self.banner_position.trim().to_ascii_lowercase().as_str() {
+            "top_left" => BannerCorner::TopLeft,
+            _ => BannerCorner::TopRight,
+        }
+    }
+
     /// Target bitrate in bit/s for an output of `width` x `height`: the
-    /// explicit `bitrate_kbps`, or the auto value when it is `0`.
+    /// level's bitrate, or under Custom the explicit `bitrate_kbps` (the auto
+    /// value when it is `0`).
     pub fn resolved_bitrate_bps(&self, width: u32, height: u32) -> u32 {
+        if let Some(kbps) = level_bitrate_kbps(self.video_quality(), width, height, self.fps) {
+            return kbps.saturating_mul(1000);
+        }
         let kbps = if self.bitrate_kbps == 0 {
             auto_bitrate_kbps(width, height, self.fps)
         } else {
@@ -649,7 +763,25 @@ impl Config {
         config.clamp_fps();
         config.audio_apps = normalize_audio_apps(&config.audio_apps);
         config.game_apps = normalize_audio_apps(&config.game_apps);
+        config.settle_video_quality();
+        config.notification_volume = config.notification_volume.min(100);
         config
+    }
+
+    /// Writes the level an old file implies into `video_quality`, so the
+    /// settings page shows a real choice instead of an empty one, and an old
+    /// fixed tier keeps meaning the level of the same name.
+    pub fn settle_video_quality(&mut self) {
+        if self.video_quality.trim().is_empty() {
+            self.video_quality = match self.video_quality() {
+                VideoQuality::Low => "low",
+                VideoQuality::Medium => "medium",
+                VideoQuality::High => "high",
+                VideoQuality::VeryHigh => "very_high",
+                VideoQuality::Custom => "custom",
+            }
+            .into();
+        }
     }
 
     /// Clamps the two capture levels to their documented 0..=200 range.
@@ -770,8 +902,50 @@ mod tests {
     }
 
     #[test]
+    fn quality_levels_follow_resolution_and_fps() {
+        let mut config = Config { video_quality: "high".into(), ..Config::default() };
+        config.fps = 60;
+        assert_eq!(config.resolved_bitrate_bps(1920, 1080), 30_000_000);
+        config.fps = 120;
+        let at_120 = config.resolved_bitrate_bps(1920, 1080);
+        assert!((50_000_000..=55_000_000).contains(&at_120), "1080p120 high got {at_120}");
+        config.video_quality = "very_high".into();
+        assert!(config.resolved_bitrate_bps(3840, 2160) <= MAX_LEVEL_KBPS * 1000, "cap");
+        assert!(config.resolved_max_bitrate_bps(3840, 2160) <= 200_000_000);
+        config.video_quality = "low".into();
+        config.fps = 30;
+        assert_eq!(config.resolved_bitrate_bps(640, 360), 2_500_000, "floor");
+    }
+
+    #[test]
+    fn a_file_without_video_quality_keeps_its_choice() {
+        let level = |kbps: u32| {
+            Config { video_quality: String::new(), bitrate_kbps: kbps, ..Config::default() }
+                .video_quality()
+        };
+        assert_eq!(level(0), VideoQuality::High);
+        assert_eq!(level(5_000), VideoQuality::Low);
+        assert_eq!(level(8_000), VideoQuality::Medium);
+        assert_eq!(level(14_000), VideoQuality::High);
+        assert_eq!(level(20_000), VideoQuality::VeryHigh);
+        assert_eq!(level(12_345), VideoQuality::Custom);
+        let mut old: Config = toml::from_str("bitrate_kbps = 14000\n").unwrap();
+        assert_eq!(old.video_quality(), VideoQuality::High);
+        old.settle_video_quality();
+        assert_eq!(old.video_quality, "high");
+        let mut typed: Config = toml::from_str("bitrate_kbps = 12345\n").unwrap();
+        typed.settle_video_quality();
+        assert_eq!(typed.video_quality, "custom");
+        assert_eq!(old.notification_volume, 100);
+        assert_eq!(old.banner_corner(), BannerCorner::TopRight);
+        let custom =
+            Config { video_quality: "custom".into(), bitrate_kbps: 12_000, ..Config::default() };
+        assert_eq!(custom.resolved_bitrate_bps(1920, 1080), 12_000_000);
+    }
+
+    #[test]
     fn explicit_bitrate_wins_over_auto() {
-        let mut config = Config::default();
+        let mut config = Config { video_quality: "custom".into(), ..Config::default() };
         assert_eq!(config.resolved_bitrate_bps(1920, 1080), 8_000_000);
         assert_eq!(config.resolved_max_bitrate_bps(1920, 1080), 12_000_000);
         config.bitrate_kbps = 5000;

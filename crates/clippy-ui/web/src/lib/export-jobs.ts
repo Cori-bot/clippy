@@ -111,7 +111,11 @@ export class ExportJobStore {
       if (job && pending && job.request_token !== pending.token) throw new Error('Le moteur a répondu pour une autre demande d’export.');
       this.recovering = false;
       this.error = null;
-      if (job && job.job_id === this.dismissedId && TERMINAL.has(job.state)) {
+      // Without a pending request or a job this window was following, a
+      // finished job is an old one (the daemon answers with its latest job):
+      // showing it again on every launch would replay the last export.
+      const shown = this.job?.job_id === job?.job_id;
+      if (job && TERMINAL.has(job.state) && (job.job_id === this.dismissedId || (!pending && !wasActive && !shown))) {
         this.job = null;
         this.error = null;
       } else if (job) {

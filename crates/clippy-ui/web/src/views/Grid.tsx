@@ -89,6 +89,10 @@ export function Grid() {
     app.selected = index;
     if (event && (selecting || event.ctrlKey || event.metaKey || event.shiftKey)) {
       toggleCheck(clip.id, event.shiftKey);
+    } else if (event && !selecting && !busy) {
+      // A click (or Enter) opens; a right click selects without an event and
+      // must leave the grid, and its menu, where they are.
+      app.view = 'clip';
     }
   };
 
@@ -352,7 +356,7 @@ export function Grid() {
 
       {selecting && (
         <div
-          className="sticky -top-[18px] z-[5] mb-3.5 flex flex-wrap items-center gap-2 rounded-xl border border-default bg-surface-elevated p-2.5 text-sm"
+          className="sticky -top-6 z-[5] mb-3.5 flex flex-wrap items-center gap-2 rounded-xl border border-default bg-surface-elevated p-2.5 text-sm"
           role="region"
           aria-label="Sélection de clips">
           <span className="mr-auto tabular-nums" aria-live="polite">
@@ -455,12 +459,6 @@ export function Grid() {
                   checked={checked.has(clip.id)}
                   ontoggle={(range) => toggleCheck(clip.id, range)}
                   onselect={(event) => pick(clip, index, event)}
-                  onopen={() => {
-                    if (!selecting && !busy) {
-                      app.selected = index;
-                      app.view = 'clip';
-                    }
-                  }}
                   onfavorite={() => app.setFavorite(clip.id, !clip.favorite)}
                   onrename={(title) => app.rename(clip.id, title)}
                   oncopy={() => app.copyClip(clip.id)}

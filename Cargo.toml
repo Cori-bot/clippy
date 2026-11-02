@@ -10,7 +10,7 @@ members = ["crates/clippy-core", "crates/clippy-cli", "crates/clippy-daemon", "c
 # silently skip a test suite or a binary.
 
 [workspace.package]
-version = "1.6.0"
+version = "1.6.1"
 edition = "2024"
 
 [workspace.dependencies]

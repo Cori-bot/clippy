@@ -173,11 +173,11 @@ export function Settings() {
       {/* Sticky at the top of the scrollport, the re-arm notice parked just
           under it: the page is long and the headings are its only landmarks.
           Opaque, so the page does not show through -- including the strip above
-          it: sticky `top-0` sits below <main>'s 18 px padding, so the `before`
+          it: sticky `top-0` sits below <main>'s 24 px padding (`py-6`), so the `before`
           covers that strip. */}
       <nav
         aria-label="Sections des paramètres"
-        className="sticky top-0 z-[4] mb-3.5 flex h-9 flex-wrap items-center gap-1 border-b border-subtle bg-surface-tertiary before:absolute before:inset-x-0 before:-top-[18px] before:h-[18px] before:bg-surface-tertiary"
+        className="sticky top-0 z-[4] mb-3.5 flex min-h-9 flex-wrap items-center gap-1 border-b border-subtle bg-surface-tertiary before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-surface-tertiary"
       >
         {SECTIONS.map((section) => (
           <button

@@ -24,7 +24,9 @@
 //! own alpha handling is never relied on, which is why the text can use
 //! ClearType on the opaque fill.
 
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
+
+use clippy_core::config::BannerCorner;
 use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
@@ -77,6 +79,27 @@ static START: Once = Once::new();
 /// Shows `message`, replacing whatever the banner currently says and
 /// restarting its timer. Never blocks and never fails: a banner is feedback
 /// about something that already happened.
+/// The corner the next banners show in (`Config::banner_position`), kept as
+/// a process-wide setting so every caller of [`show`] follows it.
+static CORNER: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_corner(corner: BannerCorner) {
+    CORNER.store(matches!(corner, BannerCorner::TopLeft) as u8, Ordering::Release);
+}
+
+fn corner() -> BannerCorner {
+    if CORNER.load(Ordering::Acquire) == 1 { BannerCorner::TopLeft } else { BannerCorner::TopRight }
+}
+
+/// Final top-left position of a `width`-wide card in `area` for `corner`.
+fn card_origin(area: RECT, width: i32, margin: i32, corner: BannerCorner) -> POINT {
+    let x = match corner {
+        BannerCorner::TopRight => area.right - width - margin,
+        BannerCorner::TopLeft => area.left + margin,
+    };
+    POINT { x, y: area.top + margin }
+}
+
 pub fn show(message: Message) {
     tracing::debug!(title = %message.title, detail = %message.detail, "banner");
     if let Ok(mut pending) = PENDING.lock() {
@@ -106,6 +129,8 @@ struct Shown {
     /// Final position of the card's top-left corner, and its size.
     at: POINT,
     size: SIZE,
+    /// Which side the card slides in from.
+    corner: BannerCorner,
     dc: HDC,
     bitmap: HBITMAP,
     old: HGDIOBJ,
@@ -229,7 +254,10 @@ unsafe fn tick(hwnd: HWND) {
         };
         let Some(shown) = slot.as_ref() else { return };
         let scale = shown.size.cy as f32 / BASE_HEIGHT as f32;
-        let at = POINT { x: shown.at.x + (frame.slide * 18.0 * scale) as i32, y: shown.at.y };
+        // The card slides in from the screen edge it sits against.
+        let offset = (frame.slide * 18.0 * scale) as i32;
+        let offset = if shown.corner == BannerCorner::TopLeft { -offset } else { offset };
+        let at = POINT { x: shown.at.x + offset, y: shown.at.y };
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
@@ -318,7 +346,8 @@ unsafe fn build(message: &Message) -> Option<Shown> {
         let px = |v: i32| (v as f32 * scale).round() as i32;
         let (width, height) = (px(BASE_WIDTH), px(BASE_HEIGHT));
         let area = info.rcMonitor;
-        let at = POINT { x: area.right - width - px(BASE_MARGIN), y: area.top + px(BASE_MARGIN) };
+        let corner = corner();
+        let at = card_origin(area, width, px(BASE_MARGIN), corner);
 
         let screen = GetDC(None);
         let dc = CreateCompatibleDC(Some(screen));
@@ -385,7 +414,15 @@ unsafe fn build(message: &Message) -> Option<Shown> {
         let pixels = std::slice::from_raw_parts_mut(bits.cast::<u8>(), (width * height * 4) as usize);
         shape(pixels, width, height, BASE_RADIUS * scale, scale);
 
-        Some(Shown { started: Instant::now(), at, size: SIZE { cx: width, cy: height }, dc, bitmap, old })
+        Some(Shown {
+            started: Instant::now(),
+            at,
+            size: SIZE { cx: width, cy: height },
+            corner,
+            dc,
+            bitmap,
+            old,
+        })
     }
 }
 
@@ -454,6 +491,15 @@ fn shape(pixels: &mut [u8], width: i32, height: i32, radius: f32, scale: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_sits_in_the_chosen_corner() {
+        let area = RECT { left: 1920, top: 0, right: 3840, bottom: 1080 };
+        let right = card_origin(area, 340, 24, BannerCorner::TopRight);
+        assert_eq!((right.x, right.y), (3840 - 340 - 24, 24));
+        let left = card_origin(area, 340, 24, BannerCorner::TopLeft);
+        assert_eq!((left.x, left.y), (1920 + 24, 24));
+    }
 
     #[test]
     fn the_animation_fades_in_holds_fades_out_and_ends() {

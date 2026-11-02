@@ -47,10 +47,19 @@ pub struct GameEntry {
     pub last_played: Option<String>,
     #[serde(default)]
     pub profile: GameProfile,
+    /// Removed by the user although Clippy detected it: kept, switched off and
+    /// out of the list, so it is never treated as a game nor detected again
+    /// until the user adds it back.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hidden: bool,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -73,7 +82,13 @@ pub fn normalize_exe(raw: &str) -> Option<String> {
 }
 
 fn clean_name(raw: &str) -> String {
-    raw.trim().chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect::<String>().trim().to_string()
+    raw.trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_NAME_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// `eldenring.exe` -> `Eldenring`: the fallback label for a program that has
@@ -102,7 +117,10 @@ impl GameProfile {
                 }
                 seen.push(exe.clone());
                 let name = clean_name(&app.name);
-                Some(ProfileApp { name: if name.is_empty() { name_from_exe(&exe) } else { name }, exe })
+                Some(ProfileApp {
+                    name: if name.is_empty() { name_from_exe(&exe) } else { name },
+                    exe,
+                })
             })
             .take(MAX_PROFILE_APPS)
             .collect();
@@ -141,10 +159,17 @@ impl Registry {
             })
             .unwrap_or_default();
         let mut registry = Self { path, games: Vec::new() };
+        let mut dropped = false;
         // Re-validated on the way in: the file is user-editable.
         for mut entry in games {
             let Some(exe) = normalize_exe(&entry.exe) else { continue };
             if registry.games.iter().any(|g| g.exe == exe) {
+                continue;
+            }
+            // Detected by an older Clippy that took any full-screen window for
+            // a game (the screen-capture overlay, a photo viewer...).
+            if !entry.manual && !entry.hidden && crate::game::excluded(&exe, &exe) {
+                dropped = true;
                 continue;
             }
             entry.profile = entry.profile.cleaned(&exe);
@@ -152,6 +177,9 @@ impl Registry {
             let name = clean_name(&entry.name);
             entry.name = if name.is_empty() { name_from_exe(&entry.exe) } else { name };
             registry.games.push(entry);
+        }
+        if dropped {
+            registry.save();
         }
         registry
     }
@@ -171,9 +199,11 @@ impl Registry {
 
     /// Most recently played first, then the rest by name.
     pub fn list(&self) -> Vec<GameEntry> {
-        let mut games = self.games.clone();
+        let mut games: Vec<GameEntry> = self.games.iter().filter(|g| !g.hidden).cloned().collect();
         games.sort_by(|a, b| {
-            b.last_played.cmp(&a.last_played).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            b.last_played
+                .cmp(&a.last_played)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         games
     }
@@ -184,12 +214,44 @@ impl Registry {
 
     /// Programs that count as games even windowed.
     pub fn manual_exes(&self) -> Vec<String> {
-        self.games.iter().filter(|g| g.enabled && g.manual).map(|g| g.exe.clone()).collect()
+        self.games
+            .iter()
+            .filter(|g| g.enabled && g.manual && !g.hidden)
+            .map(|g| g.exe.clone())
+            .collect()
     }
 
     /// Programs the user switched off.
     pub fn disabled_exes(&self) -> Vec<String> {
-        self.games.iter().filter(|g| !g.enabled).map(|g| g.exe.clone()).collect()
+        self.games.iter().filter(|g| !g.enabled || g.hidden).map(|g| g.exe.clone()).collect()
+    }
+
+    /// Adds the installed games the registry does not have yet, `(exe, name)`
+    /// pairs, as detected entries never played. A game the user removed stays
+    /// removed. Returns how many were added.
+    pub fn add_installed(&mut self, found: &[(String, String)]) -> usize {
+        let mut added = 0;
+        for (exe, name) in found {
+            let Some(exe) = normalize_exe(exe) else { continue };
+            if self.games.iter().any(|g| g.exe == exe) {
+                continue;
+            }
+            let name = clean_name(name);
+            self.games.push(GameEntry {
+                name: if name.is_empty() { name_from_exe(&exe) } else { name },
+                exe,
+                enabled: true,
+                manual: false,
+                last_played: None,
+                profile: GameProfile::default(),
+                hidden: false,
+            });
+            added += 1;
+        }
+        if added > 0 {
+            self.save();
+        }
+        added
     }
 
     /// Records that `exe` is running now. Adds it on first sight. Returns
@@ -198,7 +260,7 @@ impl Registry {
         let Some(exe) = normalize_exe(exe) else { return false };
         match self.games.iter_mut().find(|g| g.exe == exe) {
             Some(entry) => {
-                if entry.last_played.as_deref() == Some(now) {
+                if entry.hidden || entry.last_played.as_deref() == Some(now) {
                     return false;
                 }
                 entry.last_played = Some(now.to_string());
@@ -212,6 +274,7 @@ impl Registry {
                     manual: false,
                     last_played: Some(now.to_string()),
                     profile: GameProfile::default(),
+                    hidden: false,
                 });
             }
         }
@@ -222,7 +285,8 @@ impl Registry {
     /// Applies `edit` to `exe`, creating a manual entry for a program the
     /// registry has not seen (the "add a game" button).
     pub fn set(&mut self, exe: &str, edit: Edit, fallback_name: &str) -> Result<GameEntry, String> {
-        let exe = normalize_exe(exe).ok_or_else(|| format!("« {exe} » n’est pas un programme (.exe)"))?;
+        let exe =
+            normalize_exe(exe).ok_or_else(|| format!("« {exe} » n’est pas un programme (.exe)"))?;
         let at = match self.games.iter().position(|g| g.exe == exe) {
             Some(at) => at,
             None => {
@@ -234,11 +298,18 @@ impl Registry {
                     manual: true,
                     last_played: None,
                     profile: GameProfile::default(),
+                    hidden: false,
                 });
                 self.games.len() - 1
             }
         };
         let entry = &mut self.games[at];
+        // Adding back a game the user removed.
+        if entry.hidden {
+            entry.hidden = false;
+            entry.enabled = true;
+            entry.manual = true;
+        }
         if let Some(enabled) = edit.enabled {
             entry.enabled = enabled;
         }
@@ -256,17 +327,22 @@ impl Registry {
         Ok(out)
     }
 
-    /// Forgets a game. A detected one reappears the next time it runs full
-    /// screen, which is the point of "remove" for a mistaken entry.
+    /// Removes a game from the list. One the user added is forgotten; one
+    /// Clippy detected is hidden and switched off instead, so it neither comes
+    /// straight back nor counts as a game until the user adds it again.
     pub fn remove(&mut self, exe: &str) -> bool {
         let Some(exe) = normalize_exe(exe) else { return false };
-        let before = self.games.len();
-        self.games.retain(|g| g.exe != exe);
-        let removed = self.games.len() != before;
-        if removed {
-            self.save();
-        }
-        removed
+        let Some(at) = self.games.iter().position(|g| g.exe == exe && !g.hidden) else {
+            return false;
+        };
+        // Hidden rather than deleted, for a game added by hand too: an
+        // installed one would otherwise be added straight back by the next
+        // scan. Adding it again (`set`) brings it back.
+        let entry = &mut self.games[at];
+        entry.hidden = true;
+        entry.enabled = false;
+        self.save();
+        true
     }
 }
 
@@ -290,7 +366,9 @@ mod tests {
     #[test]
     fn only_a_bare_program_name_is_an_identity() {
         assert_eq!(normalize_exe("  Valorant.EXE "), Some("valorant.exe".into()));
-        for bad in ["", ".exe", "a", "game", "C:\\x\\game.exe", "../game.exe", "a/b.exe", "x.exe:ads"] {
+        for bad in
+            ["", ".exe", "a", "game", "C:\\x\\game.exe", "../game.exe", "a/b.exe", "x.exe:ads"]
+        {
             assert_eq!(normalize_exe(bad), None, "{bad:?}");
         }
     }
@@ -299,7 +377,10 @@ mod tests {
     fn seeing_a_program_adds_it_once_and_refreshes_its_time() {
         let mut r = registry();
         assert!(r.observe("VALORANT.exe", "VALORANT", "2026-10-20T10:00:00+02:00"));
-        assert!(!r.observe("valorant.exe", "VALORANT", "2026-10-20T10:00:00+02:00"), "same stamp, no change");
+        assert!(
+            !r.observe("valorant.exe", "VALORANT", "2026-10-20T10:00:00+02:00"),
+            "same stamp, no change"
+        );
         assert!(r.observe("valorant.exe", "ignored", "2026-10-20T10:01:00+02:00"));
         let games = r.list();
         assert_eq!(games.len(), 1);
@@ -314,7 +395,8 @@ mod tests {
         let added = r.set("minecraft.exe", Edit::default(), "Minecraft").unwrap();
         assert!(added.manual && added.enabled && added.last_played.is_none());
         assert_eq!(r.manual_exes(), ["minecraft.exe"]);
-        let off = r.set("minecraft.exe", Edit { enabled: Some(false), ..Edit::default() }, "").unwrap();
+        let off =
+            r.set("minecraft.exe", Edit { enabled: Some(false), ..Edit::default() }, "").unwrap();
         assert!(!off.enabled && off.name == "Minecraft" && off.manual);
         assert!(r.manual_exes().is_empty(), "a switched-off game is not a manual one");
         assert_eq!(r.disabled_exes(), ["minecraft.exe"]);
@@ -334,7 +416,9 @@ mod tests {
             ],
             mic: true,
         };
-        let entry = r.set("valorant.exe", Edit { profile: Some(profile), ..Edit::default() }, "Valorant").unwrap();
+        let entry = r
+            .set("valorant.exe", Edit { profile: Some(profile), ..Edit::default() }, "Valorant")
+            .unwrap();
         let apps: Vec<(&str, &str)> =
             entry.profile.apps.iter().map(|a| (a.exe.as_str(), a.name.as_str())).collect();
         assert_eq!(apps, [("discord.exe", "Discord"), ("spotify.exe", "Spotify")]);
@@ -342,12 +426,63 @@ mod tests {
     }
 
     #[test]
-    fn removing_forgets_the_game() {
+    fn removing_a_detected_game_hides_it_until_it_is_added_back() {
         let mut r = registry();
         r.observe("a.exe", "A", "t");
         assert!(r.remove("A.exe"));
-        assert!(!r.remove("a.exe"));
+        assert!(!r.remove("a.exe"), "already removed");
         assert!(r.list().is_empty());
+        assert_eq!(r.disabled_exes(), ["a.exe"], "never a game while hidden");
+        assert!(!r.observe("a.exe", "A", "t2"), "seeing it again does not bring it back");
+        assert_eq!(r.add_installed(&[("a.exe".into(), "A".into())]), 0, "nor does a scan");
+        assert!(r.list().is_empty());
+        let back = r.set("a.exe", Edit::default(), "").unwrap();
+        assert!(back.manual && back.enabled && !back.hidden);
+        assert_eq!(r.list().len(), 1);
+    }
+
+    #[test]
+    fn removing_a_game_added_by_hand_hides_it_for_good() {
+        let mut r = registry();
+        r.set("m.exe", Edit::default(), "M").unwrap();
+        assert!(r.remove("m.exe"));
+        assert!(r.list().is_empty());
+        assert!(r.manual_exes().is_empty(), "no longer a game");
+        r.add_installed(&[("m.exe".to_string(), "M".to_string())]);
+        assert!(r.list().is_empty(), "a scan does not bring it back");
+    }
+
+    #[test]
+    fn installed_games_are_added_once_never_played() {
+        let mut r = registry();
+        r.observe("cs2.exe", "cs2", "t");
+        let found = [
+            ("cs2.exe".to_string(), "Counter-Strike 2".to_string()),
+            ("AimLab_tb.exe".to_string(), "Aim Lab".to_string()),
+        ];
+        assert_eq!(r.add_installed(&found), 1);
+        assert_eq!(r.add_installed(&found), 0);
+        let aim = r.find("aimlab_tb.exe").unwrap();
+        assert!(!aim.manual && aim.enabled && aim.last_played.is_none());
+        assert_eq!(aim.name, "Aim Lab");
+        assert_eq!(r.find("cs2.exe").unwrap().name, "cs2", "an existing entry is left alone");
+    }
+
+    #[test]
+    fn a_detected_non_game_is_dropped_on_load() {
+        let dir = std::env::temp_dir().join(format!("clippy-games-drop-{}", std::process::id()));
+        let path = dir.join("games.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"games":[{"exe":"snippingtool.exe","name":"Snip"},{"exe":"photos.exe","name":"P","manual":true},{"exe":"valorant-win64-shipping.exe","name":"VALORANT"}]}"#,
+        )
+        .unwrap();
+        let r = Registry::load(Some(path.clone()));
+        let exes: Vec<_> = r.list().into_iter().map(|g| g.exe).collect();
+        assert_eq!(exes, ["photos.exe", "valorant-win64-shipping.exe"], "added by hand stays");
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("snippingtool"), "saved");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -365,7 +500,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("clippy-games-{}", std::process::id()));
         let path = dir.join("games.json");
         let mut r = Registry::load(Some(path.clone()));
-        r.set("valorant.exe", Edit { profile: Some(GameProfile { apps: vec![], mic: true }), ..Edit::default() }, "Valorant").unwrap();
+        r.set(
+            "valorant.exe",
+            Edit { profile: Some(GameProfile { apps: vec![], mic: true }), ..Edit::default() },
+            "Valorant",
+        )
+        .unwrap();
         let again = Registry::load(Some(path.clone()));
         assert_eq!(again.list(), r.list());
         std::fs::write(&path, r#"{"games":[{"exe":"..\\x","name":"bad"},{"exe":"OK.exe","name":"  "},{"exe":"ok.exe","name":"dup"}]}"#).unwrap();

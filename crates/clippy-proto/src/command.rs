@@ -118,6 +118,9 @@ pub enum Command {
     GamesRemove {
         exe: String,
     },
+    /// Looks for the games installed on this PC now and adds the new ones:
+    /// `{games, added}`.
+    GamesScan,
     /// The windows open on this PC, for the "add a game" picker.
     WindowsList,
     /// Writes a screenshot from the live capture session.
@@ -264,6 +267,7 @@ impl Command {
                 profile: req.args.get("profile").filter(|v| !v.is_null()).cloned(),
             },
             "games.remove" => Self::GamesRemove { exe: str_arg(req, "exe")? },
+            "games.scan" => Self::GamesScan,
             "windows.list" => Self::WindowsList,
             "screenshot" => Self::Screenshot,
             "shots.list" => Self::ShotsList {
@@ -703,6 +707,7 @@ mod tests {
         );
         assert!(Command::parse(&req("games.set", json!({"exe":"a.exe","enabled":"no"}))).is_err());
         assert!(Command::parse(&req("games.remove", json!({}))).is_err());
+        assert_eq!(Command::parse(&req("games.scan", json!({}))).unwrap(), Command::GamesScan);
         assert_eq!(
             Command::parse(&req("library.tracks", json!({"clip_id":"x"}))).unwrap(),
             Command::LibraryTracks { clip_id: "x".into() }

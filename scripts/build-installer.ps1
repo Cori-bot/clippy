@@ -62,6 +62,39 @@ if (-not $OutDir) { $OutDir = Join-Path $RepoRoot 'dist' }
 $UiDir = Join-Path $RepoRoot 'crates\clippy-ui'
 $StageForBundle = Join-Path $RepoRoot 'target\installer-stage'
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Clippy'
+# Where the NSIS installer remembers the folder it installed to (InstallDirRegKey).
+# A silent uninstall leaves it behind, and the next install by hand then
+# defaults to that folder -- which, after the round trip below, was a Temp
+# folder about to be deleted. Seen on 2026-11-01.
+$InstallDirKey = 'HKCU:\Software\Clippy'
+$RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+
+# Removes whatever the install round trip left that points into $Under: the
+# remembered install folder, the uninstall entry and the shortcuts. Never
+# touches an entry that points anywhere else (a real install).
+function Clear-TestInstall([string]$Under) {
+    $prefix = $Under.TrimEnd('\') + '\'
+    $remembered = (Get-ItemProperty -LiteralPath "$InstallDirKey\Clippy" -ErrorAction SilentlyContinue).'(default)'
+    if ($remembered -and ($remembered + '\').StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath "$InstallDirKey\Clippy" -Recurse -Force -ErrorAction SilentlyContinue
+        if ((Test-Path $InstallDirKey) -and -not (Get-ChildItem $InstallDirKey -ErrorAction SilentlyContinue) -and
+            -not (Get-Item $InstallDirKey).Property) {
+            Remove-Item -LiteralPath $InstallDirKey -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $location = (Get-ItemProperty -LiteralPath $UninstallKey -ErrorAction SilentlyContinue).InstallLocation
+    if ($location -and ($location.Trim('"') + '\').StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $UninstallKey -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($dir in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
+        $lnk = Join-Path $dir 'Clippy.lnk'
+        if ((Test-Path -LiteralPath $lnk) -and
+            $shell.CreateShortcut($lnk).TargetPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $lnk -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 function Require {
     param([string]$Name, [bool]$Condition, [string]$Detail = '')
@@ -75,6 +108,10 @@ function Require {
 }
 
 $work = Join-Path $env:TEMP ("clippy-installer-" + [guid]::NewGuid().ToString('N'))
+$installStarted = $false
+# The uninstaller deletes the Run\Clippy value (installer-hooks.nsh), even one a
+# real install wrote; it is put back after the round trip.
+$savedRun = (Get-ItemProperty -LiteralPath $RunKey -Name 'Clippy' -ErrorAction SilentlyContinue).Clippy
 try {
     Write-Host ''
     Write-Host 'Step 1: gates, release build and staging (scripts\ship-zip.ps1 -StageOnly)' -ForegroundColor Cyan
@@ -122,11 +159,13 @@ try {
     $installTested = $false
     if ($SkipInstallTest) {
         Write-Host '  skipped (-SkipInstallTest)' -ForegroundColor Yellow
-    } elseif ((Test-Path $UninstallKey) -or (Get-Process -Name 'clippy*' -ErrorAction SilentlyContinue)) {
+    } elseif ((Test-Path $UninstallKey) -or (Test-Path "$InstallDirKey\Clippy") -or
+              (Get-Process -Name 'clippy*' -ErrorAction SilentlyContinue)) {
         Write-Host '  skipped: Clippy is installed or running here, and the test would stop it and' -ForegroundColor Yellow
         Write-Host '  reuse its uninstall entry. Run this on a machine without it, or by hand.' -ForegroundColor Yellow
     } else {
         $target = Join-Path $work 'installed'
+        $installStarted = $true
         $p = Start-Process -FilePath $built -ArgumentList '/S', "/D=$target" -Wait -PassThru
         Require -Name 'silent install exits 0' -Condition ($p.ExitCode -eq 0) -Detail "exit code $($p.ExitCode)"
         foreach ($f in @('clippy.exe', 'clippy-daemon.exe', 'clippy-ui.exe', 'README.txt', 'uninstall.exe')) {
@@ -143,6 +182,8 @@ try {
         while ((Test-Path -LiteralPath $target) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 300 }
         Require -Name 'the install folder is gone' -Condition (-not (Test-Path -LiteralPath $target))
         Require -Name 'the uninstall entry is gone' -Condition (-not (Test-Path $UninstallKey))
+        Clear-TestInstall -Under $work
+        Require -Name 'no remembered install folder is left' -Condition (-not (Test-Path "$InstallDirKey\Clippy"))
         $installTested = $true
     }
 
@@ -170,5 +211,11 @@ try {
     Write-Host 'Unsigned: Windows SmartScreen will warn on first run ("More info" > "Run anyway").'
     Write-Host 'Nothing was committed, tagged or pushed.'
 } finally {
+    if ($installStarted) {
+        Clear-TestInstall -Under $work
+        if ($savedRun) {
+            Set-ItemProperty -LiteralPath $RunKey -Name 'Clippy' -Value $savedRun -ErrorAction SilentlyContinue
+        }
+    }
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }

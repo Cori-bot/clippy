@@ -40,17 +40,15 @@ export function GameRow({ game }: { game: GameEntry }) {
           Profil
           <ChevronDown className={`transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
         </Button>
-        {game.manual && (
-          <Button
-            color="secondary"
-            variant="ghost"
-            size="sm"
-            uniform
-            aria-label={`Retirer ${name}`}
-            onClick={() => setRemoving(true)}>
-            <Trash />
-          </Button>
-        )}
+        <Button
+          color="secondary"
+          variant="ghost"
+          size="sm"
+          uniform
+          aria-label={`Retirer ${name}`}
+          onClick={() => setRemoving(true)}>
+          <Trash />
+        </Button>
       </div>
       {open && (
         <div id={panelId} className="px-4 pb-4">
@@ -76,7 +74,9 @@ export function GameRow({ game }: { game: GameEntry }) {
             </Button>
           </>
         }>
-        Ce jeu ne sera plus reconnu. Les clips déjà enregistrés sont conservés.
+        {game.manual
+          ? 'Ce jeu ne sera plus reconnu. Les clips déjà enregistrés sont conservés.'
+          : 'Ce jeu disparaît de la liste et ne sera plus détecté, même en plein écran, tant qu’il n’est pas ajouté à nouveau. Les clips déjà enregistrés sont conservés.'}
       </Dialog>
     </li>
   );

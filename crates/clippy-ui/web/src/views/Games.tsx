@@ -8,6 +8,16 @@ import { gameLabel } from '../lib/games';
 export function Games() {
   const a = useApp();
   const [adding, setAdding] = useState(false);
+  const [scanning, setScanning] = useState(false);
+
+  const scan = async () => {
+    setScanning(true);
+    try {
+      await app.scanGames();
+    } finally {
+      setScanning(false);
+    }
+  };
 
   useEffect(() => {
     void app.loadGames();
@@ -22,8 +32,9 @@ export function Games() {
       <header>
         <h1 className="heading-lg mb-1">Jeux</h1>
         <p className="text-sm text-secondary">
-          Clippy reconnaît tout seul les jeux que tu lances. Ajoute ici ceux qu’il ignore et règle les pistes audio de
-          chacun. Les clips sont classés dans un dossier par jeu.
+          Clippy trouve tout seul les jeux installés sur ce PC (Steam, Epic, Riot, GOG, Ubisoft, EA, Battle.net, Xbox).
+          Ajoute ici ceux qu’il ignore et règle les pistes audio de chacun. Les clips sont classés dans un dossier par
+          jeu.
         </p>
         <p className="mt-2 text-sm text-secondary">
           Le mode « Jeux uniquement » se règle dans{' '}
@@ -62,7 +73,17 @@ export function Games() {
           <h2 id="added-games" className="text-xs font-semibold tracking-wider text-secondary uppercase">
             Jeux ajoutés
           </h2>
-          <Button className="ml-auto" color="primary" size="sm" onClick={() => setAdding(true)}>
+          <Button
+            className="ml-auto"
+            color="secondary"
+            variant="outline"
+            size="sm"
+            disabled={scanning}
+            aria-busy={scanning}
+            onClick={() => void scan()}>
+            {scanning ? 'Recherche…' : 'Rechercher les jeux installés'}
+          </Button>
+          <Button className="ml-2" color="primary" size="sm" onClick={() => setAdding(true)}>
             Ajouter un jeu
           </Button>
         </div>

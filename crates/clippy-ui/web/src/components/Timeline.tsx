@@ -243,7 +243,6 @@ export function Timeline({
     </div>
         </div>
       </div>
-      <div className="timeline-footer"><span><kbd>,</kbd> / <kbd>.</kbd> Image par image</span><span><kbd>I</kbd> Entrée <kbd>O</kbd> Sortie</span></div>
     </section>
   );
 }

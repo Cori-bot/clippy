@@ -9,7 +9,6 @@ import { Dialog } from '../components/ui/Dialog';
 import { Check, ChevronLeft, ChevronRight, Copy, Dots, Folder, Pencil, Scissors, Star, StarFilled, Trash } from '../components/icons';
 import { Logo } from '../components/Logo';
 import { ExportJobPanel } from '../components/ExportJobPanel';
-import { ReplayControl } from '../components/ReplayControl';
 import { Timeline } from '../components/Timeline';
 import { TrackRows } from '../components/TrackRows';
 import { VideoPlayer, type VideoPlayerHandle } from '../components/VideoPlayer';
@@ -67,6 +66,7 @@ export function ClipPage() {
   // halfway through trimming.
   const clipId = clip?.id ?? null;
   const clipDurationMs = clip?.duration_ms ?? 0;
+  const clipHasAudio = clip?.has_audio ?? false;
   const frameIdentity = JSON.stringify([a.clipDir, clipId, clipDurationMs]);
   const frameIndex = frameResult?.identity === frameIdentity ? frameResult.index : undefined;
   const trackFiles = trackResult?.identity === frameIdentity ? trackResult.files : {};
@@ -131,7 +131,9 @@ export function ClipPage() {
   useEffect(() => {
     setTrackResult(undefined);
     setTracksError(false);
-    if (!clipId || tracks.length === 0) {
+    // A clip with one audio stream has nothing to edit, but its timeline still
+    // shows that stream's waveform, so its file (index 0) is fetched too.
+    if (!clipId || (tracks.length === 0 && !clipHasAudio)) {
       setTracksLoading(false);
       return;
     }
@@ -155,7 +157,7 @@ export function ClipPage() {
       stale = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clipId, tracksKey, frameIdentity]);
+  }, [clipId, tracksKey, frameIdentity, clipHasAudio]);
 
   /**
    * The only way this page opens the delete dialog, and it leaves fullscreen
@@ -297,6 +299,8 @@ export function ClipPage() {
   // failure) the video plays its own mixed audio.
   const separateTracks =
     tracks.length > 0 && !tracksLoading && !tracksError && tracks.every((t) => trackFiles[t.index]);
+  // Waveform lanes of the timeline: the editable tracks, or the single stream.
+  const waveTracks = separateTracks ? tracks : tracks.length === 0 && trackFiles[0] ? [{ index: 0, name: 'Audio' }] : [];
 
   if (!clip) return null;
 
@@ -399,14 +403,13 @@ export function ClipPage() {
               </section>
               <ExportJobPanel />
               <details className="editor-details"><summary>Fichier source</summary><p>{clip.width}×{clip.height} · {clip.fps} fps<br />{formatDuration(clip.duration_ms)} · {formatBytes(clip.bytes)}<br />{clip.encoder}{clip.has_audio ? ' + audio' : ''}</p></details>
-              <details className="editor-details"><summary>Replay · {a.armed ? 'actif' : a.waiting ? 'en attente' : 'désactivé'}</summary><ReplayControl /></details>
             </div>
           )}
           timeline={(playerDurationMs) => (
             <Timeline
               src={clipUrl(a.clipDir, clip)}
-              trackUrls={separateTracks ? tracks.map((t) => trackUrl(a.clipDir, clip, trackFiles[t.index])) : []}
-              trackNames={tracks.map(t => t.name)}
+              trackUrls={waveTracks.map((t) => trackUrl(a.clipDir, clip, trackFiles[t.index]))}
+              trackNames={waveTracks.map(t => t.name)}
               durationMs={canTrim ? mode === 'precise' && frameIndex ? frameIndex.end_100ns / 10000 : clip.duration_ms : playerDurationMs}
               trimmable={canTrim}
               playheadMs={playheadMs}

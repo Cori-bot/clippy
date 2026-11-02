@@ -936,7 +936,7 @@ pub fn run(config: &Config, options: ReplayOptions) -> Result<()> {
         .spawn(move || {
             while hotkey_rx.recv().is_ok() {
                 let (reply, _discard) = channel();
-                if tx.send(EngineCommand::Clip { reply }).is_err() {
+                if tx.send(EngineCommand::Clip { reply, place: None }).is_err() {
                     return; // control loop is gone — session over
                 }
             }
@@ -1221,8 +1221,12 @@ fn run_session(
     let mut pending_error: Option<anyhow::Error> = None;
     loop {
         match commands.recv_timeout(Duration::from_millis(250)) {
-            Ok(EngineCommand::Clip { reply }) => {
-                let result = save_clip(&capture, &clip_dir, &folder, &game, &encoder_name);
+            Ok(EngineCommand::Clip { reply, place }) => {
+                let (folder, game) = match &place {
+                    Some(place) => (place.folder.as_str(), place.game.as_str()),
+                    None => (folder.as_str(), game.as_str()),
+                };
+                let result = save_clip(&capture, &clip_dir, folder, game, &encoder_name);
                 if options.print_clips {
                     match &result {
                         Ok(Some(saved)) => print_clip_line(saved),

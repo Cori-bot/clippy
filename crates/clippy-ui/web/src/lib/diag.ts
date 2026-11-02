@@ -124,6 +124,7 @@ function install(): void {
       if (e.target instanceof HTMLMediaElement) diag(`media-${type}`, { src: e.target.currentSrc.slice(-80), at: e.target.currentTime });
     }, true);
   }
+  document.addEventListener('securitypolicyviolation', (e) => diag('csp', { directive: e.effectiveDirective, blocked: e.blockedURI.slice(-80), source: e.sourceFile, line: e.lineNumber }));
   addEventListener('unhandledrejection', (e) => diag('rejection', { reason: String(e.reason), stack: e.reason instanceof Error ? e.reason.stack : undefined }));
   addEventListener('focus', () => diag('window-focus'));
   addEventListener('blur', () => diag('window-blur'));

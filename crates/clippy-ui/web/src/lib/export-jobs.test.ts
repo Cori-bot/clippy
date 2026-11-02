@@ -268,7 +268,22 @@ describe('uncertain export ownership', () => {
     await recovering;
     expect(value.recovering).toBe(false);
     expect(value.active).toBe(false);
+    // Nothing was pending in this window: the finished job is an old one.
+    expect(value.job).toBeNull();
+  });
+
+  it('keeps a finished export the window is still showing across a reconnect', async () => {
+    const {value} = store(vi.fn().mockResolvedValue(job('completed',100)));
+    value.job = job('completed',100);
+    await value.resume();
     expect(value.job?.state).toBe('completed');
+  });
+
+  it('does not show the last finished export again on a fresh launch', async () => {
+    const {value} = store(vi.fn().mockResolvedValue(job('completed',100)));
+    await value.resume();
+    expect(value.job).toBeNull();
+    expect(value.error).toBeNull();
   });
 
   it.each(['running','completed'] as const)('recovers a %s job after losing its start response, without another start', async state => {

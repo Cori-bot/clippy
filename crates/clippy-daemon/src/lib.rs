@@ -30,6 +30,7 @@ pub mod export_jobs;
 pub mod game;
 pub mod games;
 pub mod hook;
+pub mod installed;
 pub mod pipe;
 pub mod presence;
 pub mod reveal;

@@ -332,10 +332,11 @@ pub struct ArmOutcome {
 /// rather than requiring a re-arm. `screenshot_sound` is read fresh by
 /// `record_saved_shot` on every screenshot, the same way `clip_sound` already
 /// is for clips.
-pub(crate) const REQUIRES_REARM: [&str; 11] = [
+pub(crate) const REQUIRES_REARM: [&str; 12] = [
     "fps",
     // The encoded size is fixed when the session opens.
     "resolution",
+    "video_quality",
     "bitrate_kbps",
     "max_bitrate_kbps",
     "rate_control",
@@ -430,7 +431,7 @@ fn crosses_zero(key: &str, before: Option<&Value>, after: Option<&Value>) -> boo
 /// do is fall silently behind `Config`, so
 /// `every_numeric_config_key_is_range_checked` fails the build the day a
 /// numeric key is added without a bound here.
-const NUMERIC_BOUNDS: [(&str, u64, u64); 10] = [
+const NUMERIC_BOUNDS: [(&str, u64, u64); 11] = [
     ("fps", MIN_FPS as u64, MAX_FPS as u64),
     ("bitrate_kbps", 0, 200_000),
     ("max_bitrate_kbps", 0, 200_000),
@@ -441,6 +442,7 @@ const NUMERIC_BOUNDS: [(&str, u64, u64); 10] = [
     ("system_volume", 0, MAX_VOLUME_PERCENT as u64),
     ("mic_volume", 0, MAX_VOLUME_PERCENT as u64),
     ("auto_clip_min_kills", 1, 5),
+    ("notification_volume", 0, 100),
 ];
 
 /// Refuses the whole request if any bounded key is out of range.
@@ -618,6 +620,17 @@ fn game_session(seen: &Sighting, entry: Option<&GameEntry>) -> SessionContext {
     SessionContext { tracks: Some(tracks), game: Some(GameContext { name, folder }) }
 }
 
+/// Where a clip taken now is filed when the session itself does not say: in
+/// desktop mode with `group_by_game`, the game in front (or still running)
+/// gets its own folder, as it would in game mode. `None` keeps the session's.
+fn place_for(group_by_game: bool, session_has_game: bool, seen: Option<&Sighting>, entry: Option<&GameEntry>) -> Option<clippy_core::engine::ClipPlace> {
+    if !group_by_game || session_has_game {
+        return None;
+    }
+    let game = game_session(seen?, entry).game?;
+    Some(clippy_core::engine::ClipPlace { folder: game.folder, game: game.name })
+}
+
 /// Unknown modification times force a rebuild; cache bytes must describe
 /// the current master rather than an older file with the same clip id.
 fn track_cache_is_fresh(source: &Path, cached: &Path) -> bool {
@@ -778,6 +791,23 @@ impl Daemon {
     /// to know the game in front even while the whole desktop is recorded.
     /// Starting and stopping the replay stays [`Self::game_tick`]'s, in the
     /// game mode only.
+    /// See [`place_for`]. Takes `config`, `game` and `games` one after the
+    /// other, never nested.
+    fn clip_place(&self) -> Option<clippy_core::engine::ClipPlace> {
+        let (group, session_has_game) = {
+            let config = self.lock_config();
+            (config.group_by_game, config.session.game.is_some())
+        };
+        if !group || session_has_game {
+            return None;
+        }
+        // Only a game Clippy knows: a full-screen program it merely guessed at
+        // would leave a folder named after a video player or a slideshow.
+        let seen = self.lock_game().sighting.clone().filter(|seen| seen.known)?;
+        let entry = self.lock_games().find(&seen.exe).cloned();
+        place_for(group, session_has_game, Some(&seen), entry.as_ref())
+    }
+
     pub fn note_sighting(&self, seen: Option<Sighting>, now: Instant) {
         Self::update_sighting(&mut self.lock_game(), seen, now);
     }
@@ -835,6 +865,11 @@ impl Daemon {
     /// The watcher saw a game running: adds it to the list on first sight and
     /// keeps its "last played" fresh. Tells clients when the list changed.
     pub fn game_seen(&self, seen: &Sighting) {
+        // A full-screen program Clippy only guesses is a game is recorded in
+        // the `game` mode but never listed.
+        if !seen.known {
+            return;
+        }
         let now = Instant::now();
         {
             let mut watch = self.lock_game();
@@ -876,6 +911,33 @@ impl Daemon {
         }
         self.broadcast_games();
         Ok(())
+    }
+
+    /// Adds the installed games found by the last scan that the list does not
+    /// have yet. Returns how many were added.
+    pub fn games_add_installed(&self) -> usize {
+        let found: Vec<(String, String)> = crate::installed::current()
+            .games()
+            .into_iter()
+            .filter_map(|(path, name)| {
+                let exe = path.rsplit('\\').next()?.to_string();
+                let name = if name.is_empty() { crate::game::friendly_name(&path, &exe) } else { name };
+                Some((exe, name))
+            })
+            .collect();
+        let added = self.lock_games().add_installed(&found);
+        if added > 0 {
+            self.broadcast_games();
+        }
+        added
+    }
+
+    /// `games.scan`: looks for installed games now and adds the new ones.
+    /// Returns the list and how many were added.
+    pub fn games_scan(&self) -> (Vec<GameEntry>, usize) {
+        crate::installed::rescan();
+        let added = self.games_add_installed();
+        (self.games_list(), added)
     }
 
     fn broadcast_games(&self) {
@@ -1089,12 +1151,15 @@ impl Daemon {
     /// Emitting from inside the function every caller must go through is what
     /// makes that structural rather than a rule to remember.
     pub fn clip(&self) -> Result<Option<ClipMeta>> {
+        // Before `armed`: the lock order lets `armed` be held while `config`
+        // is taken, never the reverse.
+        let place = self.clip_place();
         let saved = {
             let armed = self.lock_armed();
             let Some(state) = armed.as_ref() else {
                 bail!("le replay n’est pas activé — activez-le d’abord");
             };
-            state.engine.clip()?
+            state.engine.clip_in(place)?
         };
         if let Some(meta) = &saved {
             // The one path the chime belongs to: something was captured off
@@ -1269,7 +1334,9 @@ impl Daemon {
                 // built-in chime, which is what `resolve_sound` returns for a
                 // sound that is unset or has nowhere cached. `play` takes
                 // `None` to mean the built-in chime either way.
-                config.clip_sound.then(|| resolve_sound(&config, self.config_path.as_deref()))
+                config
+                    .clip_sound
+                    .then(|| (resolve_sound(&config, self.config_path.as_deref()), config.notification_volume))
             }
         };
 
@@ -1305,8 +1372,8 @@ impl Daemon {
         // Last, after the clip is on disk and every client has been told. The
         // sound is feedback about a completed clip, so it goes behind
         // everything that makes the clip real.
-        if let Some(custom) = sound {
-            crate::sound::play(custom.as_deref());
+        if let Some((custom, volume)) = sound {
+            crate::sound::play(custom.as_deref(), volume);
         }
         if banner {
             crate::banner::show(clip_banner_message(meta));
@@ -1327,9 +1394,9 @@ impl Daemon {
         // `config` is read fresh here rather than threaded down from
         // `screenshot`, which already reads it after the `armed` lock is
         // released — see the lock ordering note at the top of this file.
-        let (play_sound, banner) = {
+        let (play_sound, banner, volume) = {
             let config = self.lock_config();
-            (config.screenshot_sound, config.clip_banner)
+            (config.screenshot_sound, config.clip_banner, config.notification_volume)
         };
 
         // Broadcast before the sound, matching `record_saved_clip`: the event
@@ -1347,7 +1414,7 @@ impl Daemon {
         }
 
         if play_sound {
-            crate::sound::play_shot();
+            crate::sound::play_shot(volume);
         }
         if banner {
             crate::banner::show(crate::banner::Message {
@@ -1602,6 +1669,19 @@ impl Daemon {
         {
             bail!("capture_mode accepte « desktop » ou « game », pas {mode:?}");
         }
+        if let Some(level) = values.get("video_quality").and_then(Value::as_str)
+            && !matches!(
+                level.trim().to_ascii_lowercase().as_str(),
+                "low" | "medium" | "high" | "very_high" | "custom"
+            )
+        {
+            bail!("video_quality accepte low, medium, high, very_high ou custom, pas {level:?}");
+        }
+        if let Some(corner) = values.get("banner_position").and_then(Value::as_str)
+            && !matches!(corner.trim().to_ascii_lowercase().as_str(), "top_right" | "top_left")
+        {
+            bail!("banner_position accepte « top_right » ou « top_left », pas {corner:?}");
+        }
 
         let mut updated: Config = match serde_json::from_value(Value::Object(merged)) {
             Ok(updated) => updated,
@@ -1791,6 +1871,7 @@ impl Daemon {
             }
         }
         *config = updated;
+        crate::banner::set_corner(config.banner_corner());
         // The tray menu ticks and labels itself from this mirror.
         crate::window::publish_prefs(&config);
 
@@ -2817,6 +2898,37 @@ pub struct AutoClipSettings {
 /// How an export reshapes the picture and its size, beyond the cut itself.
 /// The banner for a clip the hotkey (or auto-clip) just saved: what was saved
 /// and how long it is.
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+
+    fn valorant() -> Sighting {
+        Sighting {
+            exe: "valorant-win64-shipping.exe".into(),
+            name: "VALORANT".into(),
+            left: 0,
+            top: 0,
+            known: true,
+        }
+    }
+
+    #[test]
+    fn a_desktop_session_files_the_clip_under_the_game_in_front() {
+        let seen = valorant();
+        let place = place_for(true, false, Some(&seen), None).expect("a place");
+        assert_eq!(place.folder, "VALORANT");
+        assert_eq!(place.game, "VALORANT");
+    }
+
+    #[test]
+    fn no_game_grouping_or_a_game_session_keeps_the_session_folder() {
+        let seen = valorant();
+        assert_eq!(place_for(false, false, Some(&seen), None), None);
+        assert_eq!(place_for(true, true, Some(&seen), None), None);
+        assert_eq!(place_for(true, false, None, None), None);
+    }
+}
+
 pub(crate) fn clip_banner_message(meta: &ClipMeta) -> crate::banner::Message {
     // A clip nobody named yet is titled after its id (`clip_<stamp>`), which
     // says nothing; the game it was recorded in says more.
@@ -3349,7 +3461,7 @@ mod tests {
     }
 
     fn sighting(exe: &str) -> Sighting {
-        Sighting { exe: exe.to_string(), name: exe.to_string(), left: 0, top: 0 }
+        Sighting { exe: exe.to_string(), name: exe.to_string(), left: 0, top: 0, known: true }
     }
 
     /// In `game` mode, turning the replay on with no game in front must not

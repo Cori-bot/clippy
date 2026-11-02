@@ -35,7 +35,7 @@
 .timeline-video-label, .timeline-audio-label { display: flex; align-items: center; padding: 0 14px; font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border-bottom: 1px solid #303337; }
 .timeline-video-label { height: 56px; border-top: 1px solid #303337; }
 .timeline-audio-label { height: 34px; }
-.timeline-scroll { overflow-x: auto; overflow-y: hidden; padding: 0 10px; scrollbar-width: thin; scrollbar-color: #555c66 #1b1d20; }
+.timeline-scroll { overflow-x: auto; overflow-y: hidden; padding: 0 14px; scrollbar-width: thin; scrollbar-color: #555c66 #1b1d20; }
 .timeline-band { position: relative; min-width: 100%; cursor: pointer; touch-action: none; user-select: none; }
 .timeline-ruler { position: relative; overflow: hidden; color: #b4b8bf; border-bottom: 1px solid #3b3f45; }
 .timeline-ruler > span { position: absolute; top: 0; height: 24px; padding-left: 3px; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; border-left: 1px solid #707782; }
@@ -60,8 +60,6 @@
 .timeline-playhead { position: absolute; top: 19px; bottom: 0; width: 1px; background: #6da7ff; z-index: 5; pointer-events: none; outline: none; }
 .timeline-playhead::before { content: ''; position: absolute; top: 0; left: -5px; width: 11px; height: 9px; background: #6da7ff; clip-path: polygon(0 0, 100% 0, 100% 45%, 50% 100%, 0 45%); }
 .timeline-playhead:focus-visible { outline: 2px solid #f2f7ff; outline-offset: 2px; }
-.timeline-footer { display: flex; align-items: center; gap: 24px; height: 28px; padding: 0 18px; border-top: 1px solid #303337; color: #aeb5bf; font-size: 10px; }
-.timeline-footer kbd { font: inherit; color: #d6dce5; margin-right: 4px; }
 @media (max-width: 1000px) {
   .pro-player--inspector { grid-template-columns: minmax(0, 1fr) 246px; }
   .pro-player-viewer { padding: 10px 14px; }
@@ -72,7 +70,6 @@
 @media (max-height: 650px) {
   .pro-player { grid-template-rows: minmax(90px, 1fr) 40px auto; }
   .timeline-toolbar { height: 30px; }
-  .timeline-footer { height: 22px; }
   .timeline-filmstrip, .timeline-video-label { height: 44px; }
   .timeline-trim-grip { height: 42px; }
   .timeline-trim-grip::after { top: 14px; }

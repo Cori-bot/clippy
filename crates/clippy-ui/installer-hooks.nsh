@@ -26,6 +26,20 @@
 
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro ClippyStopProcesses
+  ; A remembered install folder under %TEMP% is the leftover of a scripted
+  ; install test (scripts\build-installer.ps1), never a real choice: an
+  ; interactive install goes to the default folder instead. A silent install
+  ; keeps its /D= target, which is how that test installs.
+  IfSilent clippy_dir_ok
+  Push $1
+  Push $2
+  StrLen $1 $TEMP
+  StrCpy $2 $INSTDIR $1
+  StrCmp $2 $TEMP 0 +2
+  StrCpy $INSTDIR "$LOCALAPPDATA\Clippy"
+  Pop $2
+  Pop $1
+  clippy_dir_ok:
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL

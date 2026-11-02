@@ -1,6 +1,7 @@
 //! The sounds played when a clip or a screenshot is saved.
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use windows::Win32::Media::Audio::{
     PlaySoundW, SND_ASYNC, SND_FILENAME, SND_MEMORY, SND_NODEFAULT,
@@ -34,7 +35,7 @@ const BUILT_IN_SHOT: &[u8] = include_bytes!("../assets/shot.wav");
 /// sound. `SND_NODEFAULT` is what stops Windows substituting its own ding when
 /// the file cannot be played -- without it, a broken sound is indistinguishable
 /// from a working one to anybody debugging this.
-pub fn play(custom: Option<&Path>) {
+pub fn play(custom: Option<&Path>, volume: u32) {
     // Resolved once and matched on again below for the failure log: which
     // branch actually played is what determines whose name belongs in the
     // warning, and `custom` alone does not say that -- a `custom` that does
@@ -42,11 +43,30 @@ pub fn play(custom: Option<&Path>) {
     // `custom` for that chime's failure would point at the wrong file.
     let resolved = custom.filter(|path| path.exists());
     let ok = match resolved {
-        Some(path) => unsafe {
-            PlaySoundW(&HSTRING::from(path), None, SND_FILENAME | SND_ASYNC | SND_NODEFAULT)
+        // At full volume the file plays as it is; otherwise its samples are
+        // scaled in memory (the cache is always 16-bit PCM, see
+        // `clippy_core::sound`). A file that cannot be read or scaled still
+        // plays, at its own level.
+        Some(path) => {
+            let copy = (volume < 100)
+                .then(|| std::fs::read(path).ok().and_then(|bytes| scaled(&bytes, volume)))
+                .flatten();
+            match copy {
+                Some(copy) => play_owned(copy),
+                None => {
+                    stop_and_release();
+                    unsafe {
+                        PlaySoundW(
+                            &HSTRING::from(path),
+                            None,
+                            SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
+                        )
+                    }
+                    .as_bool()
+                }
+            }
         }
-        .as_bool(),
-        None => play_embedded(BUILT_IN_CLIP),
+        None => play_built_in(BUILT_IN_CLIP, volume),
     };
     if !ok {
         match resolved {
@@ -65,9 +85,87 @@ pub fn play(custom: Option<&Path>) {
 /// than when it finishes, and `SND_NODEFAULT` stops Windows substituting its
 /// own ding when the file cannot be played -- without it, a broken sound is
 /// indistinguishable from a working one to anybody debugging this.
-fn play_embedded(wav: &[u8]) -> bool {
+fn play_embedded(wav: &'static [u8]) -> bool {
+    stop_and_release();
     unsafe { PlaySoundW(PCWSTR(wav.as_ptr().cast()), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT) }
         .as_bool()
+}
+
+/// The scaled copy now playing. `SND_MEMORY | SND_ASYNC` reads the buffer for
+/// as long as the sound plays, so it is kept here until the next sound has
+/// stopped it (see [`stop_and_release`]).
+static PLAYING: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+/// Stops whatever is playing, then frees the buffer it was reading. In that
+/// order: freeing first would leave the mixer reading released memory.
+fn stop_and_release() {
+    let mut slot = PLAYING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if slot.is_some() {
+        unsafe {
+            let _ = PlaySoundW(PCWSTR::null(), None, Default::default());
+        }
+        *slot = None;
+    }
+}
+
+/// Plays a built-in sound at `volume` percent: as it is at 100, from a
+/// scaled copy otherwise.
+fn play_built_in(wav: &'static [u8], volume: u32) -> bool {
+    match (volume < 100).then(|| scaled(wav, volume)).flatten() {
+        Some(copy) => play_owned(copy),
+        None => play_embedded(wav),
+    }
+}
+
+/// Plays a WAV held in memory, keeping it alive in [`PLAYING`] until the next
+/// sound stops it.
+fn play_owned(copy: Vec<u8>) -> bool {
+    let mut slot = PLAYING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    unsafe {
+        let _ = PlaySoundW(PCWSTR::null(), None, Default::default());
+    }
+    let buffer = slot.insert(copy);
+    unsafe {
+        PlaySoundW(PCWSTR(buffer.as_ptr().cast()), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT)
+    }
+    .as_bool()
+}
+
+/// A copy of a 16-bit PCM WAV with every sample multiplied by the volume
+/// squared (the same taper as the capture volumes, so 50 sounds like half).
+/// `None` when `wav` is not a 16-bit PCM WAV this can walk.
+fn scaled(wav: &[u8], volume: u32) -> Option<Vec<u8>> {
+    if wav.len() < 12 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+        return None;
+    }
+    let gain = (f64::from(volume.min(100)) / 100.0).powi(2);
+    let mut out = wav.to_vec();
+    let mut pcm16 = false;
+    let mut at = 12;
+    while at + 8 <= wav.len() {
+        let id = &wav[at..at + 4];
+        let size = u32::from_le_bytes(wav[at + 4..at + 8].try_into().ok()?) as usize;
+        let body = at + 8;
+        let end = body.checked_add(size)?.min(wav.len());
+        if id == b"fmt " && end - body >= 16 {
+            let format = u16::from_le_bytes([wav[body], wav[body + 1]]);
+            let bits = u16::from_le_bytes([wav[body + 14], wav[body + 15]]);
+            pcm16 = format == 1 && bits == 16;
+        } else if id == b"data" {
+            if !pcm16 {
+                return None;
+            }
+            for sample in out[body..end].chunks_exact_mut(2) {
+                let value = f64::from(i16::from_le_bytes([sample[0], sample[1]])) * gain;
+                let value = value.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+                sample.copy_from_slice(&value.to_le_bytes());
+            }
+            return Some(out);
+        }
+        // Chunks are padded to an even length.
+        at = body + size + (size & 1);
+    }
+    None
 }
 
 /// Plays the screenshot blip.
@@ -80,8 +178,8 @@ fn play_embedded(wav: &[u8]) -> bool {
 /// Never returns an error, for the same reason [`play`] does not: by the time
 /// this runs the screenshot is already written, and a sound is feedback about
 /// something that has already happened.
-pub fn play_shot() {
-    if !play_embedded(BUILT_IN_SHOT) {
+pub fn play_shot(volume: u32) {
+    if !play_built_in(BUILT_IN_SHOT, volume) {
         tracing::warn!("the screenshot sound could not be played");
     }
 }
@@ -121,6 +219,25 @@ mod tests {
     /// conversion never landed. It falls back to the built-in.
     #[test]
     fn a_missing_cache_file_is_not_a_panic() {
-        play(Some(std::path::Path::new(r"Z:\definitely\not\here.wav")));
+        play(Some(std::path::Path::new(r"Z:\definitely\not\here.wav")), 100);
+    }
+
+    fn peak(wav: &[u8]) -> i32 {
+        let data = wav.windows(4).position(|w| w == b"data").unwrap() + 8;
+        wav[data..]
+            .chunks_exact(2)
+            .map(|s| i32::from(i16::from_le_bytes([s[0], s[1]])).abs())
+            .max()
+            .unwrap()
+    }
+
+    #[test]
+    fn volume_scales_the_samples_with_a_squared_taper() {
+        let full = peak(BUILT_IN_CLIP);
+        let half = peak(&scaled(BUILT_IN_CLIP, 50).unwrap());
+        assert!((full / 4 - 2..=full / 4 + 2).contains(&half), "full {full}, half {half}");
+        assert_eq!(peak(&scaled(BUILT_IN_SHOT, 0).unwrap()), 0);
+        assert_eq!(scaled(BUILT_IN_CLIP, 100).unwrap(), BUILT_IN_CLIP, "100 leaves it as is");
+        assert_eq!(scaled(b"not a wav at all", 50), None);
     }
 }

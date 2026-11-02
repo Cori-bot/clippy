@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { diag } from '../lib/diag';
 import { MAX_WAVEFORM_DURATION_MS, readBoundedAudio, videoFilmstrip, waveformPeaks } from '../lib/media-previews';
 
 export function Filmstrip({ src }: { src?: string }) {
@@ -38,8 +39,10 @@ export function Waveform({ src, durationMs }: { src: string; durationMs: number 
       controller.signal.throwIfAborted();
       const peaks = waveformPeaks(Array.from({ length: audio.numberOfChannels }, (_, channel) => audio.getChannelData(channel)));
       setResult({ key, peaks, failed: false });
-    })().catch(() => {
-      if (!controller.signal.aborted) setResult({ key, peaks: [], failed: true });
+    })().catch((error: unknown) => {
+      if (controller.signal.aborted) return;
+      diag('waveform-error', { src: src.slice(-80), error: String(error) });
+      setResult({ key, peaks: [], failed: true });
     });
     return () => { controller.abort(); context = undefined; };
   }, [src, key, tooLong]);

@@ -569,7 +569,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clippy-cli"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "clippy-core"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "clippy-proto",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "clippy-daemon"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "clippy-core",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "clippy-proto"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "clippy-ui"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "clippy-proto",

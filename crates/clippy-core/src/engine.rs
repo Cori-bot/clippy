@@ -21,12 +21,22 @@ use clippy_proto::{ClipMeta, ShotMeta};
 
 use crate::{capture::audio::AudioGains, config::Config, replay};
 
+/// Where one clip is filed, overriding the session's folder and game: in
+/// desktop mode the session starts before any game, so the game in front at
+/// clip time decides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipPlace {
+    pub folder: String,
+    pub game: String,
+}
+
 /// What the control loop accepts. All three variants are terminal for the
 /// caller: `Clip` and `Screenshot` always answer on their reply channel,
 /// `Stop` always ends the loop.
 pub enum EngineCommand {
-    /// Save a clip now. `Ok(None)` means nothing is buffered yet.
-    Clip { reply: Sender<Result<Option<ClipMeta>>> },
+    /// Save a clip now. `Ok(None)` means nothing is buffered yet. `place`
+    /// files it somewhere else than the session's own folder.
+    Clip { reply: Sender<Result<Option<ClipMeta>>>, place: Option<ClipPlace> },
     /// Write a screenshot now.
     ///
     /// No `Option` in the reply, unlike `Clip`. A clip can legitimately have
@@ -145,9 +155,14 @@ impl EngineHandle {
     /// Saves a clip, blocking until the mux completes. `Ok(None)` means
     /// nothing is buffered yet.
     pub fn clip(&self) -> Result<Option<ClipMeta>> {
+        self.clip_in(None)
+    }
+
+    /// [`Self::clip`], filed in `place` when given.
+    pub fn clip_in(&self, place: Option<ClipPlace>) -> Result<Option<ClipMeta>> {
         let (reply, answer) = channel();
         self.tx
-            .send(EngineCommand::Clip { reply })
+            .send(EngineCommand::Clip { reply, place })
             .map_err(|_| anyhow!("le moteur de capture n’est plus actif"))?;
         // The rebuild loop drains queued commands while it waits for the
         // display to settle, so an unanswered clip means "no ring right now",

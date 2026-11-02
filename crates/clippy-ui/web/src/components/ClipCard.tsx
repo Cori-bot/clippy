@@ -18,7 +18,6 @@ export function ClipCard({
   selectable = false,
   checked = false,
   ontoggle,
-  onopen,
   onselect,
   onfavorite,
   onrename,
@@ -32,7 +31,6 @@ export function ClipCard({
   selectable?: boolean;
   checked?: boolean;
   ontoggle?: (range: boolean) => void;
-  onopen: () => void;
   onselect: (event?: MouseEvent) => void;
   onfavorite: () => void;
   onrename: (title: string) => void;
@@ -158,8 +156,7 @@ export function ClipCard({
         type="button"
         className={`thumb relative aspect-[16/10] cursor-pointer overflow-hidden rounded-xl border-0 bg-surface-secondary p-0 transition-shadow duration-200 ${EASE} active:scale-[0.99] ${ringShadow}`}
         aria-label={clip.title}
-        onClick={(event) => onselect(event)}
-        onDoubleClick={onopen}>
+        onClick={(event) => onselect(event)}>
         <img
           className="block size-full object-cover"
           src={thumbUrl(clipDir, clip)}

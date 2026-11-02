@@ -3,9 +3,11 @@
 //! NVIDIA's overlay records the game and leaves the desktop alone unless the
 //! user asks for it. Clippy does the same with what Windows lets any program
 //! see: the window in front, whether it covers its whole screen, and which
-//! program owns it. A full-screen window of a program that is not a browser, a
-//! player or part of the shell is a game; the user can add programs that are
-//! games even when windowed.
+//! program owns it. A program installed as a game (see [`crate::installed`])
+//! or added by the user is a game, windowed or not, and goes in the games
+//! list. A full-screen window of any other program that is not a browser, a
+//! player, a launcher or part of Windows is only a guess: the `game` capture
+//! mode records it, but it never joins the list.
 
 use windows::{
     Win32::{
@@ -62,7 +64,70 @@ const NOT_GAMES: &[&str] = &[
     "obs64.exe",
     "clippy-ui.exe",
     "clippy-daemon.exe",
+    // Screen capture overlays (Win+Shift+S covers every screen).
+    "snippingtool.exe",
+    "screenclippinghost.exe",
+    "screensketch.exe",
+    "sharex.exe",
+    "greenshot.exe",
+    "lightshot.exe",
+    // Shell and system pieces.
+    "textinputhost.exe",
+    "systemsettings.exe",
+    "searchapp.exe",
+    "widgets.exe",
+    "gamebar.exe",
+    "gamebarftserver.exe",
+    "nvcontainer.exe",
+    "nvidia overlay.exe",
+    "nvidia app.exe",
+    "nvidia share.exe",
+    "msedgewebview2.exe",
+    // Store clients and game launchers.
+    "steam.exe",
+    "steamwebhelper.exe",
+    "epicgameslauncher.exe",
+    "epicwebhelper.exe",
+    "riotclientux.exe",
+    "riotclientuxrender.exe",
+    "riotclientservices.exe",
+    "leagueclient.exe",
+    "leagueclientux.exe",
+    "leagueclientuxrender.exe",
+    "battle.net.exe",
+    "eadesktop.exe",
+    "upc.exe",
+    "ubisoftconnect.exe",
+    "galaxyclient.exe",
+    // Players and viewers.
+    "video.ui.exe",
+    "microsoft.media.player.exe",
+    "mpc-hc64.exe",
+    "mpc-be64.exe",
+    "photos.exe",
 ];
+
+/// Parts of program names that are never the game: crash reporters,
+/// installers, updaters and launchers.
+const NOT_GAME_PARTS: &[&str] =
+    &["crashreport", "crashhandler", "unins", "setup", "updater", "launcher"];
+
+/// Whether this program is never a game by itself: on the list above, named
+/// like a helper, or part of Windows. `path` may be the bare file name when the
+/// full path is not known.
+pub fn excluded(path: &str, exe: &str) -> bool {
+    let exe = exe.to_lowercase();
+    let path = path.to_lowercase().replace('/', "\\");
+    NOT_GAMES.contains(&exe.as_str())
+        || NOT_GAME_PARTS.iter().any(|part| exe.contains(part))
+        || path.starts_with(&windows_dir())
+}
+
+/// `c:\windows\` on most machines, wherever Windows actually lives.
+fn windows_dir() -> String {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+    format!("{}\\", root.trim_end_matches('\\').to_lowercase())
+}
 
 /// Window classes of the desktop itself: its wallpaper host and the taskbar.
 const SHELL_CLASSES: &[&str] = &["progman", "workerw", "shell_traywnd", "shell_secondarytraywnd"];
@@ -77,6 +142,10 @@ pub struct Sighting {
     pub name: String,
     pub left: i32,
     pub top: i32,
+    /// An installed game or one the user added, as opposed to a full-screen
+    /// program Clippy only guesses is a game. Only known games go in the
+    /// games list.
+    pub known: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,20 +181,45 @@ pub struct Lists {
     pub never: Vec<String>,
 }
 
+/// What a program in front is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    No,
+    /// Added by the user or installed as a game, windowed or not. Carries the
+    /// installed game's name when the scan knows it.
+    Known(Option<String>),
+    /// Full screen and not known: recorded in the `game` capture mode, never
+    /// added to the games list.
+    Guess,
+}
+
 /// Whether this program counts as a game right now.
 ///
 /// The user's lists win over everything: a program they switched off is never
 /// a game, one they added is a game windowed or not, because that is the one
-/// signal that cannot be wrong. Otherwise it takes a window that fills its
-/// screen from a program that is not on the list above.
-pub fn is_game(exe: &str, lists: &Lists, fills_screen: bool) -> bool {
+/// signal that cannot be wrong. Then helpers and Windows itself are never
+/// games, an installed game is one even windowed, and anything else full
+/// screen is only a guess.
+pub fn verdict(
+    path: &str,
+    exe: &str,
+    lists: &Lists,
+    fills_screen: bool,
+    installed: &crate::installed::Installed,
+) -> Verdict {
     if lists.never.iter().any(|g| g == exe) {
-        return false;
+        return Verdict::No;
     }
     if lists.games.iter().any(|g| g == exe) {
-        return true;
+        return Verdict::Known(None);
     }
-    fills_screen && !NOT_GAMES.contains(&exe)
+    if excluded(path, exe) {
+        return Verdict::No;
+    }
+    if let Some((name, _)) = installed.classify(path) {
+        return Verdict::Known((!name.is_empty()).then_some(name));
+    }
+    if fills_screen { Verdict::Guess } else { Verdict::No }
 }
 
 fn wide_to_string(wide: &[u16]) -> String {
@@ -203,10 +297,8 @@ fn read_version_string(path: &str) -> Option<String> {
             if VerQueryValueW(info.as_ptr().cast(), &query, &mut value, &mut chars).as_bool()
                 && chars > 1
             {
-                let text = wide_to_string(std::slice::from_raw_parts(
-                    value.cast::<u16>(),
-                    chars as usize,
-                ));
+                let text =
+                    wide_to_string(std::slice::from_raw_parts(value.cast::<u16>(), chars as usize));
                 // Trademark signs are part of the resource, not of the name a
                 // person says: "Microsoft® Windows®" reads as "Microsoft Windows".
                 let text: String = text.chars().filter(|c| !matches!(c, '®' | '™')).collect();
@@ -290,8 +382,13 @@ pub fn list_windows() -> Vec<OpenWindow> {
         let Some(path) = image_path_of(pid) else { continue };
         let Some(exe) = file_name_lower(&path) else { continue };
         if crate::games::normalize_exe(&exe).is_none()
-            || ["clippy-ui.exe", "clippy-daemon.exe", "applicationframehost.exe", "textinputhost.exe"]
-                .contains(&exe.as_str())
+            || [
+                "clippy-ui.exe",
+                "clippy-daemon.exe",
+                "applicationframehost.exe",
+                "textinputhost.exe",
+            ]
+            .contains(&exe.as_str())
             || out.iter().any(|w| w.exe == exe)
         {
             continue;
@@ -349,11 +446,13 @@ fn foreground_game(lists: &Lists) -> Option<(u32, Sighting)> {
         }
         let screen = Bounds::from(info.rcMonitor);
         let fills = covers(Bounds::from(rect), screen);
-        if !is_game(&exe, lists, fills) {
-            return None;
-        }
-        let name = friendly_name(&path, &exe);
-        Some((pid, Sighting { exe, name, left: screen.left, top: screen.top }))
+        let (known, name) = match verdict(&path, &exe, lists, fills, &crate::installed::current()) {
+            Verdict::No => return None,
+            Verdict::Known(name) => (true, name),
+            Verdict::Guess => (false, None),
+        };
+        let name = name.unwrap_or_else(|| friendly_name(&path, &exe));
+        Some((pid, Sighting { exe, name, left: screen.left, top: screen.top, known }))
     }
 }
 
@@ -385,6 +484,7 @@ impl Tracker {
 /// starting and stopping the replay. The look itself is a few window queries.
 pub fn spawn_watch(daemon: std::sync::Arc<crate::state::Daemon>) {
     use clippy_core::config::CaptureMode;
+    let daemon_scan = std::sync::Arc::clone(&daemon);
     let spawned = std::thread::Builder::new().name("clippy-game-watch".into()).spawn(move || {
         let mut tracker = Tracker::default();
         loop {
@@ -403,6 +503,19 @@ pub fn spawn_watch(daemon: std::sync::Arc<crate::state::Daemon>) {
     });
     if let Err(e) = spawned {
         tracing::warn!(error = %e, "could not start the game watcher; the game capture mode will not start by itself");
+    }
+    // The installed games: at startup, then every ten minutes for games
+    // installed while Clippy runs. Each scan adds the new ones to the list.
+    let spawned =
+        std::thread::Builder::new().name("clippy-installed-games".into()).spawn(move || {
+            loop {
+                crate::installed::rescan();
+                daemon_scan.games_add_installed();
+                std::thread::sleep(std::time::Duration::from_secs(600));
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "could not start the installed-games scan");
     }
 }
 
@@ -436,13 +549,72 @@ mod tests {
         assert!(!covers(SCREEN, second));
     }
 
+    use crate::installed::Installed;
+
+    fn v(path: &str, lists: &Lists, fills: bool, installed: &Installed) -> Verdict {
+        let exe = file_name_lower(path).unwrap();
+        verdict(path, &exe, lists, fills, installed)
+    }
+
     #[test]
-    fn a_full_screen_program_is_a_game_unless_it_is_a_known_non_game() {
+    fn an_unknown_full_screen_program_is_only_a_guess() {
         let none = Lists::default();
-        assert!(is_game("eldenring.exe", &none, true));
-        assert!(!is_game("eldenring.exe", &none, false), "windowed and unlisted");
-        assert!(!is_game("brave.exe", &none, true), "a full-screen video is not a game");
-        assert!(!is_game("explorer.exe", &none, true));
+        let nothing = Installed::default();
+        assert_eq!(v("D:\\Games\\eldenring.exe", &none, true, &nothing), Verdict::Guess);
+        assert_eq!(
+            v("D:\\Games\\eldenring.exe", &none, false, &nothing),
+            Verdict::No,
+            "windowed and unknown"
+        );
+        assert_eq!(
+            v("C:\\b\\brave.exe", &none, true, &nothing),
+            Verdict::No,
+            "a full-screen video is not a game"
+        );
+        assert_eq!(v("C:\\Windows\\explorer.exe", &none, true, &nothing), Verdict::No);
+    }
+
+    #[test]
+    fn capture_overlays_launchers_and_windows_are_never_games() {
+        let none = Lists::default();
+        let mut installed = Installed::default();
+        installed.add_root("C:\\Riot Games\\League of Legends", "League of Legends");
+        for path in [
+            "C:\\Windows\\System32\\SnippingTool.exe",
+            "C:\\Program Files\\WindowsApps\\Microsoft.ScreenSketch_11\\SnippingTool\\SnippingTool.exe",
+            "C:\\Program Files\\WindowsApps\\Microsoft.Windows.Photos_1\\Photos.exe",
+            "C:\\Riot Games\\League of Legends\\LeagueClientUx.exe",
+            "C:\\Games\\X\\CrashReportClient.exe",
+            "C:\\Games\\X\\unins000.exe",
+            "C:\\Games\\X\\Launcher.exe",
+            "C:\\Program Files (x86)\\Steam\\steam.exe",
+        ] {
+            assert_eq!(v(path, &none, true, &installed), Verdict::No, "{path}");
+        }
+    }
+
+    #[test]
+    fn an_installed_game_is_known_even_windowed() {
+        let none = Lists::default();
+        let mut installed = Installed::default();
+        installed.add_root("C:\\Steam\\steamapps\\common\\Aim Lab", "Aim Lab");
+        installed.add_exe(
+            "C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe",
+            "League of Legends",
+        );
+        assert_eq!(
+            v("C:\\Steam\\steamapps\\common\\Aim Lab\\AimLab_tb.exe", &none, false, &installed),
+            Verdict::Known(Some("Aim Lab".into()))
+        );
+        assert_eq!(
+            v(
+                "C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe",
+                &none,
+                true,
+                &installed
+            ),
+            Verdict::Known(Some("League of Legends".into()))
+        );
     }
 
     #[test]
@@ -451,9 +623,23 @@ mod tests {
             games: vec!["brave.exe".to_string(), "minecraft.exe".to_string()],
             never: vec!["eldenring.exe".to_string()],
         };
-        assert!(is_game("minecraft.exe", &mine, false), "windowed but listed");
-        assert!(is_game("brave.exe", &mine, true), "listed beats the built-in non-games");
-        assert!(!is_game("eldenring.exe", &mine, true), "switched off beats full screen");
+        let mut installed = Installed::default();
+        installed.add_exe("D:\\Games\\eldenring.exe", "Elden Ring");
+        assert_eq!(
+            v("C:\\m\\minecraft.exe", &mine, false, &installed),
+            Verdict::Known(None),
+            "windowed but listed"
+        );
+        assert_eq!(
+            v("C:\\b\\brave.exe", &mine, true, &installed),
+            Verdict::Known(None),
+            "listed beats the built-in non-games"
+        );
+        assert_eq!(
+            v("D:\\Games\\eldenring.exe", &mine, true, &installed),
+            Verdict::No,
+            "switched off beats installed"
+        );
     }
 
     /// Against the real machine: whatever is in front, asking must not fail,

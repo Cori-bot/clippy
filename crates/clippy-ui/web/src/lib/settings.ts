@@ -72,6 +72,7 @@ export type Field = {
 const BOUNDS: Record<string, [number, number]> = {
   fps: [30, 120],
   bitrate_kbps: [0, 200000],
+  notification_volume: [0, 100],
   max_bitrate_kbps: [0, 200000],
   replay_seconds: [1, 600],
   monitor_index: [0, 63],
@@ -180,7 +181,16 @@ export const FIELDS: Field[] = [
     ], help: 'Si Windows dessine une bordure jaune autour de l’écran, choisir Duplication du Bureau. Elle n’enregistre pas le curseur de la souris.',
     more: 'Duplication du Bureau n’est pas soumise à cette bordure, mais ne peut pas enregistrer le curseur de la souris, ni dans les clips ni dans les captures d’écran. Automatique correspond à Windows Graphics Capture.' },
 
+  { key: 'video_quality', label: 'Qualité vidéo', kind: 'select', section: 'Quality', options: [
+      { value: 'low', label: 'Faible – 8 Mb/s en 1080p 60 i/s' },
+      { value: 'medium', label: 'Moyenne – 15 Mb/s en 1080p 60 i/s' },
+      { value: 'high', label: 'Élevée – 30 Mb/s en 1080p 60 i/s (recommandé)' },
+      { value: 'very_high', label: 'Très élevée – 50 Mb/s en 1080p 60 i/s' },
+      { value: 'custom', label: 'Personnalisée – débit fixe' },
+    ], help: 'Le débit suit la définition et la fréquence d’images : en 1080p à 120 i/s, Élevée donne environ 52 Mb/s. Plus c’est élevé, plus les clips et la RAM du replay grossissent.',
+    more: 'Le tampon de replay garde ses secondes en RAM : à 52 Mb/s, 60 secondes occupent environ 400 Mo. Personnalisée utilise le débit cible ci-dessous, quelle que soit la fréquence d’images.' },
   { key: 'bitrate_kbps', label: 'Débit cible', kind: 'tier', section: 'Quality', ...span('bitrate_kbps'), tiers: BITRATE_TIERS,
+    onlyWhen: { key: 'video_quality', value: 'custom', reason: 'Utilisé seulement avec la qualité « Personnalisée »' },
     help: 'Données allouées à chaque seconde de vidéo. Plus c’est élevé, mieux les mouvements rapides sont tenus, mais clips et RAM grossissent.',
     more: 'Le tampon de replay conserve autant de secondes que réglé : un débit plus élevé occupe donc plus de RAM, et plus d’espace disque par clip. Personnalisé accepte n’importe quelle valeur.' },
   { key: 'max_bitrate_kbps', label: 'Débit maximal', kind: 'number', section: 'Quality', advanced: true, ...span('max_bitrate_kbps'), help: '0 équivaut à 1,5 fois le débit cible. Ce plafond détermine aussi l’utilisation maximale de RAM du tampon de replay.' },
@@ -224,8 +234,14 @@ export const FIELDS: Field[] = [
     more: 'S’applique aux deux raccourcis. Standard demande à Windows de réserver la combinaison : la demande est refusée d’emblée si un autre programme l’utilise déjà, et même lorsqu’elle aboutit, certains jeux et surcouches interceptent la touche avant que Windows ne la transmette (constaté dans Euro Truck Simulator 2, où Clippy détenait la touche sans jamais voir d’appui). Bas niveau surveille directement le clavier : la touche est vue dans les deux cas, puis retransmise afin que les autres programmes qui l’utilisent continuent de fonctionner. Certains logiciels anti-triche se méfient des programmes qui surveillent le clavier ; OBS, Discord et Steam le font aussi, mais Clippy ne peut pas garantir comment un anti-triche donné l’interprète. Aucun des deux modes n’aide si le jeu s’exécute en tant qu’administrateur et que Clippy ne le fait pas.' },
 
   { key: 'screenshot_sound', label: 'Son de capture d’écran', kind: 'bool', section: 'Sounds', help: 'Un bref son à l’enregistrement d’une capture d’écran, différent de celui du clip pour les distinguer sans regarder.' },
-  { key: 'clip_banner', label: 'Bandeau à l’écran', kind: 'bool', section: 'Sounds', help: 'Affiche « Clip enregistré » en haut à droite, par-dessus le jeu, à chaque clip ou capture. N’apparaît jamais dans les enregistrements.',
+  { key: 'clip_banner', label: 'Bandeau à l’écran', kind: 'bool', section: 'Sounds', help: 'Affiche « Clip enregistré » dans un coin de l’écran, par-dessus le jeu, à chaque clip ou capture. N’apparaît jamais dans les enregistrements.',
     more: 'Visible par-dessus les jeux en fenêtré ou en plein écran fenêtré. Un jeu en plein écran exclusif le masque.' },
+  { key: 'banner_position', label: 'Position du bandeau', kind: 'select', section: 'Sounds', options: [
+      { value: 'top_right', label: 'En haut à droite' },
+      { value: 'top_left', label: 'En haut à gauche' },
+    ], help: 'Coin de l’écran où le bandeau apparaît.' },
+  { key: 'notification_volume', label: 'Volume des sons', kind: 'slider', section: 'Sounds', ...span('notification_volume'),
+    help: 'Volume du son du clip et de celui de la capture d’écran. 100 les joue tels quels.' },
   { key: 'clip_sound', label: 'Son du clip', kind: 'bool', section: 'Sounds', help: 'Joue un son à l’enregistrement d’un clip, même lorsque la fenêtre de Clippy est fermée.' },
   { key: 'clip_sound_path', label: 'Fichier son', kind: 'sound', section: 'Sounds', help: 'Un son personnel, ou celui intégré à Clippy. mp3, wav, m4a et tout autre format que Windows sait lire. Seules les 10 premières secondes sont utilisées.' },
 

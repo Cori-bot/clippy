@@ -27,7 +27,8 @@ use crate::encode::mf::{
     RecorderSettings, allocated_string, apply_rate_control, set_codec_u32, video_type,
 };
 use windows::Win32::Media::MediaFoundation::{
-    CODECAPI_AVEncMPVGOPSize, ICodecAPI, MFT_FRIENDLY_NAME_Attribute,
+    CODECAPI_AVEncCommonQualityVsSpeed, CODECAPI_AVEncMPVGOPSize, MF_MT_MPEG2_PROFILE,
+    eAVEncH264VProfile_High, ICodecAPI, MFT_FRIENDLY_NAME_Attribute,
 };
 
 /// Keyframe interval for the replay encoder, in frames — one second's worth.
@@ -112,6 +113,13 @@ impl H264Encoder {
 
             // Encoders require output type before input type.
             let out_type = video_type(settings, &MFVideoFormat_H264, true)?;
+            // High profile: without it NVIDIA's encoder writes Main (seen on
+            // 1.6.0 clips), which gives up 8x8 transforms -- visibly blockier
+            // at the same bitrate. Only here, where `MF_LOW_LATENCY` keeps
+            // B-frames off: on an encoder left free to add them (the software
+            // one), High brings B-frames the replay ring does not expect.
+            // Best-effort: an encoder that refuses it keeps its default.
+            let _ = out_type.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32);
             transform.SetOutputType(0, &out_type, 0).context("SetOutputType(H264)")?;
             let in_type = video_type(settings, &MFVideoFormat_NV12, false)?;
             transform.SetInputType(0, &in_type, 0).context("SetInputType(NV12)")?;
@@ -146,6 +154,13 @@ impl H264Encoder {
                     gop_size(settings.fps),
                     "GOP size",
                 );
+                // Quality over speed: the encoder's slowest preset. A
+                // hardware encoder still runs far faster than real time at
+                // 1080p120, and the default leans to speed, which costs
+                // detail in fast motion -- exactly what a clip is for.
+                // B-frames stay off through `MF_LOW_LATENCY` above (NVIDIA's
+                // encoder rejects setting their count directly).
+                set_codec_u32(&codec, &CODECAPI_AVEncCommonQualityVsSpeed, 100, "quality vs speed");
             }
 
             let info = transform.GetOutputStreamInfo(0)?;

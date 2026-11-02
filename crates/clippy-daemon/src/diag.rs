@@ -33,6 +33,22 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+/// Timestamps of the diagnostics log in local time, like the file names and
+/// the clips: a UTC log had 22:18 clips next to 21:18 lines.
+pub struct LocalTimer;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        // SAFETY: no arguments; returns the local wall-clock time by value.
+        let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+        write!(
+            w,
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}",
+            t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds
+        )
+    }
+}
+
 use windows::Win32::System::SystemInformation::{
     GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO,
 };

@@ -1,4 +1,4 @@
-Clippy 1.6.0
+Clippy 1.6.1
 ============
 
 Un enregistreur de clips pour Windows, pour les PC qui ne peuvent pas se
@@ -10,6 +10,28 @@ jeu est proche de zéro, et l'application reste discrète pendant que vous jouez
 
 NOUVEAUTÉS
 ----------
+
+  1.6.1
+
+  * Qualité vidéo nettement meilleure : la qualité suit désormais la
+    définition et la fréquence d'images (Élevée = environ 52 Mb/s en 1080p à
+    120 i/s, contre 14 Mb/s avant), avec le profil H.264 High.
+
+  * Valorant : les kills ne sont plus comptés plusieurs fois, et les clips
+    automatiques vont dans le dossier du jeu.
+
+  * Les jeux installés sont détectés tout seuls (Steam, Epic, Riot, GOG,
+    Ubisoft, EA, Battle.net, Xbox), une application en plein écran n'est plus
+    prise pour un jeu, et la capture d'écran Windows non plus. Un profil de jeu
+    peut être supprimé.
+
+  * Éditeur : un clic suffit pour ouvrir un clip, formes d'onde visibles,
+    une seule barre en bas, et le dernier export ne réapparaît plus à chaque
+    lancement.
+
+  * Volume des sons de notification, et bandeau en haut à gauche ou à droite.
+
+  1.6.0
 
   * Un éditeur de clip complet : coupe précise à l'image près, navigation
     image par image, pistes audio séparées (son du PC, micro, jeu) avec leur
