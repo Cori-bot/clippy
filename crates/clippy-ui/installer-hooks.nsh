@@ -43,6 +43,11 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Explorer keeps shortcut icons in its own cache: after an update that
+  ; changes the logo, the desktop shortcut kept showing the old one. This is
+  ; the documented "icons changed" broadcast (SHCNE_ASSOCCHANGED) that makes
+  ; it redraw them from the exe.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
