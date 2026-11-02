@@ -21,7 +21,7 @@ use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use clippy_core::config::Config;
 use clippy_core::control;
 use clippy_daemon::stats::{STATS_POLL, spawn_stats_thread};
-use clippy_daemon::{game, pipe, presence, state::Daemon, window};
+use clippy_daemon::{autostart, game, pipe, presence, state::Daemon, window};
 
 /// Mirrors `clippy-cli`'s `tracing_subscriber` setup (`crates/clippy-cli/src/main.rs`):
 /// `clippy=info` by default, `clippy=debug` under `-v`/`--verbose`, `RUST_LOG`
@@ -279,6 +279,7 @@ fn main() -> anyhow::Result<()> {
     // and `clippy.exe` mutually exclusive for the daemon's whole lifetime. The
     // daemon's own single-instance guarantee is `FILE_FLAG_FIRST_PIPE_INSTANCE`
     // on the pipe name (see `pipe.rs`).
+    restore_autostart(&config);
     let daemon = Arc::new(Daemon::new(config));
     // After the daemon exists and before the socket opens: a hand-edited
     // config or a deleted cache is repaired before the first clip can need it.
@@ -340,4 +341,28 @@ fn main() -> anyhow::Result<()> {
     // `pipe::serve` logs "listening on {PIPE_NAME}" itself, once the first
     // pipe instance is actually bound — see the comment in `pipe.rs`.
     pipe::serve(daemon)
+}
+
+/// Puts the "start with Windows" entry back when the config asks for it and
+/// it is gone. Running a new setup over an older version uninstalls that one
+/// first, and the uninstaller removes the Run entry: the setting then read
+/// "off" after every manual update although the user had turned it on.
+///
+/// Only for an installed copy (its folder holds the uninstaller), so a build
+/// run from `target\` never registers itself to start at login.
+fn restore_autostart(config: &Config) {
+    if !config.autostart || autostart::is_enabled() {
+        return;
+    }
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("uninstall.exe").is_file()))
+        .unwrap_or(false);
+    if !installed {
+        return;
+    }
+    match autostart::set_enabled(true) {
+        Ok(()) => tracing::info!("restored the start-with-Windows entry the config asks for"),
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "could not restore the start-with-Windows entry"),
+    }
 }
