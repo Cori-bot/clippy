@@ -18,7 +18,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, PostMessageW,
     SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTALIGN, TrackPopupMenu, WM_APP, WM_NULL,
 };
-use windows::core::{HSTRING, PCWSTR};
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::core::{HSTRING, PCSTR, PCWSTR, w};
 
 /// The tray callback message. Anything from `WM_APP` up is ours.
 pub const WM_CLIPPY_TRAY: u32 = WM_APP + 1;
@@ -255,6 +256,29 @@ unsafe fn append_choices(menu: HMENU, title: &str, base: usize, choices: &[(Stri
     }
 }
 
+/// Dark menus, like the app, instead of the light ones Windows gives a
+/// process by default.
+///
+/// There is no documented switch for a Win32 menu's theme. These are the
+/// `uxtheme.dll` exports Explorer, Notepad++ and the Windows Terminal use:
+/// ordinal 135 `SetPreferredAppMode(ForceDark = 2)` and ordinal 136
+/// `FlushMenuThemes`, stable since Windows 10 1903. Before 1903, 135 was
+/// `AllowDarkModeForApp(BOOL)`, which a 2 merely turns on; if either is
+/// missing the menu stays light. Once per process: the mode is process-wide.
+fn use_dark_menus() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        let Ok(uxtheme) = LoadLibraryW(w!("uxtheme.dll")) else { return };
+        let ordinal = |n: usize| GetProcAddress(uxtheme, PCSTR(n as *const u8));
+        let (Some(set_mode), Some(flush)) = (ordinal(135), ordinal(136)) else { return };
+        // SAFETY: the signatures of those two exports, see above.
+        let set_mode: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(set_mode);
+        let flush: unsafe extern "system" fn() = std::mem::transmute(flush);
+        set_mode(2);
+        flush();
+    });
+}
+
 /// Shows the tray menu at the cursor and returns the chosen command id.
 ///
 /// `SetForegroundWindow` before `TrackPopupMenu` is required, not decorative:
@@ -265,6 +289,7 @@ unsafe fn append_choices(menu: HMENU, title: &str, base: usize, choices: &[(Stri
 /// # Safety
 /// Must be called on the thread that owns `hwnd`.
 pub unsafe fn show_menu(hwnd: HWND, prefs: &MenuPrefs) -> Option<usize> {
+    use_dark_menus();
     unsafe {
         let menu = CreatePopupMenu().ok()?;
         let toggle = match (prefs.armed, prefs.waiting) {
@@ -445,6 +470,87 @@ mod tests {
         }
         for s in REPLAY_CHOICES {
             assert!((1..=600).contains(&s));
+        }
+    }
+}
+
+/// A look at the real menu: opens it, photographs the screen around it from a
+/// timer on the menu's own thread, and closes it with `EndMenu` -- no key or
+/// click is sent anywhere.
+#[cfg(test)]
+mod preview {
+    use super::*;
+    use std::sync::OnceLock;
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, EndMenu, KillTimer, SetTimer, WS_EX_TOOLWINDOW, WS_POPUP,
+    };
+
+    static OUT: OnceLock<String> = OnceLock::new();
+
+    unsafe extern "system" fn snap(hwnd: HWND, _: u32, id: usize, _: u32) {
+        unsafe {
+            let _ = KillTimer(Some(hwnd), id);
+            let mut cursor = POINT::default();
+            let _ = GetCursorPos(&mut cursor);
+            let (w, h) = (520, 760);
+            let (x, y) = (cursor.x - w + 20, cursor.y - h / 2);
+            let screen = GetDC(None);
+            let dc = CreateCompatibleDC(Some(screen));
+            let bitmap = CreateCompatibleBitmap(screen, w, h);
+            let old = SelectObject(dc, bitmap.into());
+            let _ = BitBlt(dc, 0, 0, w, h, Some(screen), x, y, SRCCOPY);
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut pixels = vec![0u8; (w * h * 4) as usize];
+            GetDIBits(dc, bitmap, 0, h as u32, Some(pixels.as_mut_ptr().cast()), &mut info, DIB_RGB_COLORS);
+            SelectObject(dc, old);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+            ReleaseDC(None, screen);
+            let mut out = Vec::new();
+            out.extend_from_slice(&(w as u32).to_le_bytes());
+            out.extend_from_slice(&(h as u32).to_le_bytes());
+            out.extend_from_slice(&pixels);
+            let _ = std::fs::write(OUT.get().unwrap(), out);
+            let _ = EndMenu();
+        }
+    }
+
+    #[test]
+    #[ignore = "opens the tray menu on screen for a second; run by hand"]
+    fn menu() {
+        let Ok(path) = std::env::var("CLIPPY_MENU_PREVIEW") else { return };
+        OUT.set(path).unwrap();
+        unsafe {
+            let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, w!("STATIC"), w!(""), WS_POPUP, 0, 0, 0, 0, None, None, None, None)
+                .expect("window");
+            SetTimer(Some(hwnd), 7, 900, Some(snap));
+            let prefs = MenuPrefs {
+                armed: true,
+                waiting: false,
+                capture_mode: "desktop".into(),
+                autostart: true,
+                auto_arm: true,
+                clip_sound: true,
+                resolution: "native".into(),
+                fps: 120,
+                replay_seconds: 60,
+            };
+            show_menu(hwnd, &prefs);
         }
     }
 }

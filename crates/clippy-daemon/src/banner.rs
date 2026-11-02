@@ -35,7 +35,7 @@ use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateDIBSection, CreateFontW,
     CreateSolidBrush, DEFAULT_CHARSET, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, FillRect, GdiFlush, GetDC,
+    DT_SINGLELINE, DeleteDC, DeleteObject, DrawTextW, FillRect, GdiFlush, GetDC,
     GetMonitorInfoW, HBITMAP, HDC, HFONT, HGDIOBJ, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
     MonitorFromWindow, OUT_DEFAULT_PRECIS, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
     TRANSPARENT,
@@ -134,6 +134,11 @@ struct Shown {
     dc: HDC,
     bitmap: HBITMAP,
     old: HGDIOBJ,
+    /// The DIB's pixels (owned by `bitmap`), redrawn each frame for the bar.
+    bits: *mut u8,
+    /// The card's bottom rows as built, under the countdown bar, so the part
+    /// of the bar that has run out shows the card again.
+    under_bar: Vec<u8>,
 }
 
 impl Drop for Shown {
@@ -254,6 +259,12 @@ unsafe fn tick(hwnd: HWND) {
         };
         let Some(shown) = slot.as_ref() else { return };
         let scale = shown.size.cy as f32 / BASE_HEIGHT as f32;
+        // SAFETY: `bits` is the DIB of `shown.bitmap`, alive as long as `shown`,
+        // `cx * cy` BGRA pixels, and only this thread touches it.
+        let pixels = unsafe {
+            std::slice::from_raw_parts_mut(shown.bits, (shown.size.cx * shown.size.cy * 4) as usize)
+        };
+        draw_countdown(pixels, shown.size.cx, &shown.under_bar, frame.remaining);
         // The card slides in from the screen edge it sits against.
         let offset = (frame.slide * 18.0 * scale) as i32;
         let offset = if shown.corner == BannerCorner::TopLeft { -offset } else { offset };
@@ -295,6 +306,9 @@ struct Frame {
     opacity: f32,
     /// 1 = fully offset to the right, 0 = in place.
     slide: f32,
+    /// Share of the countdown bar still filled: 1 until the card has landed,
+    /// then down to 0 over the hold.
+    remaining: f32,
 }
 
 /// The animation as a pure function of time, so it can be tested: an ease-out
@@ -303,33 +317,48 @@ fn frame_at(t: Duration) -> Option<Frame> {
     let ease_out = |x: f32| 1.0 - (1.0 - x).powi(3);
     if t < FADE_IN {
         let p = ease_out(t.as_secs_f32() / FADE_IN.as_secs_f32());
-        return Some(Frame { opacity: OPACITY * p, slide: 1.0 - p });
+        return Some(Frame { opacity: OPACITY * p, slide: 1.0 - p, remaining: 1.0 });
     }
     let t = t - FADE_IN;
     if t < HOLD {
-        return Some(Frame { opacity: OPACITY, slide: 0.0 });
+        let remaining = 1.0 - t.as_secs_f32() / HOLD.as_secs_f32();
+        return Some(Frame { opacity: OPACITY, slide: 0.0, remaining });
     }
     let t = t - HOLD;
     if t < FADE_OUT {
         let p = t.as_secs_f32() / FADE_OUT.as_secs_f32();
-        return Some(Frame { opacity: OPACITY * (1.0 - p * p), slide: 0.0 });
+        return Some(Frame { opacity: OPACITY * (1.0 - p * p), slide: 0.0, remaining: 0.0 });
     }
     None
 }
 
 /// Card size at 96 dpi.
-const BASE_WIDTH: i32 = 340;
-const BASE_HEIGHT: i32 = 64;
+const BASE_WIDTH: i32 = 360;
+const BASE_HEIGHT: i32 = 72;
 const BASE_MARGIN: i32 = 24;
-const BASE_RADIUS: f32 = 12.0;
+const BASE_RADIUS: f32 = 14.0;
+/// The logo tile on the left, and the logo inside it.
+const BASE_TILE: i32 = 44;
+const BASE_TILE_RADIUS: f32 = 11.0;
+const BASE_LOGO: i32 = 26;
+/// Countdown bar along the bottom edge.
+const BASE_BAR: i32 = 3;
 
 /// GDI colours are 0x00BBGGRR.
 const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
 }
-const BACKGROUND: (u8, u8, u8) = (24, 24, 27);
-const BORDER: (u8, u8, u8) = (63, 63, 70);
-const ACCENT: (u8, u8, u8) = (59, 130, 246);
+// The app's colours: its dark surfaces and the logo's blue.
+const BACKGROUND: (u8, u8, u8) = (24, 24, 24);
+const BORDER: (u8, u8, u8) = (58, 58, 58);
+const TILE: (u8, u8, u8) = (38, 38, 38);
+const ACCENT: (u8, u8, u8) = (43, 127, 255);
+const DETAIL: (u8, u8, u8) = (175, 175, 175);
+
+/// The app logo's alpha at 128 px (from `crates/clippy-ui/icons/128x128.png`),
+/// one byte per pixel, row by row.
+static LOGO: &[u8; LOGO_SIDE * LOGO_SIDE] = include_bytes!("../assets/banner-logo.a8");
+const LOGO_SIDE: usize = 128;
 
 /// Lays the card out for the monitor the foreground window is on and renders
 /// it into a premultiplied 32-bit DIB.
@@ -377,42 +406,39 @@ unsafe fn build(message: &Message) -> Option<Shown> {
         let brush = CreateSolidBrush(rgb(BACKGROUND.0, BACKGROUND.1, BACKGROUND.2));
         FillRect(dc, &RECT { left: 0, top: 0, right: width, bottom: height }, brush);
         let _ = DeleteObject(brush.into());
-        // Accent stripe on the left edge (clipped round by the mask below).
-        let accent = CreateSolidBrush(rgb(ACCENT.0, ACCENT.1, ACCENT.2));
-        FillRect(dc, &RECT { left: 0, top: 0, right: px(4), bottom: height }, accent);
-        let _ = DeleteObject(accent.into());
-
+        // Text right of the logo tile, the two lines centred as a block.
         SetBkMode(dc, TRANSPARENT);
-        // The check mark, from the icon font every Windows 10/11 has.
-        let glyph_font = font(px(20), 400, w!("Segoe MDL2 Assets"));
-        let previous = SelectObject(dc, glyph_font.into());
-        SetTextColor(dc, rgb(ACCENT.0, ACCENT.1, ACCENT.2));
-        let mut glyph: Vec<u16> = "\u{E73E}".encode_utf16().collect();
-        let mut rect = RECT { left: px(18), top: 0, right: px(44), bottom: height };
-        DrawTextW(dc, &mut glyph, &mut rect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
-
+        let text_left = px(16 + BASE_TILE + 14);
+        let top = (height - px(40)) / 2;
         let title_font = font(px(15), 600, w!("Segoe UI"));
-        SelectObject(dc, title_font.into());
+        let previous = SelectObject(dc, title_font.into());
         SetTextColor(dc, rgb(250, 250, 250));
         let mut title: Vec<u16> = message.title.encode_utf16().collect();
-        let mut rect = RECT { left: px(52), top: px(12), right: width - px(16), bottom: px(34) };
+        let mut rect = RECT { left: text_left, top, right: width - px(18), bottom: top + px(21) };
         DrawTextW(dc, &mut title, &mut rect, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
 
         let detail_font = font(px(13), 400, w!("Segoe UI"));
         SelectObject(dc, detail_font.into());
-        SetTextColor(dc, rgb(161, 161, 170));
+        SetTextColor(dc, rgb(DETAIL.0, DETAIL.1, DETAIL.2));
         let mut detail: Vec<u16> = message.detail.encode_utf16().collect();
-        let mut rect = RECT { left: px(52), top: px(34), right: width - px(16), bottom: px(54) };
+        let mut rect = RECT { left: text_left, top: top + px(22), right: width - px(18), bottom: top + px(40) };
         DrawTextW(dc, &mut detail, &mut rect, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
 
         SelectObject(dc, previous);
-        for font in [glyph_font, title_font, detail_font] {
+        for font in [title_font, detail_font] {
             let _ = DeleteObject(font.into());
         }
         let _ = GdiFlush();
 
         let pixels = std::slice::from_raw_parts_mut(bits.cast::<u8>(), (width * height * 4) as usize);
+        let tile = px(BASE_TILE);
+        let tile_at = (px(16), (height - tile) / 2);
+        paint_tile(pixels, width, tile_at, tile, BASE_TILE_RADIUS * scale);
+        let logo = px(BASE_LOGO);
+        paint_logo(pixels, width, (tile_at.0 + (tile - logo) / 2, tile_at.1 + (tile - logo) / 2), logo);
         shape(pixels, width, height, BASE_RADIUS * scale, scale);
+        let bar = px(BASE_BAR).max(2);
+        let under_bar = pixels[((height - bar) * width * 4) as usize..].to_vec();
 
         Some(Shown {
             started: Instant::now(),
@@ -422,6 +448,8 @@ unsafe fn build(message: &Message) -> Option<Shown> {
             dc,
             bitmap,
             old,
+            bits: bits.cast::<u8>(),
+            under_bar,
         })
     }
 }
@@ -444,6 +472,71 @@ unsafe fn font(height: i32, weight: i32, face: PCWSTR) -> HFONT {
             0,
             face,
         )
+    }
+}
+
+/// Blends `colour` over the opaque (not yet premultiplied) card at `alpha`.
+fn blend(pixel: &mut [u8], colour: (u8, u8, u8), alpha: f32) {
+    let mix = |under: u8, over: u8| (under as f32 + (over as f32 - under as f32) * alpha).round() as u8;
+    pixel[0] = mix(pixel[0], colour.2);
+    pixel[1] = mix(pixel[1], colour.1);
+    pixel[2] = mix(pixel[2], colour.0);
+}
+
+/// The rounded square the logo sits on.
+fn paint_tile(pixels: &mut [u8], width: i32, at: (i32, i32), side: i32, radius: f32) {
+    for y in 0..side {
+        for x in 0..side {
+            let d = rounded_rect_distance(x as f32 + 0.5, y as f32 + 0.5, side as f32, side as f32, radius);
+            let coverage = (0.5 - d).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                let i = (((at.1 + y) * width + at.0 + x) * 4) as usize;
+                blend(&mut pixels[i..i + 3], TILE, coverage);
+            }
+        }
+    }
+}
+
+/// The app logo in its blue, `side` pixels square, area-sampled from the
+/// 128 px mask so it stays crisp at every scale.
+fn paint_logo(pixels: &mut [u8], width: i32, at: (i32, i32), side: i32) {
+    let step = LOGO_SIDE as f32 / side as f32;
+    let span = |n: i32| {
+        let start = (n as f32 * step) as usize;
+        let end = (((n + 1) as f32 * step).ceil() as usize).clamp(start + 1, LOGO_SIDE);
+        start..end
+    };
+    for y in 0..side {
+        for x in 0..side {
+            let (xs, ys) = (span(x), span(y));
+            let count = (xs.len() * ys.len()) as f32;
+            let sum: u32 = ys.map(|sy| LOGO[sy * LOGO_SIDE + xs.start..sy * LOGO_SIDE + xs.end].iter().map(|&a| u32::from(a)).sum::<u32>()).sum();
+            let alpha = sum as f32 / count / 255.0;
+            if alpha > 0.0 {
+                let i = (((at.1 + y) * width + at.0 + x) * 4) as usize;
+                blend(&mut pixels[i..i + 3], ACCENT, alpha);
+            }
+        }
+    }
+}
+
+/// The countdown along the bottom edge: the first `remaining` of the width in
+/// the accent, the rest the card as built. Works on the premultiplied card, so
+/// the bar follows its rounded corners.
+fn draw_countdown(pixels: &mut [u8], width: i32, under_bar: &[u8], remaining: f32) {
+    let start = pixels.len() - under_bar.len();
+    let filled = (width as f32 * remaining.clamp(0.0, 1.0)).round() as usize;
+    let rows = pixels[start..].chunks_exact_mut(4).zip(under_bar.chunks_exact(4));
+    for (n, (pixel, under)) in rows.enumerate() {
+        if n % width as usize >= filled {
+            pixel.copy_from_slice(under);
+            continue;
+        }
+        let alpha = f32::from(under[3]) / 255.0;
+        pixel[0] = (f32::from(ACCENT.2) * alpha).round() as u8;
+        pixel[1] = (f32::from(ACCENT.1) * alpha).round() as u8;
+        pixel[2] = (f32::from(ACCENT.0) * alpha).round() as u8;
+        pixel[3] = under[3];
     }
 }
 
@@ -507,7 +600,10 @@ mod tests {
         assert_eq!(start.opacity, 0.0);
         assert_eq!(start.slide, 1.0);
         let held = frame_at(FADE_IN + HOLD / 2).unwrap();
-        assert_eq!(held, Frame { opacity: OPACITY, slide: 0.0 });
+        assert_eq!(held.opacity, OPACITY);
+        assert_eq!(held.slide, 0.0);
+        assert!((held.remaining - 0.5).abs() < 0.01, "half the bar left half way through");
+        assert_eq!(start.remaining, 1.0);
         let leaving = frame_at(FADE_IN + HOLD + FADE_OUT / 2).unwrap();
         assert!(leaving.opacity > 0.0 && leaving.opacity < OPACITY);
         assert!(frame_at(FADE_IN + HOLD + FADE_OUT).is_none());
@@ -527,6 +623,56 @@ mod tests {
         for p in pixels.chunks_exact(4) {
             assert!(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
         }
+    }
+
+    #[test]
+    fn the_countdown_fills_from_the_left_and_gives_the_card_back() {
+        let width = 10;
+        let mut pixels = vec![0u8; (width * 2 * 4) as usize];
+        // The bar row: an opaque grey card, its last pixel half covered.
+        let mut under = [50u8, 50, 50, 255].repeat(width as usize);
+        under[(width as usize - 1) * 4..].copy_from_slice(&[25, 25, 25, 128]);
+        pixels[(width * 4) as usize..].copy_from_slice(&under);
+        let at = |pixels: &[u8], x: usize| pixels[(width as usize + x) * 4..(width as usize + x) * 4 + 4].to_vec();
+        draw_countdown(&mut pixels, width, &under, 0.5);
+        assert_eq!(at(&pixels, 0), [ACCENT.2, ACCENT.1, ACCENT.0, 255]);
+        assert_eq!(at(&pixels, 5), [50, 50, 50, 255], "past the fill: the card");
+        draw_countdown(&mut pixels, width, &under, 1.0);
+        let last = at(&pixels, 9);
+        assert_eq!(last[3], 128, "the corner's coverage is kept");
+        assert!(last[0] <= last[3] && last[2] <= last[3], "premultiplied");
+        draw_countdown(&mut pixels, width, &under, 0.0);
+        assert_eq!(&pixels[(width * 4) as usize..], &under[..], "empty bar: the card as built");
+    }
+
+    #[test]
+    fn the_logo_is_drawn_in_the_accent_inside_its_box() {
+        let width = 40;
+        let mut pixels = vec![0u8; (width * width * 4) as usize];
+        paint_logo(&mut pixels, width, (4, 4), 32);
+        let blue = pixels.chunks_exact(4).filter(|p| p[0] > 200 && p[2] < 80).count();
+        assert!(blue > 32 * 32 / 6, "the logo must cover a good part of its box ({blue} px)");
+        assert_eq!(&pixels[..4 * 4], &[0u8; 16][..], "nothing outside the box");
+    }
+
+    /// Writes the card as built to `CLIPPY_BANNER_PREVIEW` (raw premultiplied
+    /// BGRA, width and height first as two little-endian u32), to look at it.
+    #[test]
+    #[ignore = "writes a preview file; run by hand"]
+    fn preview() {
+        let Ok(path) = std::env::var("CLIPPY_BANNER_PREVIEW") else { return };
+        let shown = unsafe {
+            build(&Message { title: "Clip enregistré".into(), detail: "VALORANT · 0:30".into() })
+        }
+        .expect("built");
+        let (w, h) = (shown.size.cx, shown.size.cy);
+        let pixels = unsafe { std::slice::from_raw_parts_mut(shown.bits, (w * h * 4) as usize) };
+        draw_countdown(pixels, w, &shown.under_bar, 0.62);
+        let mut out = Vec::new();
+        out.extend_from_slice(&(w as u32).to_le_bytes());
+        out.extend_from_slice(&(h as u32).to_le_bytes());
+        out.extend_from_slice(pixels);
+        std::fs::write(path, out).unwrap();
     }
 
     #[test]
