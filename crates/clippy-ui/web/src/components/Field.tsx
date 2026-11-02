@@ -38,22 +38,28 @@ const UNITS: Record<string, string> = {
 export function Row({
   title,
   dimmed = false,
+  wide = false,
   left,
   children,
 }: {
   title: string;
   dimmed?: boolean;
+  /**
+   * Three columns -- text, control, detail -- so the control sits in the middle
+   * of the row. The control lays its own parts into the last two (`contents`).
+   */
+  wide?: boolean;
   /** Everything under the title: help, details, reasons. */
   left?: ReactNode;
   children?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-6 border-t border-subtle py-3.5 first:border-t-0">
+    <div className={`${wide ? 'grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center' : 'flex items-start justify-between'} gap-6 border-t border-subtle py-3.5 first:border-t-0`}>
       <div className={`flex min-w-0 flex-1 flex-col gap-0.5 transition-opacity duration-200 ${EASE} ${dimmed ? 'opacity-55' : ''}`}>
         <b className="text-sm font-medium text-default">{title}</b>
         <div className="max-w-[62ch] text-xs leading-relaxed text-secondary">{left}</div>
       </div>
-      <div className={`flex max-w-[58%] flex-wrap items-center justify-end gap-2 transition-opacity duration-200 ${EASE} ${dimmed ? 'opacity-55' : ''}`}>
+      <div className={`${wide ? 'contents' : 'flex max-w-[58%] flex-wrap items-center justify-end gap-2'} transition-opacity duration-200 ${EASE} ${dimmed ? 'opacity-55' : ''}`}>
         {children}
       </div>
     </div>
@@ -287,7 +293,7 @@ export function Field({
 
     case 'select':
       control = (
-        <div role="group" aria-label={field.label}>
+        <div role="group" aria-label={field.label} className={field.dynamic === 'monitors' ? 'contents' : undefined}>
           {field.dynamic === 'monitors' ? (
             <MonitorPicker
               monitors={monitors}
@@ -445,7 +451,7 @@ export function Field({
   }
 
   return (
-    <Row title={field.label} dimmed={inactive !== null} left={left}>
+    <Row title={field.label} dimmed={inactive !== null} wide={field.dynamic === 'monitors'} left={left}>
       {control}
     </Row>
   );

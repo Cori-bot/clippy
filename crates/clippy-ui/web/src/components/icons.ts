@@ -29,6 +29,10 @@ export {
   Copy,
   Search,
   CloseBold as Close,
+  Minus,
+  ExpandSm as Maximize,
+  CollapseSm as Restore,
+  X,
 } from '@openai/apps-sdk-ui/components/Icon';
 
 import { createElement, type SVGProps } from 'react';
@@ -38,9 +42,9 @@ export function Gamepad(props: SVGProps<SVGSVGElement>) {
   return createElement(
     'svg',
     { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.75, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, ...props },
-    createElement('path', { d: 'M7 7h10a4 4 0 0 1 3.9 3.1l1 4.5a3 3 0 0 1-5.1 2.6L15 15H9l-1.8 2.2a3 3 0 0 1-5.1-2.6l1-4.5A4 4 0 0 1 7 7Z' }),
-    createElement('path', { d: 'M8 10v3M6.5 11.5h3' }),
-    createElement('circle', { cx: 15.5, cy: 10.5, r: 0.6, fill: 'currentColor' }),
-    createElement('circle', { cx: 17.5, cy: 12.5, r: 0.6, fill: 'currentColor' }),
+    createElement('path', { d: 'M8 5.5h8a5 5 0 0 1 4.9 4l1 5.2a3.2 3.2 0 0 1-5.6 2.7L14.8 15.5H9.2l-1.5 1.9a3.2 3.2 0 0 1-5.6-2.7l1-5.2A5 5 0 0 1 8 5.5Z' }),
+    createElement('path', { d: 'M8 9.25v3.5M6.25 11h3.5' }),
+    createElement('circle', { cx: 15.75, cy: 10, r: 1, fill: 'currentColor', stroke: 'none' }),
+    createElement('circle', { cx: 17.75, cy: 12.25, r: 1, fill: 'currentColor', stroke: 'none' }),
   );
 }

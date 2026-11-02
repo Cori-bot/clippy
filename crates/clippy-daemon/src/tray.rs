@@ -97,35 +97,31 @@ pub fn choice_for_id(id: usize) -> Option<(&'static str, Value)> {
 /// 16 cleanly and asking for a 16 would look soft at 150% scaling.
 pub(crate) const ICON_SIDE: usize = 32;
 
-/// A ring (idle) or a filled disc (armed), as premultiplied BGRA.
+/// The app's logo -- the same two interlocking loops as in the window, the
+/// taskbar and the shortcuts -- as premultiplied BGRA: grey when idle, the
+/// app's blue when the replay is armed.
 ///
-/// Drawn rather than shipped as an `.ico`: two circles need no resource
-/// compiler, no asset files, and no build script, and stay correct if the
-/// binary is moved. The shape is deliberately the same silhouette in both
-/// states so the icon reads as "Clippy" either way — only the fill changes.
+/// The shape is the alpha channel of the 32 px app icon (`icons/32x32.png`,
+/// generated from `crates/clippy-ui/icon-source.svg`), stored raw so no image
+/// decoder is needed. Both colours read on light and dark taskbars, and the
+/// change of colour is the armed/idle state.
 pub(crate) fn icon_pixels(armed: bool) -> Vec<u32> {
-    let side = ICON_SIDE as f32;
-    let center = (side - 1.0) / 2.0;
-    let outer = side * 0.44;
-    let inner = outer * 0.55;
-    let mut pixels = vec![0u32; ICON_SIDE * ICON_SIDE];
-    for y in 0..ICON_SIDE {
-        for x in 0..ICON_SIDE {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let d = (dx * dx + dy * dy).sqrt();
-            // One-pixel smoothstep at each edge: an aliased circle at 16 px
-            // looks like a defect.
-            let edge = |r: f32| (1.0 - (d - r + 0.5)).clamp(0.0, 1.0);
-            let coverage = if armed { edge(outer) } else { edge(outer) * (1.0 - edge(inner)) };
-            let alpha = (coverage * 255.0) as u32;
-            // Premultiplied white; the tray composites over unknown
-            // backgrounds and a non-premultiplied icon fringes dark.
-            pixels[y * ICON_SIDE + x] = (alpha << 24) | (alpha << 16) | (alpha << 8) | alpha;
-        }
-    }
-    pixels
+    // #2b7fff armed, #8f8f8f idle.
+    let (r, g, b) = if armed { (0x2b, 0x7f, 0xff) } else { (0x8f, 0x8f, 0x8f) };
+    TRAY_LOGO
+        .iter()
+        .map(|&a| {
+            let a = u32::from(a);
+            // Premultiplied: the tray composites over unknown backgrounds and
+            // a non-premultiplied icon fringes dark.
+            let pm = |c: u32| c * a / 255;
+            (a << 24) | (pm(r) << 16) | (pm(g) << 8) | pm(b)
+        })
+        .collect()
 }
+
+/// One alpha byte per pixel, row by row, `ICON_SIDE` x `ICON_SIDE`.
+static TRAY_LOGO: &[u8; ICON_SIDE * ICON_SIDE] = include_bytes!("../assets/tray-logo.a8");
 
 /// A live tray icon. Removing it is not optional: an icon whose process dies
 /// without `NIM_DELETE` lingers in the tray until the user happens to hover
@@ -386,13 +382,8 @@ pub unsafe fn show_menu(hwnd: HWND, prefs: &MenuPrefs) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// The two states must be visually distinct — an armed daemon that looks
-    /// identical to an idle one is the tray icon failing at its only job.
-    ///
-    /// Asserts the shape rather than a pixel count. The plan's original
-    /// `armed_on > idle_on * 2` is arithmetically unreachable: with an inner
-    /// radius of `0.55 × outer` the ring covers ~70% of the disc's area, not
-    /// under half, so that test could only ever have failed.
+    /// Both states draw the logo, and an armed icon must not look like an idle
+    /// one: same silhouette, different colour.
     #[test]
     fn armed_and_idle_icons_differ_and_are_both_drawn() {
         let idle = icon_pixels(false);
@@ -400,26 +391,24 @@ mod tests {
         assert_eq!(idle.len(), ICON_SIDE * ICON_SIDE, "one BGRA pixel per cell");
         assert_eq!(armed.len(), idle.len());
 
-        let alpha = |px: &[u32], x: usize, y: usize| px[y * ICON_SIDE + x] >> 24;
-        let opaque = |px: &[u32]| px.iter().filter(|p| (*p >> 24) > 0x40).count();
-        let mid = ICON_SIDE / 2;
+        let alpha = |p: u32| p >> 24;
+        let drawn = idle.iter().filter(|p| alpha(**p) > 0x40).count();
+        assert!(drawn > ICON_SIDE * ICON_SIDE / 5, "the logo must be drawn, not a speck ({drawn} px)");
+        assert!(idle.iter().zip(&armed).all(|(i, a)| alpha(*i) == alpha(*a)), "same silhouette in both states");
 
-        // The entire difference between the two states, in two assertions:
-        // the middle is empty when idle and filled when armed.
-        assert!(alpha(&idle, mid, mid) < 0x20, "the idle icon must be hollow in the middle");
-        assert!(alpha(&armed, mid, mid) > 0xE0, "the armed icon must be filled in the middle");
+        // The colour is the state: armed is blue, idle is grey.
+        let solid = |px: &[u32]| *px.iter().find(|p| alpha(**p) == 0xFF).expect("an opaque pixel");
+        let (blue, grey) = (solid(&armed), solid(&idle));
+        assert!((blue & 0xFF) > ((blue >> 16) & 0xFF) + 0x80, "armed must be blue");
+        assert_eq!(grey & 0xFF, (grey >> 16) & 0xFF, "idle must be grey");
 
-        // Same silhouette either way, so the icon still reads as Clippy in both
-        // states — only the fill changes.
-        let rim = mid + (ICON_SIDE as f32 * 0.44) as usize - 1;
-        assert!(alpha(&idle, rim, mid) > 0x40, "the idle icon must draw its rim");
-        assert!(alpha(&armed, rim, mid) > 0x40, "the armed icon must draw its rim");
-        assert!(opaque(&armed) > opaque(&idle), "filled must cover more than hollow");
+        // Premultiplied: no channel above alpha, or the tray draws fringes.
+        assert!(armed.iter().all(|p| (0..3).all(|c| ((p >> (8 * c)) & 0xFF) <= alpha(*p))));
 
         // A fully opaque corner means the alpha channel was lost somewhere,
-        // which shows up in the tray as a white square.
-        assert_eq!(alpha(&idle, 0, 0), 0, "corners must be transparent");
-        assert_eq!(alpha(&armed, 0, 0), 0, "corners must be transparent");
+        // which shows up in the tray as a coloured square.
+        assert_eq!(alpha(idle[0]), 0, "corners must be transparent");
+        assert_eq!(alpha(armed[ICON_SIDE * ICON_SIDE - 1]), 0, "corners must be transparent");
     }
 
     /// A click on a submenu item must become exactly the config change its

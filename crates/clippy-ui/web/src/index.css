@@ -30,6 +30,15 @@ body { margin: 0; overflow: hidden; user-select: none; background: var(--color-s
 .favorite-control[aria-pressed="true"] svg { animation: icon-favorite 250ms cubic-bezier(0.22, 1, 0.36, 1); }
 @keyframes icon-nudge { 40% { transform: translateX(2px); } }
 @keyframes icon-turn { from { transform: rotate(-35deg); } }
+/* The rail: each item moves the way its object would, on hover or focus. */
+.motion-control:is(:hover, :focus-visible) .motion-roll { animation: icon-roll 450ms cubic-bezier(0.22, 1, 0.36, 1); }
+.motion-control:is(:hover, :focus-visible) .motion-flash { animation: icon-flash 400ms cubic-bezier(0.22, 1, 0.36, 1); }
+.motion-control:is(:hover, :focus-visible) .motion-wiggle { animation: icon-wiggle 500ms cubic-bezier(0.22, 1, 0.36, 1); }
+.motion-control:is(:hover, :focus-visible) .motion-spin { animation: icon-spin 500ms cubic-bezier(0.22, 1, 0.36, 1); }
+@keyframes icon-roll { 35% { transform: translateX(3px) scale(1.06); } 70% { transform: translateX(-1px); } }
+@keyframes icon-flash { 30% { transform: scale(0.8); } 65% { transform: scale(1.1); } }
+@keyframes icon-wiggle { 20% { transform: rotate(-14deg); } 45% { transform: rotate(11deg); } 70% { transform: rotate(-5deg); } }
+@keyframes icon-spin { from { transform: rotate(-90deg); } }
 @keyframes icon-search { 40% { transform: rotate(-12deg); } }
 @keyframes icon-favorite { 40% { transform: scale(1.2) rotate(-10deg); } }
 .save-confirmation { animation: saved-in 250ms cubic-bezier(0.22, 1, 0.36, 1); }

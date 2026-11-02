@@ -1,5 +1,5 @@
 import type { Monitor } from '../lib/types';
-import { monitorLayout, monitorLabel } from '../lib/monitors';
+import { isPortrait, isPrimary, monitorLayout, monitorLabel } from '../lib/monitors';
 
 const EASE = 'ease-[cubic-bezier(0.22,1,0.36,1)]';
 
@@ -15,12 +15,14 @@ export function MonitorPicker({ monitors, value, label, onchange }: {
   onchange: (index: number) => void;
 }) {
   if (monitors.length === 0) {
-    return <span className="text-xs text-secondary">Aucun écran détecté</span>;
+    return <span className="justify-self-end text-xs text-secondary">Aucun écran détecté</span>;
   }
   const layout = monitorLayout(monitors, 260, 110);
   const current = monitors.find((m) => m.index === value);
   return (
-    <div className="flex flex-col items-end gap-1.5">
+    // `contents`: the screens and the detail are the middle and right columns
+    // of the settings row, so the screens sit in the middle of it.
+    <div className="contents">
       <div role="radiogroup" aria-label={label} className="relative" style={{ width: layout.width, height: layout.height }}>
         {layout.boxes.map(({ monitor, x, y, w, h }) => {
           const selected = monitor.index === value;
@@ -49,7 +51,16 @@ export function MonitorPicker({ monitors, value, label, onchange }: {
           );
         })}
       </div>
-      {current && <span className="text-xs text-secondary">{monitorLabel(current)}</span>}
+      {current && (
+        <div className="flex flex-col items-end gap-0.5 justify-self-end whitespace-nowrap text-right text-xs text-secondary" aria-live="polite">
+          <b className="text-sm font-medium text-default">Écran {current.index + 1}</b>
+          <span className="tabular-nums">{current.width}×{current.height}</span>
+          <span>
+            {isPortrait(current) ? 'Vertical' : 'Horizontal'}
+            {isPrimary(current) ? ' · principal' : ''}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

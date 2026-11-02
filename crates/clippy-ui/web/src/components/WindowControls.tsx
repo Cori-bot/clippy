@@ -1,15 +1,12 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useState } from 'react';
+import { Maximize, Minus, Restore, X } from './icons';
 
-/** The window's caption buttons: Windows' own shapes, because that is where people expect exactly those. */
-const SHAPES = {
-  minimize: 'M4.5 12h15',
-  maximize: 'M5.25 5.25h13.5v13.5H5.25z',
-  restore: 'M7.5 7.5V5.25h11.25V16.5H16.5M5.25 7.5H16.5v11.25H5.25z',
-  close: 'M5.25 5.25l13.5 13.5M18.75 5.25l-13.5 13.5',
-} as const;
+/** The window's caption buttons, in OpenAI's icon shapes like the rest of the app. */
+const SHAPES = { minimize: Minus, maximize: Maximize, restore: Restore, close: X } as const;
 
 function Caption({ shape, label, onClick, danger }: { shape: keyof typeof SHAPES; label: string; onClick: () => void; danger?: boolean }) {
+  const Icon = SHAPES[shape];
   return (
     <button
       type="button"
@@ -17,11 +14,9 @@ function Caption({ shape, label, onClick, danger }: { shape: keyof typeof SHAPES
       title={label}
       onClick={onClick}
       className={`grid h-full w-11 place-items-center text-secondary transition-colors duration-150 hover:text-default ${
-        danger ? 'hover:bg-[#e81123]' : 'hover:bg-[var(--color-background-primary-soft-alpha)]'
+        danger ? 'hover:bg-[#e81123] hover:text-white' : 'hover:bg-[var(--color-background-primary-soft-alpha)]'
       }`}>
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d={SHAPES[shape]} />
-      </svg>
+      <Icon className="size-[18px]" aria-hidden="true" />
     </button>
   );
 }

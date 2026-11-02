@@ -5,11 +5,12 @@ import { ReplayControl } from '../components/ReplayControl';
 import { Logo } from '../components/Logo';
 import { ExportJobPanel } from '../components/ExportJobPanel';
 
-const ITEMS: { view: View; label: string; Icon: typeof Clips }[] = [
-  { view: 'grid', label: 'Clips', Icon: Clips },
-  { view: 'shots', label: 'Captures d’écran', Icon: Camera },
-  { view: 'games', label: 'Jeux', Icon: Gamepad },
-  { view: 'settings', label: 'Paramètres', Icon: Settings },
+/** `motion` is the hover animation (index.css): each icon moves like its object. */
+const ITEMS: { view: View; label: string; Icon: typeof Clips; motion: string }[] = [
+  { view: 'grid', label: 'Clips', Icon: Clips, motion: 'motion-roll' },
+  { view: 'shots', label: 'Captures d’écran', Icon: Camera, motion: 'motion-flash' },
+  { view: 'games', label: 'Jeux', Icon: Gamepad, motion: 'motion-wiggle' },
+  { view: 'settings', label: 'Paramètres', Icon: Settings, motion: 'motion-spin' },
 ];
 
 export function Rail() {
@@ -19,7 +20,7 @@ export function Rail() {
       <div className="mb-5 flex items-center gap-2.5 px-2 py-2">
         <Logo height={25} /><span className="text-lg font-semibold">Clippy</span>
       </div>
-      {ITEMS.map(({ view, label, Icon }) => {
+      {ITEMS.map(({ view, label, Icon, motion }) => {
         const current = a.view === view || (view === 'grid' && a.view === 'clip');
         return (
           <button
@@ -32,7 +33,7 @@ export function Rail() {
                 ? 'bg-[var(--color-background-primary-soft-alpha)] font-semibold text-default'
                 : 'text-secondary hover:bg-[var(--color-background-primary-soft-alpha)] hover:text-default'
             }`}>
-            <span className={view === 'settings' ? 'motion-icon motion-rotate' : 'motion-icon motion-nudge'}><Icon className="size-[18px]" /></span>
+            <span className={`motion-icon ${motion}`}><Icon className="size-[18px]" /></span>
             {label}
           </button>
         );
