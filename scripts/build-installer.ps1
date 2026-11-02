@@ -69,20 +69,26 @@ $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Clipp
 $InstallDirKey = 'HKCU:\Software\Clippy'
 $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 
+# A registry value, or $null when the key or the value is absent (StrictMode
+# turns a property read on a missing value into an error).
+function Get-RegValue([string]$Key, [string]$Name) {
+    try { Get-ItemPropertyValue -LiteralPath $Key -Name $Name -ErrorAction Stop } catch { $null }
+}
+
 # Removes whatever the install round trip left that points into $Under: the
 # remembered install folder, the uninstall entry and the shortcuts. Never
 # touches an entry that points anywhere else (a real install).
 function Clear-TestInstall([string]$Under) {
     $prefix = $Under.TrimEnd('\') + '\'
-    $remembered = (Get-ItemProperty -LiteralPath "$InstallDirKey\Clippy" -ErrorAction SilentlyContinue).'(default)'
+    $remembered = Get-RegValue "$InstallDirKey\Clippy" '(default)'
     if ($remembered -and ($remembered + '\').StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
         Remove-Item -LiteralPath "$InstallDirKey\Clippy" -Recurse -Force -ErrorAction SilentlyContinue
         if ((Test-Path $InstallDirKey) -and -not (Get-ChildItem $InstallDirKey -ErrorAction SilentlyContinue) -and
-            -not (Get-Item $InstallDirKey).Property) {
+            @((Get-Item $InstallDirKey).Property).Count -eq 0) {
             Remove-Item -LiteralPath $InstallDirKey -Force -ErrorAction SilentlyContinue
         }
     }
-    $location = (Get-ItemProperty -LiteralPath $UninstallKey -ErrorAction SilentlyContinue).InstallLocation
+    $location = Get-RegValue $UninstallKey 'InstallLocation'
     if ($location -and ($location.Trim('"') + '\').StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
         Remove-Item -LiteralPath $UninstallKey -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -111,7 +117,7 @@ $work = Join-Path $env:TEMP ("clippy-installer-" + [guid]::NewGuid().ToString('N
 $installStarted = $false
 # The uninstaller deletes the Run\Clippy value (installer-hooks.nsh), even one a
 # real install wrote; it is put back after the round trip.
-$savedRun = (Get-ItemProperty -LiteralPath $RunKey -Name 'Clippy' -ErrorAction SilentlyContinue).Clippy
+$savedRun = Get-RegValue $RunKey 'Clippy'
 try {
     Write-Host ''
     Write-Host 'Step 1: gates, release build and staging (scripts\ship-zip.ps1 -StageOnly)' -ForegroundColor Cyan
