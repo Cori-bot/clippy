@@ -1,0 +1,3 @@
+// The app logo, so the daemon shows it in Task Manager and the startup apps
+// list rather than the blank program icon. Same file as the window app.
+1 ICON "../clippy-ui/icons/icon.ico"
